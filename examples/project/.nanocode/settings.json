@@ -1,0 +1,16 @@
+{
+  "provider": "mock",
+  "mode": "default",
+  "context_window": 128000,
+  "permissions": {
+    "allow": ["bash(git status*)", "bash(git diff*)", "bash(python3 -m unittest*)"],
+    "deny": ["bash(rm -rf*)", "bash(*sudo*)", "write_file(*.env)", "edit_file(*.env)"]
+  },
+  "hooks": {
+    "PreToolUse": [{"matcher": "bash", "command": "python3 .nanocode/hooks/guard.py"}],
+    "PostToolUse": [{"matcher": "write_file|edit_file", "command": "python3 .nanocode/hooks/log_edit.py"}]
+  },
+  "mcpServers": {
+    "demo": {"command": "python3", "args": ["../mcp_server_demo.py"]}
+  }
+}

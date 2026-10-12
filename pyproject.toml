@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nanocode"
+version = "0.1.0"
+description = "一个用来学习 Agent 与 Claude Code 核心架构的迷你编程 Agent（纯标准库，可接入任意厂商模型）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+nanocode = "nanocode.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["nanocode*"]
+
+[tool.setuptools.package-data]
+"nanocode.web" = ["static/*.html"]

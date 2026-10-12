@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nanocode 控制台</title>
+<style>
+/* 布局：左侧对话，右侧"透视面板"展示 Agent 内部；窄屏上下堆叠 */
+:root {
+  --bg: #eef1f4; --panel: #ffffff; --line: #d5dbe2; --fg: #15202b; --muted: #5d6b79;
+  --model: #2747d6; --tool: #0b7f70; --env: #a75f0a; --danger: #c0352b; --soft: #f5f7fa;
+  --font-ui: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0e141a; --panel: #151d25; --line: #283541; --fg: #e2e8ee; --muted: #8d9cab;
+  --model: #8299ff; --tool: #3cc4ae; --env: #e6a04a; --danger: #ff7a6e; --soft: #1b252f; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0e141a; --panel: #151d25; --line: #283541; --fg: #e2e8ee; --muted: #8d9cab;
+  --model: #8299ff; --tool: #3cc4ae; --env: #e6a04a; --danger: #ff7a6e; --soft: #1b252f; color-scheme: dark }
+* { box-sizing: border-box }
+html, body { height: 100% }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.6 var(--font-ui); display: flex; flex-direction: column }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel) }
+header h1 { font-size: 15px; margin: 0; letter-spacing: .02em }
+header .meta { color: var(--muted); font: 12px var(--font-mono) }
+header .spacer { flex: 1 }
+header a { color: var(--model); font-size: 13px }
+select, button, textarea { font: inherit; color: inherit }
+select { background: var(--soft); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px }
+button { background: var(--soft); border: 1px solid var(--line); border-radius: 6px; padding: 5px 12px; cursor: pointer }
+button.primary { background: var(--model); border-color: var(--model); color: #fff }
+button:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--model); outline-offset: 1px }
+main { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); min-height: 0 }
+@media (max-width: 860px) { main { grid-template-columns: 1fr; grid-auto-rows: minmax(60vh, auto) } body { height: auto } }
+.col { display: flex; flex-direction: column; min-height: 0; min-width: 0 }
+.col + .col { border-left: 1px solid var(--line) }
+#chat { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px }
+.msg { max-width: 100%; min-width: 0 }
+.msg.user { align-self: flex-end; background: var(--env); color: #fff; padding: 8px 12px; border-radius: 12px 12px 2px 12px; max-width: 85%; white-space: pre-wrap }
+.msg.assistant { white-space: pre-wrap; word-break: break-word }
+.msg.note { color: var(--muted); font-size: 12px; white-space: pre-wrap; font-family: var(--font-mono) }
+.msg.error { color: var(--danger); white-space: pre-wrap }
+.sub { margin-left: 18px; padding-left: 10px; border-left: 2px dashed var(--line) }
+.agent-tag { font: 11px var(--font-mono); color: var(--muted) }
+.tool { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden }
+.tool summary { cursor: pointer; padding: 6px 10px; display: flex; gap: 8px; align-items: baseline; font: 12.5px var(--font-mono); min-width: 0 }
+.tool summary .name { color: var(--tool); font-weight: 600 }
+.tool summary .arg { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 }
+.tool .st { font-size: 11px }
+.tool.err summary .name { color: var(--danger) }
+.tool pre { margin: 0; padding: 8px 10px; border-top: 1px solid var(--line); background: var(--soft); max-height: 260px; overflow: auto; font: 12px/1.5 var(--font-mono); white-space: pre-wrap; word-break: break-all }
+.perm { border: 1px solid var(--env); border-radius: 8px; padding: 10px; background: var(--soft) }
+.perm code { display: block; margin: 6px 0 8px; font: 12px var(--font-mono); white-space: pre-wrap; word-break: break-all }
+.perm .row { display: flex; gap: 8px; flex-wrap: wrap }
+.composer { border-top: 1px solid var(--line); padding: 10px 16px; display: flex; gap: 8px; background: var(--panel); align-items: flex-end }
+.composer textarea { flex: 1; min-width: 0; resize: none; height: 64px; border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: var(--bg) }
+.tabs { display: flex; gap: 2px; padding: 8px 12px 0; border-bottom: 1px solid var(--line); background: var(--panel); overflow-x: auto }
+.tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 6px 10px; color: var(--muted); white-space: nowrap }
+.tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--model) }
+.pane { flex: 1; overflow: auto; padding: 14px 16px }
+.hint { color: var(--muted); font-size: 12.5px; margin: 0 0 12px }
+.step { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 8px 10px; margin-bottom: 8px }
+.step h4 { margin: 0; font: 600 12.5px var(--font-mono); display: flex; flex-wrap: wrap; gap: 4px 12px }
+.step h4 .k { color: var(--model) }
+.step ul { margin: 6px 0 0; padding-left: 18px; font: 12px var(--font-mono) }
+.pill { font: 11px var(--font-mono); padding: 0 6px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted) }
+.pill.tool_use { color: var(--tool); border-color: var(--tool) }
+.pill.end_turn { color: var(--model); border-color: var(--model) }
+.meter { height: 8px; background: var(--soft); border: 1px solid var(--line); border-radius: 99px; overflow: hidden; margin: 6px 0 14px }
+.meter i { display: block; height: 100%; background: var(--model) }
+.jmsg { border-left: 3px solid var(--line); padding: 4px 0 4px 10px; margin-bottom: 10px }
+.jmsg.user { border-color: var(--env) } .jmsg.assistant { border-color: var(--model) }
+.jmsg .role { font: 600 11px var(--font-mono); text-transform: uppercase; letter-spacing: .06em }
+.jmsg.user .role { color: var(--env) } .jmsg.assistant .role { color: var(--model) }
+pre.code { margin: 4px 0 0; font: 12px/1.5 var(--font-mono); white-space: pre-wrap; word-break: break-word; background: var(--soft); padding: 8px; border-radius: 6px; overflow: auto }
+.todo { font-size: 14px; padding: 4px 0 }
+.todo.completed { color: var(--muted); text-decoration: line-through }
+.todo.in_progress { color: var(--model); font-weight: 600 }
+.empty { color: var(--muted); text-align: center; padding: 30px 10px }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important } }
+</style>
+</head>
+<body>
+<header>
+  <h1>nanocode</h1>
+  <span class="meta" id="meta">连接中…</span>
+  <span class="spacer"></span>
+  <label class="meta" for="mode">权限模式</label>
+  <select id="mode">
+    <option value="default">default · 写操作要确认</option>
+    <option value="accept_edits">accept_edits · 自动改文件</option>
+    <option value="plan">plan · 只读规划</option>
+    <option value="bypass">bypass · 全部放行</option>
+  </select>
+  <a href="/learn" target="_blank">架构学习页 ↗</a>
+</header>
+<main>
+  <section class="col" aria-label="对话">
+    <div id="chat"></div>
+    <form class="composer" id="form">
+      <textarea id="input" placeholder="让 Agent 做点什么…（Ctrl/⌘+Enter 发送；/help 查看命令；# 开头写入记忆）"></textarea>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <button class="primary" id="send" type="submit">发送</button>
+        <button id="stop" type="button" hidden>中断</button>
+      </div>
+    </form>
+  </section>
+  <section class="col" aria-label="Agent 内部">
+    <div class="tabs" role="tablist">
+      <button role="tab" data-tab="timeline" aria-selected="true">循环时间线</button>
+      <button role="tab" data-tab="context">上下文</button>
+      <button role="tab" data-tab="system">系统提示词</button>
+      <button role="tab" data-tab="tools">工具定义</button>
+      <button role="tab" data-tab="todos">待办</button>
+      <button role="tab" data-tab="raw">事件流</button>
+    </div>
+    <div class="pane" id="pane-timeline">
+      <p class="hint">每一张卡片 = Agent 循环转了一圈：调用一次模型 → 模型决定调用哪些工具 → 执行 → 结果回填。stop_reason 为 end_turn 时循环结束。</p>
+      <div id="timeline"></div>
+    </div>
+    <div class="pane" id="pane-context" hidden>
+      <p class="hint">这就是下一次调用模型时发送的 messages。模型"记得"的一切都在这里，此外别无记忆。</p>
+      <div id="ctxmeter"></div>
+      <button id="refresh" type="button">刷新</button>
+      <div id="messages" style="margin-top:12px"></div>
+    </div>
+    <div class="pane" id="pane-system" hidden>
+      <p class="hint">每次调用都会带上的系统提示词：角色、规则、环境信息、NANOCODE.md 记忆、技能目录。</p>
+      <pre class="code" id="system"></pre>
+    </div>
+    <div class="pane" id="pane-tools" hidden>
+      <p class="hint">模型看到的工具定义（名字、说明、参数 JSON Schema）。模型就是读这些说明来决定用哪个工具的。</p>
+      <div id="tools"></div>
+    </div>
+    <div class="pane" id="pane-todos" hidden><div id="todos"></div></div>
+    <div class="pane" id="pane-raw" hidden>
+      <p class="hint">原始事件（不含流式文字片段）。CLI、Web、trace 文件都只是这些事件的订阅者。</p>
+      <div id="raw"></div>
+    </div>
+  </section>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const chat = $("#chat");
+let lastSeq = 0, busy = false, currentText = {}, toolCards = {}, steps = {}, rawCount = 0;
+
+function scroll() { chat.scrollTop = chat.scrollHeight; }
+function host(agent) {
+  if (!agent || agent === "main") return chat;
+  let box = document.getElementById("sub-" + agent);
+  if (!box) {
+    box = document.createElement("div");
+    box.className = "sub"; box.id = "sub-" + agent;
+    box.innerHTML = `<div class="agent-tag">${esc(agent)}</div>`;
+    chat.append(box);
+  }
+  return box;
+}
+function add(cls, html, agent) {
+  const d = document.createElement("div");
+  d.className = "msg " + cls; d.innerHTML = html;
+  host(agent).append(d); scroll(); return d;
+}
+function argSummary(name, input) {
+  for (const k of ["command", "path", "pattern", "description", "name"]) if (input && k in input) return String(input[k]);
+  if (name === "todo_write") return (input.todos || []).length + " 项";
+  return JSON.stringify(input);
+}
+function setBusy(b) { busy = b; $("#send").disabled = b; $("#stop").hidden = !b; }
+
+function onEvent(e) {
+  if (e.type !== "text_delta") {
+    if (e.seq <= lastSeq) return;
+    lastSeq = e.seq; logRaw(e);
+  }
+  const a = e.agent || "main";
+  switch (e.type) {
+    case "user":
+      if (a === "main") { add("user", esc(e.text)); setBusy(true); }
+      currentText[a] = null; break;
+    case "text_delta":
+      if (!currentText[a]) currentText[a] = add("assistant", "", a);
+      currentText[a].textContent += e.text; scroll(); break;
+    case "llm_request":
+      currentText[a] = null;
+      steps[a + e.step] = { agent: a, step: e.step, tokens: e.context_tokens, window: e.context_window, tools: [] };
+      renderTimeline(); break;
+    case "llm_response": {
+      const text = e.content.filter((b) => b.type === "text").map((b) => b.text).join("");
+      if (text && !currentText[a]) currentText[a] = add("assistant", "", a);
+      if (currentText[a] && text) currentText[a].textContent = text;
+      currentText[a] = null;
+      const s = steps[a + e.step];
+      if (s) { s.stop = e.stop_reason; s.usage = e.usage; s.secs = e.seconds; s.calls = e.content.filter((b) => b.type === "tool_use").map((b) => b.name); }
+      renderTimeline(); break;
+    }
+    case "tool_call": {
+      const d = document.createElement("details");
+      d.className = "tool msg";
+      d.innerHTML = `<summary><span class="name">${esc(e.name)}</span><span class="arg">${esc(argSummary(e.name, e.input))}</span><span class="st">…</span></summary><pre>${esc(JSON.stringify(e.input, null, 2))}</pre>`;
+      host(a).append(d); toolCards[e.id] = d; scroll(); break;
+    }
+    case "permission": {
+      const c = toolCards[e.id];
+      if (c && e.behavior === "deny") c.querySelector(".st").textContent = "已拒绝";
+      break;
+    }
+    case "tool_result": {
+      const c = toolCards[e.id];
+      if (c) {
+        c.classList.toggle("err", e.is_error);
+        c.querySelector(".st").textContent = e.is_error ? "✗" : `✓ ${e.seconds}s`;
+        const pre = document.createElement("pre"); pre.textContent = e.content; c.append(pre);
+      }
+      break;
+    }
+    case "permission_request": {
+      const d = add("perm", `<b>允许 ${esc(e.name)} 吗？</b><code>${esc(e.target || JSON.stringify(e.input))}</code>
+        <div class="row"><button data-d="yes" class="primary">允许</button><button data-d="always">总是允许</button><button data-d="no">拒绝</button></div>`);
+      d.id = "perm-" + e.id;
+      d.querySelectorAll("button").forEach((b) => b.onclick = () => post("/api/permission", { id: e.id, decision: b.dataset.d }));
+      break;
+    }
+    case "permission_answer": {
+      const d = document.getElementById("perm-" + e.id);
+      if (d) d.querySelector(".row").innerHTML = `<span class="agent-tag">已回答：${esc(e.decision)}</span>`;
+      break;
+    }
+    case "todos": renderTodos(e.todos); break;
+    case "compact": add("note", `↻ 上下文${e.auto ? "自动" : ""}压缩：约 ${e.before} → ${e.after} tokens\n${e.summary}`); break;
+    case "hook": add("note", `⚓ hook[${e.hook}] ${e.message || e.warnings.join("\n")}`, a); break;
+    case "subagent_start": host("sub:" + e.description); break;
+    case "command": add("note", `${e.input}\n${e.output || ""}`); refreshState(); break;
+    case "error": add("error", "✗ " + esc(e.message), a); break;
+    case "turn_end":
+      if (a === "main") {
+        for (const s of Object.values(steps)) s.done = true;
+        setBusy(false);
+        add("note", `tokens 输入 ${e.usage.input_tokens} / 输出 ${e.usage.output_tokens}${e.usage.estimated ? "（估算）" : ""}`);
+        refreshState(); refreshContext();
+      }
+      break;
+  }
+}
+
+function renderTimeline() {
+  const list = Object.values(steps);
+  $("#timeline").innerHTML = list.length ? list.map((s) => `
+    <div class="step ${s.agent !== "main" ? "sub" : ""}">
+      <h4><span class="k">第 ${s.step} 圈</span><span>${esc(s.agent)}</span><span>上下文≈${s.tokens} tokens</span>
+        ${s.stop ? `<span class="pill ${s.stop}">${s.stop}</span>` : `<span class="pill">等待模型…</span>`}
+        ${s.secs != null ? `<span>${s.secs}s</span>` : ""}</h4>
+      ${s.calls && s.calls.length ? `<ul>${s.calls.map((n) => `<li>调用 ${esc(n)}</li>`).join("")}</ul>` : s.stop ? `<ul><li>没有工具调用 → 循环结束，回答用户</li></ul>` : ""}
+    </div>`).join("") : `<div class="empty">还没有开始。发一条消息，看看循环是怎么转起来的。</div>`;
+}
+function renderTodos(todos) {
+  const icon = { pending: "☐", in_progress: "◐", completed: "☑" };
+  $("#todos").innerHTML = todos && todos.length ? todos.map((t) => `<div class="todo ${t.status}">${icon[t.status]} ${esc(t.content)}</div>`).join("")
+    : `<div class="empty">暂无待办。复杂任务里，模型会用 todo_write 工具在这里列计划。</div>`;
+}
+function logRaw(e) {
+  const box = $("#raw");
+  const pre = document.createElement("pre"); pre.className = "code";
+  pre.textContent = JSON.stringify(e, null, 1).slice(0, 2000);
+  box.prepend(pre);
+  if (++rawCount > 300) box.lastChild.remove();
+}
+async function post(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}) });
+  return r.json();
+}
+async function refreshState() {
+  const s = await (await fetch("/api/state")).json();
+  $("#meta").textContent = `${s.provider}/${s.model} · ${s.cwd}`;
+  $("#mode").value = s.mode;
+  if (!s.busy) setBusy(false);
+  renderTodos(s.todos);
+}
+async function refreshContext() {
+  const c = await (await fetch("/api/context")).json();
+  $("#system").textContent = c.system;
+  $("#tools").innerHTML = c.tools.map((t) => `<details class="step"><summary><b style="color:var(--tool)">${esc(t.name)}</b> — ${esc(t.description.slice(0, 60))}…</summary><pre class="code">${esc(JSON.stringify(t, null, 2))}</pre></details>`).join("");
+  const s = await (await fetch("/api/state")).json();
+  const pct = Math.min(100, s.context_tokens / s.context_window * 100);
+  $("#ctxmeter").innerHTML = `<div class="hint">约 ${s.context_tokens} / ${s.context_window} tokens（${pct.toFixed(1)}%），${c.messages.length} 条消息。超过 80% 会自动压缩。</div><div class="meter"><i style="width:${pct}%"></i></div>`;
+  $("#messages").innerHTML = c.messages.length ? c.messages.map((m, i) => `<div class="jmsg ${m.role}"><div class="role">[${i}] ${m.role}</div><pre class="code">${esc(JSON.stringify(m.content, null, 2))}</pre></div>`).join("")
+    : `<div class="empty">messages 是空的</div>`;
+}
+
+document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => {
+  document.querySelectorAll(".tabs button").forEach((x) => x.setAttribute("aria-selected", x === b));
+  document.querySelectorAll(".pane").forEach((p) => p.hidden = p.id !== "pane-" + b.dataset.tab);
+  if (["context", "system", "tools"].includes(b.dataset.tab)) refreshContext();
+});
+$("#form").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const text = $("#input").value.trim();
+  if (!text || busy) return;
+  $("#input").value = "";
+  const r = await post("/api/chat", { message: text });
+  if (!r.ok) add("error", esc(r.error));
+  else if (r.output) add("note", esc(r.output));
+};
+$("#input").onkeydown = (ev) => { if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) $("#form").requestSubmit(); };
+$("#stop").onclick = () => post("/api/cancel");
+$("#refresh").onclick = refreshContext;
+$("#mode").onchange = () => post("/api/chat", { message: "/mode " + $("#mode").value });
+
+const es = new EventSource("/api/events");
+es.onmessage = (m) => onEvent(JSON.parse(m.data));
+renderTimeline(); renderTodos([]); refreshState(); refreshContext();
+</script>
+</body>
+</html>
