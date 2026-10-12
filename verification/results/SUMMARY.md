@@ -14,5 +14,5 @@
 | V08 | 真实模型：修 bug 完整流程（工具调用、权限、hooks、MCP） | 待验证 | | |
 | V09 | 真实模型：Anthropic 协议（可选） | 待验证 | | |
 | V10 | 真实模型：search_docs 与子 Agent | 待验证 | | |
-| V11 | RAG 向量 / 混合检索评测 | 待验证 | | |
+| V11 | RAG 向量 / 混合检索评测 | PARTIAL | 基线完成（bm25 R@3 91%）；无 embedding Key | results/V11.md |
 | V12 | Agent 任务评测（10 个任务） | 待验证 | | |
