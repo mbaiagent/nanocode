@@ -1,0 +1,712 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>nanocode 架构图解</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=JetBrains+Mono:wght@400;600&family=Noto+Sans+SC:wght@400;500;700;900&display=swap">
+<style>
+/* 版式：单栏工程手册。开篇即"单步模拟器"——Agent 就是一个循环；之后按模块逐章拆解。
+   颜色语义贯穿全页：钴蓝=模型，青绿=工具，赭黄=用户/环境，红=拒绝。 */
+:root {
+  --paper: #f1f3f5; --sheet: #fbfcfd; --ink: #121a22; --muted: #586674; --rule: #d2d9e0; --wash: #e6eaee;
+  --model: #2b4acb; --tool: #08776a; --env: #9c560b; --deny: #b4302a;
+  --model-wash: #e3e8fb; --tool-wash: #dcf1ee; --env-wash: #f6eadb; --deny-wash: #f8e1df;
+  --f-display: "Bricolage Grotesque", "Noto Sans SC", system-ui, sans-serif;
+  --f-body: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --paper: #0d1217; --sheet: #131a21; --ink: #e3e9ef; --muted: #8f9eac; --rule: #26323d; --wash: #1a232c;
+  --model: #8ea2ff; --tool: #41c7b2; --env: #e7a656; --deny: #ff7e72;
+  --model-wash: #1b2449; --tool-wash: #0f2e2a; --env-wash: #33240f; --deny-wash: #3a1916; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --paper: #0d1217; --sheet: #131a21; --ink: #e3e9ef; --muted: #8f9eac; --rule: #26323d; --wash: #1a232c;
+  --model: #8ea2ff; --tool: #41c7b2; --env: #e7a656; --deny: #ff7e72;
+  --model-wash: #1b2449; --tool-wash: #0f2e2a; --env-wash: #33240f; --deny-wash: #3a1916; color-scheme: dark }
+
+* { box-sizing: border-box }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.75 var(--f-body); -webkit-font-smoothing: antialiased }
+.wrap { max-width: 1120px; margin: 0 auto; padding-inline: 20px; padding-block: 0 80px }
+@media (max-width: 480px) { .wrap { padding-inline: 16px } }
+h1, h2, h3 { text-wrap: balance; line-height: 1.25; margin: 0 }
+p { margin: 0 }
+code, pre, .mono { font-family: var(--f-mono) }
+a { color: var(--model) }
+button { font: inherit; color: inherit; cursor: pointer }
+:focus-visible { outline: 2px solid var(--model); outline-offset: 2px }
+
+/* ---------- 顶部 ---------- */
+.masthead { padding-block: 40px 28px; display: grid; gap: 18px; border-bottom: 1px solid var(--rule) }
+.eyebrow { font: 600 12px/1 var(--f-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted) }
+.masthead h1 { font: 900 clamp(30px, 6vw, 54px)/1.1 var(--f-display); letter-spacing: -.01em }
+.masthead h1 em { font-style: normal; color: var(--model) }
+.lede { max-width: 62ch; color: var(--muted); font-size: 16px }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px }
+.legend span { display: inline-flex; align-items: center; gap: 6px }
+.legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block }
+
+nav.toc { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--paper); border-bottom: 1px solid var(--rule);
+  display: flex; gap: 4px; overflow-x: auto; padding-block: 8px; scrollbar-width: none }
+nav.toc a { flex: none; text-decoration: none; color: var(--muted); font-size: 13px; padding: 4px 10px; border-radius: 99px }
+nav.toc a:hover { color: var(--ink); background: var(--wash) }
+
+section.chapter { padding-block: 48px 8px; display: grid; gap: 18px }
+.chapter-head { display: grid; gap: 8px; max-width: 70ch }
+.chapter-head .num { font: 800 13px/1 var(--f-display); color: var(--model); letter-spacing: .04em }
+.chapter-head h2 { font: 800 clamp(22px, 3.4vw, 30px)/1.25 var(--f-body) }
+.chapter-head p { color: var(--muted) }
+.src { font: 12px var(--f-mono); color: var(--muted) }
+.src b { color: var(--ink); font-weight: 600 }
+
+/* ---------- 单步模拟器 ---------- */
+.sim { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: 16px; align-items: start }
+@media (max-width: 860px) { .sim { grid-template-columns: 1fr } }
+.panel { background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; min-width: 0 }
+.panel-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--rule); font: 600 12px var(--f-mono); color: var(--muted); letter-spacing: .04em }
+.scen { display: flex; flex-wrap: wrap; gap: 6px }
+.scen button { border: 1px solid var(--rule); background: var(--sheet); border-radius: 99px; padding: 3px 12px; font-size: 13px }
+.scen button[aria-pressed="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink) }
+.loopcode { margin: 0; padding: 12px 0; font: 13px/1.9 var(--f-mono); overflow-x: auto }
+.loopcode div { padding: 0 14px; white-space: pre; border-left: 3px solid transparent; transition: background .2s }
+.loopcode div .c { color: var(--muted) }
+.loopcode div.on { background: var(--model-wash); border-left-color: var(--model) }
+.stages { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; padding: 12px 14px; border-top: 1px solid var(--rule) }
+.stage { text-align: center; font-size: 11.5px; line-height: 1.35; padding: 8px 2px; border-radius: 6px; background: var(--wash); color: var(--muted); transition: all .2s }
+.stage b { display: block; font: 800 16px/1.2 var(--f-display) }
+.stage.on { background: var(--ink); color: var(--paper) }
+.narr { padding: 14px; border-top: 1px solid var(--rule); display: grid; gap: 8px; min-height: 150px }
+.narr h3 { font-size: 16px; font-weight: 700 }
+.narr p { font-size: 14px }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--rule) }
+.controls button { border: 1px solid var(--rule); background: var(--sheet); border-radius: 8px; padding: 6px 14px; font-size: 14px }
+.controls button.primary { background: var(--model); border-color: var(--model); color: #fff }
+.controls .count { margin-left: auto; font: 12px var(--f-mono); color: var(--muted); font-variant-numeric: tabular-nums }
+.progress { height: 3px; background: var(--wash) }
+.progress i { display: block; height: 100%; background: var(--model); transition: width .25s }
+
+.ctxbar { padding: 10px 14px; border-bottom: 1px solid var(--rule); display: grid; gap: 6px }
+.ctxbar .row { display: flex; justify-content: space-between; font: 12px var(--f-mono); color: var(--muted); font-variant-numeric: tabular-nums }
+.ctxbar .bar { height: 8px; border-radius: 99px; background: var(--wash); overflow: hidden; display: flex }
+.ctxbar .bar i { display: block; height: 100% }
+.msgs { padding: 12px 14px; display: grid; gap: 10px; max-height: 620px; overflow-y: auto }
+.msg { border-radius: 8px; border: 1px solid var(--rule); background: var(--sheet); overflow: hidden; min-width: 0 }
+.msg.fresh { animation: drop .45s ease-out }
+@keyframes drop { from { transform: translateY(-6px); box-shadow: 0 0 0 3px var(--model-wash) } to { transform: none; box-shadow: none } }
+.msg-h { display: flex; justify-content: space-between; gap: 8px; padding: 4px 10px; font: 600 11px var(--f-mono); letter-spacing: .06em; text-transform: uppercase }
+.msg.user .msg-h { background: var(--env-wash); color: var(--env) }
+.msg.assistant .msg-h { background: var(--model-wash); color: var(--model) }
+.msg-h span:last-child { font-weight: 400; text-transform: none; letter-spacing: 0; opacity: .8 }
+.blk { padding: 6px 10px; font-size: 13.5px; border-top: 1px dashed var(--rule); min-width: 0 }
+.blk:first-of-type { border-top: 0 }
+.blk .t { font: 600 11px var(--f-mono); margin-right: 6px }
+.blk.text .t { color: var(--muted) }
+.blk.tool_use .t { color: var(--tool) }
+.blk.tool_result .t { color: var(--env) }
+.blk.err .t, .blk.err { color: var(--deny) }
+.blk pre { margin: 4px 0 0; font: 12px/1.5 var(--f-mono); white-space: pre-wrap; word-break: break-word; color: var(--ink) }
+.blk.err pre { color: var(--deny) }
+.idx { color: var(--muted) }
+.empty-msgs { color: var(--muted); font-size: 13px; text-align: center; padding: 24px 8px }
+
+/* ---------- 架构地图 ---------- */
+.map { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px }
+@media (max-width: 760px) { .map { grid-template-columns: repeat(2, minmax(0, 1fr)) } }
+.mod { text-align: left; border: 1px solid var(--rule); background: var(--sheet); border-radius: 8px; padding: 10px 12px; display: grid; gap: 2px; min-width: 0 }
+.mod .f { font: 12px var(--f-mono); color: var(--muted); overflow-wrap: anywhere }
+.mod .n { font-weight: 700; font-size: 14.5px }
+.mod.core { border-color: var(--model); background: var(--model-wash) }
+.mod[aria-pressed="true"] { outline: 2px solid var(--ink); outline-offset: -1px }
+.mod .k { font: 600 10.5px var(--f-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted) }
+.detail { padding: 16px; display: grid; gap: 10px }
+.detail h3 { font-size: 18px }
+.detail dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; margin: 0; font-size: 14px }
+.detail dt { color: var(--muted) }
+.detail dd { margin: 0; min-width: 0 }
+
+/* ---------- 协议翻译 ---------- */
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--rule); padding: 0 10px; overflow-x: auto }
+.tabs button { border: 0; background: none; padding: 9px 12px; border-bottom: 2px solid transparent; color: var(--muted); font-size: 14px; white-space: nowrap }
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--model) }
+.codebox { margin: 0; padding: 14px; font: 12.5px/1.65 var(--f-mono); overflow-x: auto; white-space: pre }
+.codebox .hl { background: var(--tool-wash); color: var(--tool) }
+.notes { padding: 12px 14px; border-top: 1px solid var(--rule); font-size: 14px; color: var(--muted) }
+
+/* ---------- 权限决策 ---------- */
+.perm { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 16px; align-items: start }
+@media (max-width: 760px) { .perm { grid-template-columns: 1fr } }
+.form { padding: 14px; display: grid; gap: 12px }
+.form label { font-size: 13px; color: var(--muted); display: grid; gap: 4px }
+.form select, .form input { font: 14px var(--f-body); color: var(--ink); background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; padding: 6px 8px; width: 100% }
+.ladder { padding: 10px 14px; display: grid; gap: 6px; counter-reset: rung }
+.rung { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 6px; font-size: 14px; color: var(--muted); border: 1px solid transparent }
+.rung::before { counter-increment: rung; content: counter(rung); font: 800 13px var(--f-display); text-align: center }
+.rung .res { font: 600 12px var(--f-mono) }
+.rung.pass { color: var(--ink) }
+.rung.pass .res { color: var(--muted) }
+.rung.hit { color: var(--ink); font-weight: 600; border-color: currentColor }
+.rung.hit.allow { background: var(--tool-wash); color: var(--tool) }
+.rung.hit.deny { background: var(--deny-wash); color: var(--deny) }
+.rung.hit.ask { background: var(--env-wash); color: var(--env) }
+.rung.skip { opacity: .4 }
+.verdict { padding: 12px 14px; border-top: 1px solid var(--rule); font-size: 14px }
+
+/* ---------- 上下文 ---------- */
+.ctxdemo { padding: 16px; display: grid; gap: 14px }
+.window { display: flex; height: 44px; border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; background: var(--wash); position: relative }
+.window i { display: block; height: 100%; border-right: 1px solid var(--sheet); transition: width .3s }
+.window .limit { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px dashed var(--deny) }
+.window .limit span { position: absolute; top: -1px; left: 4px; font: 600 10px var(--f-mono); color: var(--deny); white-space: nowrap }
+.ctx-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--muted) }
+.ctx-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px }
+.ctx-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center }
+.ctx-row button { border: 1px solid var(--rule); background: var(--sheet); border-radius: 8px; padding: 6px 12px; font-size: 14px }
+.ctx-log { font: 12.5px/1.6 var(--f-mono); color: var(--muted); min-height: 3.2em }
+
+/* ---------- 表格与列表 ---------- */
+.tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 10px; background: var(--sheet) }
+table { border-collapse: collapse; width: 100%; font-size: 14px; min-width: 620px }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--rule); vertical-align: top }
+th { font: 600 12px var(--f-mono); letter-spacing: .04em; color: var(--muted); background: var(--wash) }
+tr:last-child td { border-bottom: 0 }
+td code { font-size: 12.5px; color: var(--tool) }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px }
+.card { padding: 14px 16px; display: grid; gap: 6px; align-content: start }
+.card h3 { font-size: 15.5px }
+.card p, .card li { font-size: 14px; color: var(--muted) }
+.card ol, .card ul { margin: 0; padding-left: 20px }
+.cmd { display: flex; gap: 8px; align-items: center; background: var(--ink); color: var(--paper); border-radius: 8px; padding: 8px 8px 8px 12px; font: 13px var(--f-mono); min-width: 0 }
+.cmd code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap }
+.cmd button { flex: none; border: 1px solid color-mix(in srgb, var(--paper) 30%, transparent); background: none; color: var(--paper); border-radius: 6px; padding: 2px 8px; font-size: 12px }
+footer { margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--muted) }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="masthead">
+  <div class="eyebrow">nanocode · 学习手册</div>
+  <h1>一个 Agent，<br>就是一个 <em>while</em> 循环</h1>
+  <p class="lede">这一页配合 nanocode 源码使用。先用下面的单步模拟器看清循环怎么转，再逐个拆开权限、上下文、子 Agent、MCP 这些围绕循环搭起来的部件。每一节都标了对应的源码文件。</p>
+  <div class="legend" aria-label="颜色图例">
+    <span><i style="background:var(--env)"></i>用户 / 环境反馈</span>
+    <span><i style="background:var(--model)"></i>模型</span>
+    <span><i style="background:var(--tool)"></i>工具调用</span>
+    <span><i style="background:var(--deny)"></i>拒绝 / 错误</span>
+  </div>
+</header>
+
+<nav class="toc" aria-label="章节">
+  <a href="#loop">循环模拟器</a><a href="#map">架构地图</a><a href="#protocol">协议翻译</a>
+  <a href="#perm">权限决策</a><a href="#context">上下文与压缩</a><a href="#compare">对照 Claude Code</a><a href="#start">开始动手</a>
+</nav>
+
+<!-- ======================================================= 1 循环 -->
+<section class="chapter" id="loop">
+  <div class="chapter-head">
+    <span class="num">第 1 节 · 核心</span>
+    <h2>单步模拟器：看 messages 一条条长出来</h2>
+    <p>左边是循环的全部逻辑，右边是模型每次能看到的全部内容。模型没有任何别的记忆，它"知道"的一切都在右边这个数组里。</p>
+    <span class="src">源码：<b>nanocode/agent.py</b> · Agent._run</span>
+  </div>
+  <div class="sim">
+    <div class="panel">
+      <div class="panel-h"><span>场景</span>
+        <div class="scen" role="group" aria-label="选择场景">
+          <button data-s="fix" aria-pressed="true">修 bug</button>
+          <button data-s="deny">权限被拒</button>
+          <button data-s="sub">子 Agent</button>
+        </div>
+      </div>
+      <div class="loopcode" id="code"></div>
+      <div class="stages" id="stages"></div>
+      <div class="narr" aria-live="polite"><h3 id="narr-t"></h3><p id="narr-p"></p><span class="src" id="narr-src"></span></div>
+      <div class="progress"><i id="prog"></i></div>
+      <div class="controls">
+        <button id="prev">← 上一步</button>
+        <button id="next" class="primary">下一步 →</button>
+        <button id="play">自动播放</button>
+        <span class="count" id="count"></span>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-h"><span>messages（下一次发给模型的内容）</span><span id="msgn" class="mono"></span></div>
+      <div class="ctxbar">
+        <div class="row"><span>上下文占用（示意）</span><span id="ctxn"></span></div>
+        <div class="bar" id="ctxbar"></div>
+      </div>
+      <div class="msgs" id="msgs"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================================================= 2 地图 -->
+<section class="chapter" id="map">
+  <div class="chapter-head">
+    <span class="num">第 2 节</span>
+    <h2>架构地图：循环周围的每个部件</h2>
+    <p>点一个模块看它负责什么、关键函数是哪个、对应 Claude Code 的什么功能。</p>
+  </div>
+  <div class="map" id="mods"></div>
+  <div class="panel detail" id="mod-detail" aria-live="polite"></div>
+</section>
+
+<!-- ======================================================= 3 协议 -->
+<section class="chapter" id="protocol">
+  <div class="chapter-head">
+    <span class="num">第 3 节</span>
+    <h2>协议翻译：为什么能接任何一家模型</h2>
+    <p>Agent 循环只认一种内部格式。每家模型一个 Provider，负责双向翻译。同一段对话，切换下面的标签对比三种写法。高亮处是工具调用相关的差异。</p>
+    <span class="src">源码：<b>nanocode/messages.py</b> · <b>llm/anthropic.py</b> · <b>llm/openai_compat.py</b></span>
+  </div>
+  <div class="panel">
+    <div class="tabs" role="tablist" id="ptabs">
+      <button role="tab" data-p="unified" aria-selected="true">nanocode 内部格式</button>
+      <button role="tab" data-p="anthropic">Anthropic Messages</button>
+      <button role="tab" data-p="openai">OpenAI Chat Completions</button>
+    </div>
+    <pre class="codebox" id="pcode"></pre>
+    <div class="notes" id="pnote"></div>
+  </div>
+</section>
+
+<!-- ======================================================= 4 权限 -->
+<section class="chapter" id="perm">
+  <div class="chapter-head">
+    <span class="num">第 4 节</span>
+    <h2>权限决策：模型想做，不等于能做</h2>
+    <p>每个工具调用在执行前都要沿着这张梯子往下走，先命中的那一级说了算。改左边的条件，看结果怎么变。</p>
+    <span class="src">源码：<b>nanocode/permissions.py</b> · PermissionManager.check</span>
+  </div>
+  <div class="perm">
+    <div class="panel form">
+      <label for="p-tool">工具调用
+        <select id="p-tool">
+          <option value="read_file|src/app.py">read_file("src/app.py")</option>
+          <option value="read_file|~/.ssh/id_rsa">read_file("~/.ssh/id_rsa")</option>
+          <option value="edit_file|src/app.py" selected>edit_file("src/app.py")</option>
+          <option value="write_file|.env">write_file(".env")</option>
+          <option value="bash|git status -s">bash("git status -s")</option>
+          <option value="bash|python -m pytest">bash("python -m pytest")</option>
+          <option value="bash|rm -rf build">bash("rm -rf build")</option>
+        </select>
+      </label>
+      <label for="p-mode">权限模式
+        <select id="p-mode">
+          <option value="default">default</option>
+          <option value="accept_edits">accept_edits</option>
+          <option value="plan">plan</option>
+          <option value="bypass">bypass</option>
+        </select>
+      </label>
+      <label for="p-allow">allow 规则
+        <input id="p-allow" value="bash(git status*)">
+      </label>
+      <label for="p-deny">deny 规则
+        <input id="p-deny" value="bash(rm -rf*), write_file(*.env)">
+      </label>
+    </div>
+    <div class="panel">
+      <div class="ladder" id="ladder"></div>
+      <div class="verdict" id="verdict"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================================================= 5 上下文 -->
+<section class="chapter" id="context">
+  <div class="chapter-head">
+    <span class="num">第 5 节</span>
+    <h2>上下文窗口：会满，所以要压缩</h2>
+    <p>Agent 每走一步，工具结果都会追加进上下文。读几个大文件、跑几次测试，窗口很快就用掉一大半。nanocode 在每圈循环开始前检查：超过 80% 就把旧回合交给模型写成摘要，保留最近一个回合原样不动。</p>
+    <span class="src">源码：<b>nanocode/context.py</b> · compact_messages、find_compact_split</span>
+  </div>
+  <div class="panel ctxdemo">
+    <div class="window" id="win"><div class="limit" style="left:80%"><span>80% 自动压缩线</span></div></div>
+    <div class="ctx-legend">
+      <span><i style="background:var(--muted)"></i>system + 工具定义</span>
+      <span><i style="background:var(--env)"></i>摘要</span>
+      <span><i style="background:var(--model)"></i>旧回合</span>
+      <span><i style="background:var(--tool)"></i>当前回合</span>
+    </div>
+    <div class="ctx-row">
+      <button id="c-read">读一个大文件 (+9k)</button>
+      <button id="c-test">跑一次测试 (+4k)</button>
+      <button id="c-turn">用户开始新任务</button>
+      <button id="c-reset">重置</button>
+    </div>
+    <div class="ctx-log" id="clog" aria-live="polite"></div>
+  </div>
+  <div class="cols">
+    <div class="panel card"><h3>切分点只能落在"人说的话"上</h3><p>如果切在 tool_use 和 tool_result 之间，保留下来的第一条是找不到对应调用的工具结果，API 会直接报错。这是实现压缩时最常见的 bug。</p></div>
+    <div class="panel card"><h3>摘要要写具体</h3><p>目标、已改的文件、跑过的命令和结果、走过的弯路、下一步。路径和报错原样保留，否则接手后又得重新探索一遍。</p></div>
+    <div class="panel card"><h3>能不进上下文就不进</h3><p>压缩是有损的。更好的办法是输出截断、分段读文件、大搜索交给子 Agent、换任务时 /clear。</p></div>
+  </div>
+</section>
+
+<!-- ======================================================= 6 对照 -->
+<section class="chapter" id="compare">
+  <div class="chapter-head">
+    <span class="num">第 6 节</span>
+    <h2>对照 Claude Code</h2>
+    <p>nanocode 依据 Claude Code 的公开文档和可观察行为编写，不来自其源代码。Claude Code 持续更新，细节以官方文档为准。</p>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>它解决的问题</th><th>Claude Code</th><th>nanocode</th><th>源码</th></tr></thead>
+      <tbody id="cmp"></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ======================================================= 7 开始 -->
+<section class="chapter" id="start">
+  <div class="chapter-head">
+    <span class="num">第 7 节</span>
+    <h2>开始动手</h2>
+    <p>不需要 API Key 就能跑：默认的 Mock 模型会按固定剧本演示一遍完整循环。Web 界面右侧的面板能实时看到每一圈循环和完整上下文。</p>
+  </div>
+  <div class="cols">
+    <div class="panel card">
+      <h3>跑起来</h3>
+      <div class="cmd"><code>python3 -m nanocode --web</code><button data-copy>复制</button></div>
+      <div class="cmd"><code>python3 -m unittest discover -s tests</code><button data-copy>复制</button></div>
+      <p>然后打开 http://127.0.0.1:8765</p>
+    </div>
+    <div class="panel card">
+      <h3>接真实模型</h3>
+      <div class="cmd"><code>nanocode --provider deepseek --model deepseek-chat</code><button data-copy>复制</button></div>
+      <div class="cmd"><code>nanocode --provider custom --protocol openai --base-url https://你的地址/v1 --model 模型名</code><button data-copy>复制</button></div>
+      <p>Key 放在对应环境变量里，例如 DEEPSEEK_API_KEY。</p>
+    </div>
+    <div class="panel card">
+      <h3>7 个晚上的路线</h3>
+      <ol>
+        <li>Mock 模型 + Web 面板，读 agent.py</li>
+        <li>消息格式与两个 Provider</li>
+        <li>接真实模型，读 tools/</li>
+        <li>三种权限模式，写一个 Hook</li>
+        <li>NANOCODE.md 与自动压缩</li>
+        <li>子 Agent、Skill、自定义命令</li>
+        <li>接 MCP 服务器，做 docs/09 的练习</li>
+      </ol>
+    </div>
+  </div>
+  <footer>nanocode · 纯 Python 标准库 · 依据公开资料编写的教学实现</footer>
+</section>
+</div>
+
+<script>
+(() => {
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+/* ===================================================== 1 模拟器 */
+const CODE = [
+  ['messages = [用户的请求]', ''],
+  ['while True:', ''],
+  ['    回复 = 模型(system, messages, tools)', '# ① 调用模型'],
+  ['    messages.append(回复)', '# ② 记下回复'],
+  ['    if 回复里没有工具调用:', '# ③ 判断'],
+  ['        return 回复的文字', '#    结束'],
+  ['    for 调用 in 回复里的工具调用:', ''],
+  ['        权限检查 → hook → 执行 → 截断', '# ④ 执行'],
+  ['    messages.append(工具结果)', '# ⑤ 以 user 身份回填'],
+];
+const STAGES = [["①", "调用模型"], ["②", "记下回复"], ["③", "有工具调用？"], ["④", "权限与执行"], ["⑤", "回填结果"]];
+const lineStage = { 0: -1, 2: 0, 3: 1, 4: 2, 5: 2, 7: 3, 8: 4 };
+
+const U = (blocks) => ({ role: "user", blocks });
+const A = (blocks) => ({ role: "assistant", blocks });
+const T = (text) => ({ type: "text", text });
+const TU = (name, input) => ({ type: "tool_use", name, input });
+const TR = (content, err) => ({ type: "tool_result", content, err });
+
+const SCEN = {
+  fix: { sys: 2.1, steps: [
+    { line: 0, add: U([T("calc.py 里的 average 好像有 bug，修一下")]), tok: 0.05,
+      t: "用户提出请求", p: "循环开始前，messages 里只有一条用户消息。注意 system 提示词和工具定义不在 messages 里，它们是每次调用时单独附带的参数。", s: "agent.py · _run → _append_user" },
+    { line: 2, t: "第 1 圈：调用模型", p: "发送 system + messages + 9 个工具的定义。模型不知道有 Python 代码在执行工具，它只看到一组 JSON 描述的'可用动作'。回复以流式返回，文字一边生成一边显示。", s: "llm/*.py · Provider.complete" },
+    { line: 3, add: A([T("我先看看代码和测试。"), TU("read_file", { path: "calc.py" }), TU("read_file", { path: "test_calc.py" })]), tok: 0.12,
+      t: "模型返回：一段文字 + 两个工具调用", p: "一个回复里可以有多个内容块。这里模型决定同时读两个文件。stop_reason 是 tool_use，说明它还没做完。", s: "agent.py · assistant_message" },
+    { line: 4, t: "有工具调用 → 继续", p: "判断循环是否结束的唯一依据：回复里有没有 tool_use。程序没有写死任何流程，下一步做什么完全由模型决定。", s: "agent.py · tool_uses()" },
+    { line: 7, t: "执行：两个只读工具并行", p: "read_file 是只读工具，在工作目录内直接放行。两个调用都是只读的，所以用线程池并行执行。读取结果带行号，模型后面可以说'第 9 行有问题'。", s: "agent.py · _run_tools · tools/files.py" },
+    { line: 8, add: U([TR("1\t\"\"\"一个故意留了 bug 的小模块\"\"\"\n…\n8\tdef average(numbers):\n9\t    return sum(numbers) / len(numbers) - 1"), TR("…\n13\t    def test_average_empty(self):\n14\t        self.assertEqual(average([]), 0)")]), tok: 0.9,
+      t: "结果以 user 身份回填", p: "对模型而言对话只有两方：它自己和外部世界。工具输出是外部世界的反馈，所以放在 user 一侧，并用 tool_use_id 和调用一一配对。", s: "messages.py · tool_result_block" },
+    { line: 2, t: "第 2 圈：再次调用模型", p: "这次 messages 多了两条。Agent 每走一步都要把全部历史重新发一遍，所以上下文只增不减，这也是 Prompt Caching 对 Agent 特别重要的原因。", s: "llm/anthropic.py · cache_control" },
+    { line: 3, add: A([T("问题有两个：多减了 1，空列表会除零。"), TU("edit_file", { path: "calc.py", old_string: "    return sum(numbers) / len(numbers) - 1", new_string: "    if not numbers:\n        return 0\n    return sum(numbers) / len(numbers)" })]), tok: 0.2,
+      t: "模型决定修改文件", p: "edit_file 只需要给出要替换的那一小段。old_string 必须在文件中唯一出现，而且这个文件必须先读过，否则拒绝执行。", s: "tools/files.py · EditFile" },
+    { line: 7, t: "权限：写操作需要确认", p: "default 模式下，修改文件要用户点头。用户点了'允许'。如果是 accept_edits 模式，工作目录内的编辑会自动放行。", s: "permissions.py · resolve → ask_fn" },
+    { line: 8, add: U([TR("已修改 calc.py（替换 1 处，约第 9 行）")]), tok: 0.05, t: "回填修改结果", p: "结果很短，但足够让模型确认修改成功。", s: "tools/files.py" },
+    { line: 3, add: A([T("改好了，跑一下测试确认。"), TU("bash", { command: "python3 -m unittest test_calc -v" })]), tok: 0.08,
+      t: "第 3 圈：模型主动验证", p: "系统提示词里写了'改完要验证'。这条命令命中了 allow 规则 bash(python3 -m unittest*)，所以不用再问用户。", s: "context.py · BASE_PROMPT" },
+    { line: 8, add: U([TR("test_add ... ok\ntest_average ... ok\ntest_average_empty ... ok\n\nRan 3 tests in 0.001s\nOK")]), tok: 0.15, t: "测试通过", p: "命令输出（包括失败信息）都会原样交给模型。测试失败对模型来说是有用的信息，所以非 0 退出码不算工具错误。", s: "tools/shell.py · Bash" },
+    { line: 3, add: A([T("已修复 calc.py:9：去掉多余的 - 1，并在空列表时返回 0。相关测试全部通过。")]), tok: 0.05,
+      t: "第 4 圈：只有文字，没有工具调用", p: "stop_reason 变成 end_turn。", s: "agent.py" },
+    { line: 5, t: "循环结束", p: "4 次模型调用、4 次工具执行、1 次用户确认。整个过程中程序只做了三件事：执行模型要求的动作、把结果交还给模型、把守安全边界。", s: "agent.py · turn_end 事件" },
+  ]},
+  deny: { sys: 2.1, steps: [
+    { line: 0, add: U([T("帮我把构建产物清理掉")]), tok: 0.04, t: "一个有歧义的请求", p: "'清理'可以有很多种理解。这正是需要权限系统的场景。", s: "" },
+    { line: 2, t: "调用模型", p: "", s: "" },
+    { line: 3, add: A([T("好的，删除 build 和 dist 目录。"), TU("bash", { command: "rm -rf build dist" })]), tok: 0.06, t: "模型想执行删除命令", p: "", s: "" },
+    { line: 7, t: "命中 deny 规则", p: "settings.json 里配置了 deny: bash(rm -rf*)。deny 优先于一切，即使在 bypass 模式下也会拦截。如果配了 PreToolUse hook，也可以在这里用退出码 2 拦截。", s: "permissions.py · check 第 1 级" },
+    { line: 8, add: U([TR("权限被拒绝：命中 deny 规则", true)]), tok: 0.03, t: "拒绝也要回填结果", p: "每个 tool_use 都必须有对应的 tool_result，否则下次调用 API 会报错。拒绝的原因作为 is_error 结果交给模型。用户直接拒绝时，结果里还会加一句'不要换个方式绕过'。", s: "agent.py · _prepare" },
+    { line: 2, t: "调用模型", p: "", s: "" },
+    { line: 3, add: A([T("删除命令被权限规则拦截了。你可以手动运行 rm -rf build dist，或者告诉我只删除哪些文件。")]), tok: 0.05, t: "模型读懂了拒绝，转而询问用户", p: "Agent 没有崩溃，也没有绕过限制。错误信息写得清楚，模型就能做出合理的下一步。", s: "" },
+    { line: 5, t: "循环结束", p: "", s: "" },
+  ]},
+  sub: { sys: 2.1, steps: [
+    { line: 0, add: U([T("找出所有调用 send_email 但没做异常处理的地方")]), tok: 0.04, t: "一个需要大量阅读的问题", p: "要回答它，可能得 grep 一次、读十几个文件。这些文件内容如果都进入主上下文，会占掉大量空间，而主任务只需要最后的结论。", s: "" },
+    { line: 2, t: "调用模型", p: "", s: "" },
+    { line: 3, add: A([TU("task", { description: "查找 send_email", prompt: "找出所有调用 send_email 且没有 try/except 包裹的位置，返回 文件:行号 列表" })]), tok: 0.06,
+      t: "模型把子任务派给子 Agent", p: "task 工具会新建一个 Agent：messages 为空，只放入这段任务说明；去掉 task 工具防止无限嵌套；和主 Agent 共用权限管理器。", s: "agent.py · _run_subagent" },
+    { line: 7, t: "子 Agent 在自己的上下文里工作", p: "子 Agent 调用了 grep 1 次、read_file 12 次，它自己的 messages 涨到 27 条、约 2 万 tokens。这些都不会出现在主 Agent 的上下文里，用完即丢。", s: "tools/planning.py · Task" },
+    { line: 8, add: U([TR("共 3 处没有异常处理：\nmailer/signup.py:41\njobs/digest.py:88\napi/invite.py:17")]), tok: 0.04,
+      t: "主上下文只多了几行结论", p: "主 Agent 收到的工具结果就是子 Agent 的最终回复。上下文占用几乎没变，这就是子 Agent 的意义。", s: "" },
+    { line: 3, add: A([T("找到 3 处：mailer/signup.py:41、jobs/digest.py:88、api/invite.py:17。需要我给它们加上重试和异常处理吗？")]), tok: 0.05, t: "回答用户", p: "", s: "" },
+    { line: 5, t: "循环结束", p: "", s: "" },
+  ]},
+};
+
+let scen = "fix", cur = -1, timer = null;
+const codeEl = $("#code"), stagesEl = $("#stages"), msgsEl = $("#msgs");
+codeEl.innerHTML = CODE.map(([c, cm]) => `<div>${esc(c)}${cm ? `  <span class="c">${esc(cm)}</span>` : ""}</div>`).join("");
+stagesEl.innerHTML = STAGES.map(([n, l]) => `<div class="stage"><b>${n}</b>${l}</div>`).join("");
+
+function renderBlock(b) {
+  if (b.type === "text") return `<div class="blk text"><span class="t">text</span>${esc(b.text)}</div>`;
+  if (b.type === "tool_use") return `<div class="blk tool_use"><span class="t">tool_use · ${esc(b.name)}</span><pre>${esc(JSON.stringify(b.input, null, 1))}</pre></div>`;
+  return `<div class="blk tool_result${b.err ? " err" : ""}"><span class="t">tool_result${b.err ? " · is_error" : ""}</span><pre>${esc(b.content)}</pre></div>`;
+}
+function render(fresh) {
+  const S = SCEN[scen], steps = S.steps;
+  const step = cur >= 0 ? steps[cur] : null;
+  [...codeEl.children].forEach((d, i) => d.classList.toggle("on", !!step && step.line === i));
+  const st = step ? lineStage[step.line] : -1;
+  [...stagesEl.children].forEach((d, i) => d.classList.toggle("on", i === st));
+  $("#narr-t").textContent = step ? step.t : "点「下一步」开始";
+  $("#narr-p").textContent = step ? (step.p || "") : "每点一次，循环前进一步。注意观察右侧 messages 什么时候增加、增加的是什么角色。";
+  $("#narr-src").textContent = step && step.s ? "源码：" + step.s : "";
+  const msgs = steps.slice(0, cur + 1).filter((x) => x.add);
+  msgsEl.innerHTML = msgs.length ? msgs.map((x, i) => {
+    const m = x.add, isNew = fresh && x === step;
+    return `<div class="msg ${m.role}${isNew ? " fresh" : ""}"><div class="msg-h"><span><span class="idx">[${i}]</span> ${m.role}</span><span>≈${Math.round(x.tok * 10) / 10}k tokens</span></div>${m.blocks.map(renderBlock).join("")}</div>`;
+  }).join("") : `<div class="empty-msgs">messages = []</div>`;
+  if (fresh && step && step.add) msgsEl.scrollTop = msgsEl.scrollHeight;
+  const used = msgs.reduce((a, x) => a + x.tok, 0);
+  const W = 128, pct = (v) => (v / W * 100).toFixed(2) + "%";
+  $("#ctxbar").innerHTML = `<i style="width:${pct(S.sys)};background:var(--muted)"></i><i style="width:${pct(used)};background:var(--model)"></i>`;
+  $("#ctxn").textContent = `${(S.sys + used).toFixed(1)}k / ${W}k`;
+  $("#msgn").textContent = `${msgs.length} 条`;
+  $("#count").textContent = `${cur + 1} / ${steps.length}`;
+  $("#prog").style.width = ((cur + 1) / steps.length * 100) + "%";
+  $("#prev").disabled = cur < 0;
+  $("#next").disabled = cur >= steps.length - 1;
+}
+function go(d) { const n = SCEN[scen].steps.length; cur = Math.max(-1, Math.min(n - 1, cur + d)); render(d > 0); }
+function stop() { clearInterval(timer); timer = null; $("#play").textContent = "自动播放"; }
+$("#next").onclick = () => { stop(); go(1); };
+$("#prev").onclick = () => { stop(); go(-1); };
+$("#play").onclick = () => {
+  if (timer) return stop();
+  if (cur >= SCEN[scen].steps.length - 1) cur = -1;
+  $("#play").textContent = "暂停";
+  go(1);
+  timer = setInterval(() => { if (cur >= SCEN[scen].steps.length - 1) return stop(); go(1); }, 2600);
+};
+document.querySelectorAll(".scen button").forEach((b) => b.onclick = () => {
+  stop(); scen = b.dataset.s; cur = -1;
+  document.querySelectorAll(".scen button").forEach((x) => x.setAttribute("aria-pressed", x === b));
+  render(false);
+});
+cur = 2; render(false);
+
+/* ===================================================== 2 地图 */
+const MODS = [
+  { id: "agent", core: true, k: "核心", n: "Agent 循环", f: "agent.py", d: "调用模型、执行工具、回填结果，直到模型不再调用工具。外加中断、步数上限、只读工具并行、自动压缩、子 Agent。", fn: "Agent._run · _run_tools · _run_subagent", cc: "Claude Code 的主循环", doc: "docs/01-agent-loop.md" },
+  { id: "msg", k: "数据", n: "统一消息格式", f: "messages.py", d: "text / tool_use / tool_result 三种内容块。Agent 的全部记忆就是这个列表。", fn: "tool_result_block · estimate_tokens", cc: "与 Anthropic Messages 格式一致", doc: "docs/02-messages-and-providers.md" },
+  { id: "llm", k: "适配", n: "Provider", f: "llm/", d: "把统一格式翻译成各家 API，解析流式 SSE，拼接分片到达的工具参数，限流时退避重试。", fn: "complete · iter_sse · PRESETS", cc: "Claude Code 主要对接 Claude；nanocode 可接任意厂商", doc: "docs/02-messages-and-providers.md" },
+  { id: "tools", k: "动作", n: "工具", f: "tools/", d: "read/write/edit_file、bash、glob、grep。工具说明是写给模型看的使用手册。编辑用精确字符串替换，且必须先读。", fn: "Tool.execute · EditFile · Bash", cc: "Read / Write / Edit / Bash / Glob / Grep", doc: "docs/03-tools.md" },
+  { id: "perm", k: "安全", n: "权限", f: "permissions.py", d: "deny → plan → allow → bypass → 只读 → accept_edits → 询问。先命中先生效。", fn: "PermissionManager.check · resolve", cc: "default / acceptEdits / plan / bypassPermissions，allow / deny 规则", doc: "docs/04-permissions-and-hooks.md" },
+  { id: "hooks", k: "扩展", n: "Hooks", f: "hooks.py", d: "在固定时刻运行 shell 命令。退出码 2 表示拦截或反馈。用来做确定性的规则：格式化、审计、拦截。", fn: "HookRunner.run", cc: "PreToolUse / PostToolUse / UserPromptSubmit / Stop 等", doc: "docs/04-permissions-and-hooks.md" },
+  { id: "ctx", k: "上下文", n: "提示词与记忆", f: "context.py", d: "拼接系统提示词：规则 + 环境 + NANOCODE.md + 技能目录。上下文快满时压缩旧回合。", fn: "build_system_prompt · load_memory · compact_messages", cc: "CLAUDE.md、/init、/compact", doc: "docs/05-context-engineering.md" },
+  { id: "plan", k: "组织", n: "待办 / 子 Agent / 技能", f: "tools/planning.py", d: "todo_write 是模型的外部草稿纸；task 开一个独立上下文做子任务；skill 按需加载完整说明。", fn: "TodoWrite · Task · Skill", cc: "TodoWrite、Task / 子 Agent、Skills", doc: "docs/06-subagents-todos-skills.md" },
+  { id: "mcp", k: "生态", n: "MCP 客户端", f: "mcp.py", d: "通过 stdio 上的 JSON-RPC 连接外部工具服务器，把远程工具包装成本地 Tool，名字是 mcp__服务器__工具。", fn: "MCPClient · MCPTool", cc: "MCP（stdio / HTTP）", doc: "docs/07-mcp.md" },
+  { id: "events", k: "观测", n: "事件总线", f: "events.py", d: "循环里每个动作都发事件。CLI、Web 面板、trace 文件都只是订阅者，核心代码不依赖任何界面。", fn: "EventBus.emit · TraceWriter", cc: "界面与核心解耦", doc: "docs/01-agent-loop.md" },
+  { id: "session", k: "组装", n: "Session", f: "session.py", d: "读取分层配置，组装 Provider、工具、权限、Hooks、技能，处理斜杠命令和会话保存。", fn: "Session · load_settings · handle_command", cc: "settings.json 分层、斜杠命令、--resume", doc: "docs/08-claude-code-mapping.md" },
+  { id: "ui", k: "界面", n: "CLI 与 Web", f: "cli.py · web/", d: "CLI 在主线程读键盘、后台线程跑 Agent；Web 用 SSE 推送事件，带调试面板。", fn: "Renderer · WebApp", cc: "终端界面、-p 非交互模式", doc: "README.md" },
+];
+const modsEl = $("#mods"), detEl = $("#mod-detail");
+modsEl.innerHTML = MODS.map((m) => `<button class="mod${m.core ? " core" : ""}" data-id="${m.id}" aria-pressed="false"><span class="k">${m.k}</span><span class="n">${m.n}</span><span class="f">${m.f}</span></button>`).join("");
+function showMod(id) {
+  const m = MODS.find((x) => x.id === id);
+  modsEl.querySelectorAll(".mod").forEach((b) => b.setAttribute("aria-pressed", b.dataset.id === id));
+  detEl.innerHTML = `<h3>${m.n} <span class="src">${m.f}</span></h3><p>${m.d}</p>
+    <dl><dt>关键函数</dt><dd class="mono" style="font-size:13px">${m.fn}</dd><dt>Claude Code</dt><dd>${m.cc}</dd><dt>文档</dt><dd class="mono" style="font-size:13px">${m.doc}</dd></dl>`;
+}
+modsEl.querySelectorAll(".mod").forEach((b) => b.onclick = () => showMod(b.dataset.id));
+showMod("agent");
+
+/* ===================================================== 3 协议 */
+const P = {
+  unified: { code: `[
+  {"role": "user", "content": [
+    {"type": "text", "text": "读一下 a.py"}]},
+  {"role": "assistant", "content": [
+    {"type": "text", "text": "好的"},
+    <h>{"type": "tool_use", "id": "t1", "name": "read_file",</h>
+     <h>"input": {"path": "a.py"}}</h>]},
+  {"role": "user", "content": [
+    <h>{"type": "tool_result", "tool_use_id": "t1",</h>
+     <h>"content": "1\\tprint(1)"}</h>]}
+]`, note: "Agent 循环只操作这一种格式。system 和 tools 不在列表里，调用时作为参数传给 Provider。" },
+  anthropic: { code: `{
+  "model": "...",
+  "system": [{"type": "text", "text": "你是 nanocode……",
+              "cache_control": {"type": "ephemeral"}}],
+  "messages": [
+    {"role": "user", "content": [{"type": "text", "text": "读一下 a.py"}]},
+    {"role": "assistant", "content": [
+      {"type": "text", "text": "好的"},
+      <h>{"type": "tool_use", "id": "t1", "name": "read_file", "input": {"path": "a.py"}}</h>]},
+    {"role": "user", "content": [
+      <h>{"type": "tool_result", "tool_use_id": "t1", "content": "1\\tprint(1)"}</h>]}
+  ],
+  "tools": [{"name": "read_file", "description": "…", <h>"input_schema"</h>: {…}}],
+  "stream": true
+}`, note: "几乎原样发送。system 作为独立参数，并标记 cache_control 开启前缀缓存。流式返回时，工具参数以 input_json_delta 片段到达。" },
+  openai: { code: `{
+  "model": "...",
+  "messages": [
+    <h>{"role": "system", "content": "你是 nanocode……"},</h>
+    {"role": "user", "content": "读一下 a.py"},
+    {"role": "assistant", "content": "好的",
+     <h>"tool_calls": [{"id": "t1", "type": "function",</h>
+       <h>"function": {"name": "read_file", "arguments": "{\\"path\\": \\"a.py\\"}"}}]},</h>
+    <h>{"role": "tool", "tool_call_id": "t1", "content": "1\\tprint(1)"}</h>
+  ],
+  "tools": [{"type": "function", "function": {"name": "read_file", "description": "…", <h>"parameters"</h>: {…}}}],
+  "stream": true
+}`, note: "四处翻译：system 变成第一条消息；tool_use 变成 tool_calls，参数是 JSON 字符串而不是对象；每个 tool_result 变成独立的 role: tool 消息；input_schema 改名为 parameters。DeepSeek、千问、Kimi、GLM、Ollama 等都用这种格式。" },
+};
+function showP(k) {
+  document.querySelectorAll("#ptabs button").forEach((b) => b.setAttribute("aria-selected", b.dataset.p === k));
+  $("#pcode").innerHTML = esc(P[k].code).replace(/&lt;h&gt;/g, '<span class="hl">').replace(/&lt;\/h&gt;/g, "</span>");
+  $("#pnote").textContent = P[k].note;
+}
+document.querySelectorAll("#ptabs button").forEach((b) => b.onclick = () => showP(b.dataset.p));
+showP("unified");
+
+/* ===================================================== 4 权限 */
+const READ_ONLY = { read_file: true, glob: true, grep: true };
+function wild(pattern, s) {
+  const rx = new RegExp("^" + pattern.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$");
+  return rx.test(s);
+}
+function matches(rules, tool, target) {
+  return rules.split(",").map((r) => r.trim()).filter(Boolean).find((r) => {
+    const m = r.match(/^([\w-]+)(?:\((.*)\))?$/);
+    return m && m[1] === tool && (m[2] === undefined || wild(m[2], target));
+  });
+}
+function decide() {
+  const [tool, target] = $("#p-tool").value.split("|");
+  const mode = $("#p-mode").value, allow = $("#p-allow").value, deny = $("#p-deny").value;
+  const inside = tool === "bash" || !(target.startsWith("~") || target.startsWith("/"));
+  const ro = !!READ_ONLY[tool];
+  const rungs = [
+    ["命中 deny 规则？", () => { const r = matches(deny, tool, target); return r && ["deny", `命中 ${r}`]; }],
+    ["plan 模式下的修改操作？", () => mode === "plan" && !ro && ["deny", "plan 模式只能读，不能改"]],
+    ["命中 allow 规则？", () => { const r = matches(allow, tool, target); return r && ["allow", `命中 ${r}`]; }],
+    ["bypass 模式？", () => mode === "bypass" && ["allow", "全部放行"]],
+    ["只读工具？", () => ro && (inside ? ["allow", "工作目录内的只读操作"] : ["ask", "读取工作目录以外的路径"])],
+    ["accept_edits 且是目录内的文件编辑？", () => mode === "accept_edits" && (tool === "edit_file" || tool === "write_file") && inside && ["allow", "自动允许编辑"]],
+    ["以上都不是", () => ["ask", "询问用户"]],
+  ];
+  let hit = -1, res = null;
+  for (let i = 0; i < rungs.length; i++) { const r = rungs[i][1](); if (r) { hit = i; res = r; break; } }
+  $("#ladder").innerHTML = rungs.map(([label], i) => {
+    const cls = i < hit ? "pass" : i === hit ? `hit ${res[0]}` : "skip";
+    const txt = i < hit ? "否，继续" : i === hit ? res[0].toUpperCase() : "";
+    return `<div class="rung ${cls}"><span>${label}</span><span class="res">${txt}</span></div>`;
+  }).join("");
+  const words = { allow: "直接执行", deny: "不执行，把原因作为错误结果交给模型", ask: "暂停，等用户选择 允许 / 总是允许 / 拒绝" };
+  $("#verdict").innerHTML = `<b>${tool}("${esc(target)}")</b> → ${words[res[0]]}。<span class="src">原因：${esc(res[1])}</span>`;
+}
+["#p-tool", "#p-mode", "#p-allow", "#p-deny"].forEach((s) => $(s).addEventListener("input", decide));
+decide();
+
+/* ===================================================== 5 上下文 */
+const W = 128, SYS = 6;
+let segs, log;
+function resetCtx() { segs = [{ kind: "cur", v: 2 }]; log = "新会话：system 和工具定义约 6k，用户请求约 2k。"; drawCtx(); }
+function total() { return SYS + segs.reduce((a, s) => a + s.v, 0); }
+function drawCtx() {
+  const color = { sum: "var(--env)", old: "var(--model)", cur: "var(--tool)" };
+  const pct = (v) => (v / W * 100) + "%";
+  $("#win").innerHTML = `<i style="width:${pct(SYS)};background:var(--muted)"></i>` +
+    segs.map((s) => `<i style="width:${pct(s.v)};background:${color[s.kind]}"></i>`).join("") +
+    `<div class="limit" style="left:80%"><span>80% 自动压缩线</span></div>`;
+  $("#clog").textContent = `${log}  当前 ${total().toFixed(0)}k / ${W}k`;
+}
+function addCur(v, what) {
+  const c = segs[segs.length - 1];
+  c.v += v;
+  log = `${what}，上下文 +${v}k。`;
+  if (total() > W * 0.8) {
+    const before = total();
+    const old = segs.filter((s) => s !== c && s.kind !== "sum");
+    if (old.length || segs.some((s) => s.kind === "sum")) {
+      const oldTotal = segs.filter((s) => s !== c).reduce((a, s) => a + s.v, 0);
+      segs = [{ kind: "sum", v: Math.max(1.5, Math.min(4, oldTotal * 0.06)) }, c];
+      log += ` 超过 80%，自动压缩：旧回合被总结成摘要，当前回合原样保留（${before.toFixed(0)}k → ${total().toFixed(0)}k）。`;
+    } else {
+      c.v = 4; segs = [c];
+      log += ` 超过 80%，但只有一个回合：整个回合被总结，并提示模型"在此基础上继续"（${before.toFixed(0)}k → ${total().toFixed(0)}k）。`;
+    }
+  }
+  drawCtx();
+}
+$("#c-read").onclick = () => addCur(9, "读了一个大文件");
+$("#c-test").onclick = () => addCur(4, "跑了一次测试");
+$("#c-turn").onclick = () => {
+  segs.forEach((s) => { if (s.kind === "cur") s.kind = "old"; });
+  segs.push({ kind: "cur", v: 1 }); log = "用户开始新任务：上一个回合变成旧回合。"; drawCtx();
+};
+$("#c-reset").onclick = resetCtx;
+resetCtx();
+
+/* ===================================================== 6 对照 */
+const CMP = [
+  ["多步完成任务", "主循环", "Agent._run", "agent.py"],
+  ["读、写、精确编辑文件", "Read / Write / Edit", "read_file / write_file / edit_file", "tools/files.py"],
+  ["运行命令", "Bash", "bash", "tools/shell.py"],
+  ["找文件、找内容", "Glob / Grep", "glob / grep", "tools/search.py"],
+  ["长任务不忘计划", "TodoWrite", "todo_write", "tools/planning.py"],
+  ["保护主上下文", "Task / 子 Agent", "task", "agent.py"],
+  ["记住项目约定", "CLAUDE.md、/init", "NANOCODE.md、/init、# 追加", "context.py"],
+  ["控制危险操作", "4 种权限模式 + allow/deny 规则", "4 种模式 + 同样的规则写法", "permissions.py"],
+  ["插入确定性规则", "Hooks（退出码 2 阻断）", "4 个核心事件，同样的约定", "hooks.py"],
+  ["长任务续航", "/compact 与自动压缩", "/compact 与自动压缩", "context.py"],
+  ["复用提示词", ".claude/commands/*.md", ".nanocode/commands/*.md", "context.py"],
+  ["按需学习新能力", "Skills（SKILL.md）", "同样的结构 + skill 工具", "tools/planning.py"],
+  ["接入外部工具", "MCP（stdio / HTTP）", "MCP（stdio）", "mcp.py"],
+  ["脚本与 CI", "claude -p", "nanocode -p", "cli.py"],
+];
+$("#cmp").innerHTML = CMP.map((r) => `<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td><code>${r[3]}</code></td></tr>`).join("");
+
+/* ===================================================== 复制 */
+document.querySelectorAll("[data-copy]").forEach((b) => b.onclick = () => {
+  const code = b.previousElementSibling;
+  const done = () => { b.textContent = "已复制"; setTimeout(() => (b.textContent = "复制"), 1500); };
+  const fallback = () => { const r = document.createRange(); r.selectNodeContents(code); const s = getSelection(); s.removeAllRanges(); s.addRange(r); b.textContent = "已选中"; };
+  try { navigator.clipboard.writeText(code.textContent).then(done, fallback); } catch (e) { fallback(); }
+});
+})();
+</script>
+</body>
+</html>
