@@ -8,7 +8,8 @@
 - **自带 Web 调试面板**：实时看到每一圈循环、每次发给模型的完整上下文、系统提示词、工具定义
 - **自带 Mock 模型**：不需要 API Key，就能把整套流程跑起来、看清楚
 - **内置小而完整的 RAG**：切块、中文 BM25、可选向量检索、RRF 混合、增量索引，外加一个评测脚本对比 grep 与检索
-- **51 个单元测试**，覆盖循环的每个分支、两种协议的流式解析和检索管线
+- **Agent 任务评测**：10 个编程任务、隐藏测试判定，统计成功率、步数和 token，用来比较模型和改动
+- **75 个单元测试**，覆盖循环的每个分支、两种协议的流式解析、检索管线、安全回归和评测框架自检
 
 > nanocode 是依据 Claude Code 的公开文档和可观察行为，从零写的教学实现，不包含也不来自 Claude Code 的源代码。它追求的是"把原理讲清楚"，不是"功能一样多"。
 
@@ -53,7 +54,8 @@ python3 -m nanocode
 nanocode -p "解释一下 main.py"                # 单次模式，跑完就退出（适合脚本、CI）
 nanocode --mode plan                          # 只读规划模式：只能看，不能改
 nanocode --mode accept_edits                  # 自动允许改文件，命令仍需确认
-nanocode --trace                              # 把所有事件记录到 .nanocode/traces/*.jsonl
+nanocode --trace                              # 把所有事件记录到 ~/.nanocode/projects/<项目>/traces/
+nanocode --trust                              # 信任当前项目的配置（hooks、MCP、allow 规则等），见下方「安全」
 nanocode --resume                             # 恢复上一次会话
 ```
 
@@ -79,7 +81,8 @@ nanocode/
 │   └── planning.py      todo_write / task（子 Agent）/ skill
 ├── agent.py           ★ 核心循环
 ├── rag.py             RAG：切块、BM25、向量、混合检索、增量索引
-├── permissions.py     权限模式与规则
+├── permissions.py     权限模式与规则（路径统一用真实路径判断）
+├── trust.py           工作区信任：陌生项目的配置不经同意不生效
 ├── hooks.py           生命周期钩子
 ├── context.py         系统提示词、项目记忆、技能/命令发现、上下文压缩
 ├── mcp.py             MCP 客户端（stdio）
@@ -89,6 +92,8 @@ nanocode/
 └── web/               Web 界面（调试面板 + 架构学习页）
 docs/                  分章节的架构讲解（建议按顺序读）
 examples/              MCP 服务器示例、hooks/skills/commands 配置示例、RAG 评测（rag_eval/）
+evals/agent_tasks/     Agent 任务评测：10 个任务、隐藏测试、参考答案、运行器
+verification/          真实环境验证清单与结果（连真实模型、浏览器实操）
 tests/                 单元测试
 ```
 
@@ -109,14 +114,29 @@ tests/                 单元测试
 | [09 练习](docs/09-练习.md) | 动手改代码，检验是否真的懂了 |
 | [10 RAG](docs/10-rag.md) | 什么时候用检索而不是 grep，管线怎么搭，怎么评测 |
 
-## 运行测试
+## 测试、评测与验证
 
 ```bash
-python3 -m unittest discover -s tests
+python3 -m unittest discover -s tests                     # 单元测试
+python3 evals/agent_tasks/run.py --reference              # 评测框架自检（参考答案应 10/10）
+python3 evals/agent_tasks/run.py --provider deepseek --model deepseek-chat --repeat 3   # 用真实模型评测
 ```
 
-## 安全提示
+三者的分工：单元测试保证代码逻辑正确；Agent 任务评测衡量"模型 + nanocode"实际能完成多少任务；
+[verification/](verification/) 是需要真实环境（真实模型、浏览器）的逐项验证清单，结果汇总在 [verification/results/SUMMARY.md](verification/results/SUMMARY.md)。
+
+## 安全
 
 nanocode 会在你的电脑上执行模型生成的命令。默认模式下每条命令都需要你确认；`bypass` 模式请只在容器或虚拟机里使用。
+
+下面三类问题曾在本项目里真实存在，复现后修复，并由 `tests/test_security.py` 钉住，避免回退：
+
+| 问题 | 后果 | 修复 |
+|---|---|---|
+| 权限检查和工具各自解析路径，检查时没展开 `~`、没跟随软链接 | 读 `~/.ssh`、通过软链接读项目外文件不需要确认；accept_edits 模式下可以直接改 `~/.bashrc` | 两边共用一个函数，先展开 `~` 再取 `realpath`；路径规则也匹配规范化后的路径 |
+| Web 服务不校验请求来源 | 用户开着 nanocode 时访问恶意网页，网页可以用 `text/plain` 请求或 DNS 重绑定操控 Agent | 每个请求校验 Host 和 Origin；POST 只收 JSON；`/api` 需要启动时随机生成的令牌 |
+| 项目配置不经同意就生效 | clone 一个陌生仓库后启动 nanocode，它配置的 hooks、MCP 命令立即执行；还能改权限模式、把 API 请求发到别处 | 项目配置中的敏感项需要用户确认信任，配置变化后重新确认（`trust.py`） |
+
+这些都是编程 Agent 的典型攻击面，详见 [docs/04-permissions-and-hooks.md](docs/04-permissions-and-hooks.md)。
 
 MIT License

@@ -77,7 +77,7 @@ while True:
 
 ## 一次完整运行的事件序列
 
-打开 `--trace` 运行一次，然后看 `.nanocode/traces/*.jsonl`：
+打开 `--trace` 运行一次，然后看 `~/.nanocode/projects/<项目>/traces/*.jsonl`（也可以用 `python3 verification/trace_stats.py` 直接看汇总）：
 
 ```
 user            "把 README 里的错别字修一下"

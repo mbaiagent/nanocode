@@ -1,0 +1,6 @@
+{
+  "id": "T02-rename",
+  "title": "跨文件重命名函数",
+  "kind": "code",
+  "prompt": "把 users.py 里的函数 get_usr 重命名为 get_user，并更新项目里所有调用它的地方，确保程序行为不变。"
+}

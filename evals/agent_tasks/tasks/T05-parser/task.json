@@ -1,0 +1,6 @@
+{
+  "id": "T05-parser",
+  "title": "实现 .env 解析器",
+  "kind": "code",
+  "prompt": "请实现 envparse.py 里的 parse_env，规则写在文档字符串里。"
+}

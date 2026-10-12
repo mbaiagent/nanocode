@@ -8,13 +8,15 @@ CLI 和 Web 界面都只和 Session 打交道。看这个文件可以了解各�
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass, field
 
 from . import __version__
 from .agent import Agent
-from .context import HOME_DIR, MEMORY_FILE, build_system_prompt, context_tokens, discover_commands, discover_skills
+from .context import MEMORY_FILE, build_system_prompt, context_tokens, discover_commands, discover_skills, home_dir
 from .events import EventBus, TraceWriter
 from .hooks import HookRunner
 from .llm import PRESETS, make_provider
@@ -22,18 +24,38 @@ from .mcp import connect_servers
 from .permissions import MODES, PermissionManager
 from .tools import ToolRegistry, default_tools
 from .tools.planning import STATUS_ICON
+from .trust import TrustFn, TrustStore, apply_trust
 
 
-def load_settings(cwd: str) -> dict:
-    """依次合并：~/.nanocode/settings.json → 项目 .nanocode/settings.json → .nanocode/settings.local.json。
-    越靠后优先级越高；列表（allow/deny）和字典（hooks/mcpServers）会合并而不是覆盖。"""
-    merged: dict = {}
-    for path in (os.path.join(HOME_DIR, "settings.json"), os.path.join(cwd, ".nanocode", "settings.json"),
-                 os.path.join(cwd, ".nanocode", "settings.local.json")):
-        if os.path.isfile(path):
-            with open(path, encoding="utf-8") as f:
-                _deep_merge(merged, json.load(f))
-    return merged
+def _read_json(path: str) -> dict:
+    if not os.path.isfile(path):
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def load_settings(cwd: str, trust_fn: TrustFn | None = None) -> tuple[dict, str]:
+    """合并配置：~/.nanocode/settings.json（你自己的，直接生效）
+              → 项目 .nanocode/settings.json → .nanocode/settings.local.json（项目的，敏感项需信任）。
+
+    越靠后优先级越高；列表（allow/deny）和字典（hooks/mcpServers）会合并而不是覆盖。
+    返回 (配置, 提示信息)。项目配置中能执行命令、放宽权限、改变请求去向的字段，
+    在用户信任这个目录之前会被忽略，见 trust.py。
+    """
+    merged = _read_json(os.path.join(home_dir(), "settings.json"))
+    project: dict = {}
+    for name in ("settings.json", "settings.local.json"):
+        _deep_merge(project, _read_json(os.path.join(cwd, ".nanocode", name)))
+    effective, notice = apply_trust(cwd, project, TrustStore(os.path.join(home_dir(), "trusted.json")), trust_fn)
+    _deep_merge(merged, effective)
+    return merged, notice
+
+
+def project_data_dir(cwd: str) -> str:
+    """会话记录、trace 存在 ~/.nanocode/projects/<目录名>-<哈希>/，而不是写进用户的项目里。"""
+    real = os.path.realpath(cwd)
+    slug = re.sub(r"[^\w.-]", "_", os.path.basename(real) or "root")
+    return os.path.join(home_dir(), "projects", f"{slug}-{hashlib.sha1(real.encode()).hexdigest()[:8]}")
 
 
 def _deep_merge(base: dict, new: dict) -> None:
@@ -57,12 +79,17 @@ class Options:
     cwd: str = field(default_factory=os.getcwd)
     trace: bool = False
     mock_delay: float = 0.02
+    trust: bool = False   # True = 不询问，直接信任项目配置（--trust）
 
 
 class Session:
-    def __init__(self, opts: Options, log=print):
-        self.cwd = os.path.abspath(opts.cwd)
-        self.settings = load_settings(self.cwd)
+    def __init__(self, opts: Options, log=print, trust_fn: TrustFn | None = None):
+        self.cwd = os.path.realpath(opts.cwd)
+        if opts.trust:
+            trust_fn = lambda cwd, items: True  # noqa: E731
+        self.settings, notice = load_settings(self.cwd, trust_fn)
+        if notice:
+            log(notice)
         s = self.settings
         provider_name = opts.provider or os.environ.get("NANOCODE_PROVIDER") or s.get("provider") or "mock"
         self.provider = make_provider(
@@ -77,11 +104,12 @@ class Session:
         self.provider_name = provider_name
         self.bus = EventBus()
         self.session_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        self.data_dir = os.path.join(self.cwd, ".nanocode")
+        self.data_dir = project_data_dir(self.cwd)
         if opts.trace:
             os.makedirs(os.path.join(self.data_dir, "traces"), exist_ok=True)
             self.trace_path = os.path.join(self.data_dir, "traces", f"{self.session_id}.jsonl")
-            self.bus.subscribe(TraceWriter(self.trace_path))
+            self._trace = TraceWriter(self.trace_path)
+            self.bus.subscribe(self._trace)
 
         tools = default_tools()
         self.mcp_clients, mcp_tools = connect_servers(s.get("mcpServers", {}), self.cwd, log=log)
@@ -146,6 +174,8 @@ class Session:
     def close(self) -> None:
         for c in self.mcp_clients:
             c.close()
+        if getattr(self, "_trace", None):
+            self._trace.close()
 
     # ------------------------------------------------------------------ 斜杠命令
 

@@ -1,0 +1,6 @@
+{
+  "id": "T10-write-tests",
+  "title": "为已有代码编写测试",
+  "kind": "code",
+  "prompt": "请为 mathx.py 编写单元测试，放在 test_mathx.py 里（用标准库 unittest），至少 6 个测试方法，要覆盖边界情况。不要修改 mathx.py。"
+}

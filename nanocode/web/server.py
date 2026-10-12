@@ -13,37 +13,63 @@
     POST /api/chat          {"message": "..."} 发送消息（也支持 /命令 和 # 记忆）
     POST /api/permission    {"id": "...", "decision": "yes|always|no"}
     POST /api/cancel        中断当前任务
+
+安全：所有请求校验 Host / Origin，/api/* 需要令牌（页面加载时注入），POST 只接受 JSON。
+详见 Handler._guard 的说明。
 """
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import queue
+import secrets
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 from ..session import Session
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 
 
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
 class WebApp:
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, permission_timeout: float = 600):
         self.session = session
         self.pending: dict[str, dict] = {}
         self.lock = threading.Lock()
+        self.token = secrets.token_urlsafe(24)
+        self.permission_timeout = permission_timeout
+        self.allowed_hosts: set[str] = set(LOCAL_HOSTS)
+        self.allowed_origins: set[str] = set()
         session.permissions.ask_fn = self.ask
 
+    def configure(self, host: str, port: int) -> None:
+        """绑定端口后调用：确定哪些 Host / Origin 是"自己人"。"""
+        hosts = set(LOCAL_HOSTS)
+        if host not in ("0.0.0.0", "::", ""):
+            hosts.add(host.lower())
+        self.allowed_hosts = hosts
+        self.allowed_origins = {f"http://{h}:{port}" for h in hosts} | {f"http://[{h}]:{port}" for h in hosts if ":" in h}
+
     def ask(self, name: str, input: dict, target: str) -> str:
-        """权限询问：发事件给浏览器，然后阻塞等待 /api/permission 的回答。"""
+        """权限询问：发事件给浏览器，然后阻塞等待 /api/permission 的回答。
+
+        超时（默认 10 分钟没人回答，比如浏览器被关掉了）按拒绝处理，Agent 不会永远卡住。
+        """
         rid = uuid.uuid4().hex[:8]
         slot = {"event": threading.Event(), "answer": "no"}
         self.pending[rid] = slot
         self.session.bus.emit("permission_request", id=rid, name=name, input=input, target=target)
+        deadline = time.time() + self.permission_timeout
         while not slot["event"].wait(0.2):
-            if self.session.agent.cancel.is_set():
+            if self.session.agent.cancel.is_set() or time.time() > deadline:
                 break
         self.pending.pop(rid, None)
         self.session.bus.emit("permission_answer", id=rid, decision=slot["answer"])
@@ -91,10 +117,11 @@ def make_handler(app: WebApp):
         def _file(self, name):
             path = os.path.join(STATIC, name)
             with open(path, "rb") as f:
-                body = f.read()
+                body = f.read().replace(b"__NANOCODE_TOKEN__", app.token.encode())
             self.send_response(200)
             self.send_header("content-type", "text/html; charset=utf-8")
             self.send_header("content-length", str(len(body)))
+            self.send_header("cache-control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 
@@ -105,9 +132,46 @@ def make_handler(app: WebApp):
             except json.JSONDecodeError:
                 return {}
 
+        def _reject(self, status: int, reason: str) -> None:
+            self._json({"ok": False, "error": reason}, status)
+
+        def _guard(self, path: str, method: str) -> bool:
+            """所有请求先过这道检查，返回 False 表示已经拒绝。
+
+            本地 Web 服务的三种典型攻击和对应防线：
+              1. DNS 重绑定：恶意域名解析到 127.0.0.1，浏览器认为是"同源"，能读到页面里的令牌。
+                 → 校验 Host 头必须是本机地址。所有请求都要校验，包括首页。
+              2. 跨站请求伪造（CSRF）：恶意网页直接 POST 到 127.0.0.1。浏览器对 text/plain 这类
+                 "简单请求"不做预检，请求会照常发出。
+                 → POST 只接受 application/json（跨站发 JSON 必须先预检，而我们不响应预检）；
+                   Origin 头存在时必须是本服务自己。
+              3. 其他网页或本机程序猜接口。→ /api/* 必须带上启动时随机生成的令牌。
+            """
+            host = (self.headers.get("host") or "").rsplit(":", 1)[0].strip("[]").lower()
+            if host not in app.allowed_hosts:
+                self._reject(403, "Host 不被允许（防 DNS 重绑定）")
+                return False
+            origin = self.headers.get("origin")
+            if origin and origin.rstrip("/") not in app.allowed_origins:
+                self._reject(403, "Origin 不被允许（防跨站请求）")
+                return False
+            if not path.startswith("/api/"):
+                return True
+            if method == "POST" and (self.headers.get("content-type") or "").split(";")[0].strip().lower() != "application/json":
+                self._reject(415, "只接受 application/json")
+                return False
+            query = parse_qs(urlparse(self.path).query)
+            token = self.headers.get("x-nanocode-token") or (query.get("token") or [""])[0]
+            if not hmac.compare_digest(token, app.token):
+                self._reject(403, "缺少或错误的令牌")
+                return False
+            return True
+
         def do_GET(self):
             s = app.session
             path = self.path.split("?")[0]
+            if not self._guard(path, "GET"):
+                return
             if path in ("/", "/index.html"):
                 return self._file("index.html")
             if path in ("/learn", "/learn.html"):
@@ -125,6 +189,8 @@ def make_handler(app: WebApp):
 
         def do_POST(self):
             path = self.path.split("?")[0]
+            if not self._guard(path, "POST"):
+                return
             data = self._body()
             if path == "/api/chat":
                 return self._json(app.chat(str(data.get("message", ""))))
@@ -171,10 +237,19 @@ def make_handler(app: WebApp):
     return Handler
 
 
-def serve(session: Session, host: str = "127.0.0.1", port: int = 8765) -> None:
+def make_server(session: Session, host: str = "127.0.0.1", port: int = 8765) -> tuple[ThreadingHTTPServer, WebApp]:
     app = WebApp(session)
     server = ThreadingHTTPServer((host, port), make_handler(app))
     server.daemon_threads = True
+    app.configure(host, server.server_address[1])
+    return server, app
+
+
+def serve(session: Session, host: str = "127.0.0.1", port: int = 8765) -> None:
+    server, app = make_server(session, host, port)
+    port = server.server_address[1]
+    if host in ("0.0.0.0", "::"):
+        print("警告：服务监听在所有网卡上，局域网内的人只要拿到页面就能操作 Agent。除非你清楚后果，请用默认的 127.0.0.1。")
     print(f"nanocode Web 界面：http://{host}:{port}   （学习页：http://{host}:{port}/learn）")
     print(f"模型 {session.provider_name}/{session.provider.model} · 工作目录 {session.cwd} · Ctrl-C 退出")
     try:

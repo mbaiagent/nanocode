@@ -16,6 +16,7 @@ hooks、Web 调试面板都能被完整地演示出来。
 from __future__ import annotations
 
 import time
+import uuid
 
 from ..messages import LLMResponse, Usage, estimate_tokens, is_tool_result_message, text_block, text_of, tool_use_block
 from .base import Provider, TextCallback
@@ -99,8 +100,9 @@ class MockProvider(Provider):
                     'print("你好，我是 nanocode！")\n'
                     'print(f"你的请求是：{request}")\n'
                     'print(f"请求长度：{len(request)} 个字符")\n')
-            # 每次用新文件名：覆盖已有文件需要先 read_file，Mock 剧本里没有这一步
-            path = f"nanocode_demo/hello_{time.strftime('%H%M%S')}.py"
+            # 每次用新文件名：覆盖已有文件需要先 read_file，Mock 剧本里没有这一步。
+            # 只用时间戳不够：同一秒内运行两次会撞名（验证时真的遇到过），所以再加随机后缀
+            path = f"nanocode_demo/hello_{time.strftime('%H%M%S')}_{uuid.uuid4().hex[:4]}.py"
             return [text_block("项目结构看完了。接下来写一个 demo 文件。"),
                     tool_use_block(self._id(), "todo_write", todos("completed", "in_progress", "pending")),
                     tool_use_block(self._id(), "write_file", {"path": path, "content": code})]

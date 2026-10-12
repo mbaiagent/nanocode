@@ -27,6 +27,24 @@ class ToolError(Exception):
     """工具执行失败。错误信息会原样交给模型 —— 写清楚原因，模型才能自己纠正。"""
 
 
+def resolve_path(cwd: str, path: str) -> str:
+    """把工具参数里的路径变成磁盘上真实的绝对路径。
+
+    权限检查和工具执行必须用同一个函数解析路径。早期版本里两边各算各的：
+    权限检查没展开 `~`、没跟随符号链接，于是 `~/.bashrc` 或指向项目外的软链接
+    被当成"项目内文件"直接放行，而工具实际操作的却是项目外的文件。
+    realpath 会展开所有符号链接，`..` 也一并消掉。
+    """
+    path = os.path.expanduser(path)
+    full = path if os.path.isabs(path) else os.path.join(cwd, path)
+    return os.path.realpath(full)
+
+
+def is_inside(root: str, path: str) -> bool:
+    root = os.path.realpath(root)
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
 @dataclass
 class ToolContext:
     """工具运行时能拿到的环境。"""
@@ -38,9 +56,11 @@ class ToolContext:
     run_subagent: Optional[Callable[[str, str], str]] = None
     skills: dict = field(default_factory=dict)
 
+    def __post_init__(self):
+        self.cwd = os.path.realpath(self.cwd)
+
     def resolve(self, path: str) -> str:
-        path = os.path.expanduser(path)
-        return os.path.normpath(path if os.path.isabs(path) else os.path.join(self.cwd, path))
+        return resolve_path(self.cwd, path)
 
 
 class Tool:
@@ -48,6 +68,7 @@ class Tool:
     description: str = ""
     input_schema: dict = {"type": "object", "properties": {}}
     is_read_only: bool = False
+    path_target: bool = False   # permission_target() 返回的是文件路径（权限系统据此判断是否在项目内）
 
     def run(self, input: dict, ctx: ToolContext) -> str:
         raise NotImplementedError

@@ -1,0 +1,6 @@
+{
+  "id": "T07-refactor",
+  "title": "提取重复代码（行为不变）",
+  "kind": "code",
+  "prompt": "report.py 里三个函数有重复的格式化逻辑。请提取一个名为 _format_row(label, amount) 的辅助函数，让三个函数都调用它。输出必须和原来完全一样。"
+}

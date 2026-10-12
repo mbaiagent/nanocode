@@ -179,11 +179,15 @@ class ContextTest(unittest.TestCase):
         self.assertEqual(provider.calls[0]["tools"], [])
 
     def test_auto_compact_triggers(self):
+        # 工具定义本身约 1600 tokens；窗口 2600、阈值 80% ≈ 2080，第一轮塞够内容让第二轮开始时超限
         agent, provider, events = make_agent(self.ws, [[text_block("一")], [text_block("摘要")], [text_block("二")]],
-                                             context_window=200)
-        agent.run("第一个问题" * 20)
+                                             context_window=2600)
+        agent.run("第一个问题" * 120)
         agent.run("第二个问题")
-        self.assertIn("compact", [e["type"] for e in events])
+        compact = [e for e in events if e["type"] == "compact"]
+        self.assertEqual(len(compact), 1)
+        self.assertLess(compact[0]["after"], compact[0]["before"])
+        self.assertIn("第二个问题", str(agent.messages))     # 当前这一轮原样保留
 
     def test_memory_files(self):
         self.ws.write("NANOCODE.md", "用 4 空格缩进")
@@ -221,7 +225,10 @@ class SessionTest(unittest.TestCase):
             ws.write(".nanocode/commands/review.md", "---\ndescription: 代码审查\n---\n请审查 $ARGUMENTS")
             ws.write(".nanocode/skills/pdf/SKILL.md", "---\nname: pdf\ndescription: 处理 PDF\n---\n用 pypdf 读取")
             ws.write(".nanocode/settings.json", '{"mode": "bypass"}')
-            s = Session(Options(provider="mock", cwd=ws.dir, mock_delay=0), log=lambda m: None)
+            untrusted = Session(Options(provider="mock", cwd=ws.dir, mock_delay=0), log=lambda m: None)
+            self.assertEqual(untrusted.permissions.mode, "default")   # 项目要求 bypass，但没被信任
+            untrusted.close()
+            s = Session(Options(provider="mock", cwd=ws.dir, mock_delay=0, trust=True), log=lambda m: None)
             final = s.send("你好")
             self.assertIn("你好，我是 nanocode", final)
             self.assertEqual(s.handle_command("/review src/")[1], "请审查 src/")

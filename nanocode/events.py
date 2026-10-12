@@ -66,5 +66,10 @@ class TraceWriter:
     def __call__(self, event: dict) -> None:
         if event["type"] == "text_delta":
             return
+        if self._f.closed:
+            return
         self._f.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
         self._f.flush()
+
+    def close(self) -> None:
+        self._f.close()

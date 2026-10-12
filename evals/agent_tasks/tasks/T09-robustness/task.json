@@ -1,0 +1,6 @@
+{
+  "id": "T09-robustness",
+  "title": "处理缺失与异常配置",
+  "kind": "code",
+  "prompt": "config.py 的 get_timeout 在配置缺少字段时会崩溃。请改成：缺少 network 段或 timeout 键时返回默认值 30；值是数字字符串（如 \"15\"）时转成整数；值小于等于 0 或无法转换时抛出 ValueError。"
+}

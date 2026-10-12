@@ -28,7 +28,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
-from .context import BASE_PROMPT, compact_messages, context_tokens
+from .context import BASE_PROMPT, compact_messages, context_tokens, find_compact_split
 from .events import EventBus
 from .hooks import HookRunner
 from .llm.base import LLMError, Provider
@@ -72,6 +72,7 @@ class Agent:
         self.state: dict = {"todos": [], "read_files": {}}
         self.cancel = cancel or threading.Event()
         self.busy = False
+        self._compacted_at: int | None = None
         self.ctx = ToolContext(cwd=cwd, state=self.state, emit=self.emit, cancel=self.cancel,
                                run_subagent=self._run_subagent if depth == 0 else None, skills=skills or {})
 
@@ -234,17 +235,38 @@ class Agent:
 
     def _maybe_compact(self) -> None:
         used = context_tokens(self.system_prompt(), self.messages, self.tools.schemas())
-        if used > self.context_window * self.compact_ratio and len(self.messages) > 2:
-            self.compact(auto=True)
+        if used <= self.context_window * self.compact_ratio or len(self.messages) <= 2:
+            return
+        # 刚压缩过，而之后上下文几乎没增长：说明大头在"最近一轮"本身（例如一个巨大的工具结果），
+        # 再压缩也压不下去，只会每一步都白白调用一次模型做总结。等它再增长一截再说。
+        if self._compacted_at is not None and used < self._compacted_at + self.context_window * 0.1:
+            return
+        self.compact(auto=True)
 
     def compact(self, focus: str = "", auto: bool = False) -> str:
         if len(self.messages) < 2:
             return "对话太短，不需要压缩"
-        before = context_tokens(self.system_prompt(), self.messages, self.tools.schemas())
+        system, tools = self.system_prompt(), self.tools.schemas()
+        before = context_tokens(system, self.messages, tools)
+        limit = self.context_window * self.compact_ratio
+        fixed = context_tokens(system, [], tools)
+        if auto and fixed > limit * 0.9:
+            # 系统提示词 + 工具定义本身就快占满窗口了，压缩对话无济于事
+            self._compacted_at = before
+            self.emit("hook", hook="compact", blocked=False, warnings=[],
+                      message=f"系统提示词和工具定义约 {fixed} tokens，已接近上限 {int(limit)}，跳过压缩")
+            return ""
         mid_turn = self.messages[-1]["role"] == "user"
-        self.messages, summary = compact_messages(self.provider, self.messages, keep_turns=1, focus=focus,
+        keep = 1
+        split = find_compact_split(self.messages, 1)
+        if mid_turn and split and context_tokens(system, self.messages[split:], tools) > limit * 0.9:
+            # 太大的是"当前这一轮"本身（比如刚读了一个巨大的文件）。只总结更早的轮次压不下来，
+            # 连当前这一轮一起总结，再让模型在摘要基础上继续。
+            keep = 0
+        self.messages, summary = compact_messages(self.provider, self.messages, keep_turns=keep, focus=focus,
                                                   mid_turn=mid_turn)
         after = context_tokens(self.system_prompt(), self.messages, self.tools.schemas())
+        self._compacted_at = after
         self.emit("compact", auto=auto, before=before, after=after, summary=summary)
         return summary
 
@@ -266,3 +288,4 @@ class Agent:
         self.state["todos"] = []
         self.state["read_files"] = {}
         self.usage = Usage()
+        self._compacted_at = None

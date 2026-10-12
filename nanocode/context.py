@@ -20,7 +20,11 @@ import platform
 from .messages import Message, estimate_tokens, is_tool_result_message, text_of, user_message
 
 MEMORY_FILE = "NANOCODE.md"
-HOME_DIR = os.path.expanduser("~/.nanocode")
+
+
+def home_dir() -> str:
+    """用户级目录：个人配置、记忆、信任记录、会话记录。可用环境变量 NANOCODE_HOME 改位置（测试就是这么做的）。"""
+    return os.environ.get("NANOCODE_HOME") or os.path.expanduser("~/.nanocode")
 
 BASE_PROMPT = """你是 nanocode，一个在用户终端里工作的编程 Agent。你通过调用工具来读代码、改代码、运行命令，帮用户完成软件工程任务。
 
@@ -50,7 +54,7 @@ def load_memory(cwd: str) -> list[tuple[str, str]]:
     越具体（越靠近 cwd）的记忆越晚出现，在冲突时更有分量。
     """
     found = []
-    user_file = os.path.join(HOME_DIR, MEMORY_FILE)
+    user_file = os.path.join(home_dir(), MEMORY_FILE)
     if os.path.isfile(user_file):
         found.append(user_file)
     parts, path = [], os.path.abspath(cwd)
@@ -87,7 +91,7 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
 
 
 def _ext_dirs(cwd: str, sub: str) -> list[str]:
-    return [os.path.join(HOME_DIR, sub), os.path.join(cwd, ".nanocode", sub)]
+    return [os.path.join(home_dir(), sub), os.path.join(cwd, ".nanocode", sub)]
 
 
 def discover_skills(cwd: str) -> dict[str, dict]:
@@ -210,4 +214,4 @@ def context_tokens(system: str, messages: list[Message], tools: list[dict]) -> i
 
 
 __all__ = ["build_system_prompt", "load_memory", "discover_skills", "discover_commands",
-           "compact_messages", "find_compact_split", "context_tokens", "transcript_text", "text_of"]
+           "compact_messages", "find_compact_split", "context_tokens", "transcript_text", "text_of", "home_dir"]

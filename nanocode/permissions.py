@@ -26,6 +26,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from .tools.base import is_inside, resolve_path
+
 MODES = ("default", "accept_edits", "plan", "bypass")
 EDIT_TOOLS = {"write_file", "edit_file"}
 _RULE = re.compile(r"^([\w\-]+)(?:\((.*)\))?$")
@@ -49,6 +51,9 @@ class PermissionManager:
     ask_fn: Optional[AskFn] = None
     session_allow: list[str] = field(default_factory=list)
 
+    def __post_init__(self):
+        self.cwd = os.path.realpath(self.cwd)
+
     def set_mode(self, mode: str) -> None:
         if mode not in MODES:
             raise ValueError(f"未知模式 {mode}，可选：{', '.join(MODES)}")
@@ -58,17 +63,26 @@ class PermissionManager:
 
     def check(self, tool, input: dict) -> Decision:
         target = tool.permission_target(input) or ""
-        if _matches_any(self.deny, tool.name, target):
+        inside = True
+        allow_forms = deny_forms = [target]
+        if getattr(tool, "path_target", False):
+            # 路径类工具：用真实路径判断，规则也匹配规范化后的路径，
+            # 防止 `~/x`、软链接、`src/../../etc/x` 这类写法绕过检查
+            full = resolve_path(self.cwd, target or ".")
+            inside = is_inside(self.cwd, full)
+            norm = os.path.relpath(full, os.path.realpath(self.cwd)) if inside else full
+            allow_forms = [norm]                 # allow 只认规范化路径：宁可多问一次
+            deny_forms = [target, norm, full]    # deny 任一写法命中都拒绝：宁可多拦一次
+        if _matches_any(self.deny, tool.name, *deny_forms):
             return Decision("deny", "命中 deny 规则")
         if self.mode == "plan" and not tool.is_read_only:
             return Decision("deny", "当前处于 plan（只读规划）模式，不能执行修改类操作。请先给出方案，等用户切换模式后再执行。")
-        if _matches_any(self.allow + self.session_allow, tool.name, target):
+        if _matches_any(self.allow + self.session_allow, tool.name, *allow_forms):
             return Decision("allow", "命中 allow 规则")
         if self.mode == "bypass":
             return Decision("allow", "bypass 模式")
-        inside = self._inside(target) if target and tool.name not in ("bash",) else True
         if tool.is_read_only:
-            return Decision("allow", "只读工具") if inside else Decision("ask", "读取工作目录以外的路径")
+            return Decision("allow", "只读工具") if inside else Decision("ask", "访问工作目录以外的路径")
         if self.mode == "accept_edits" and tool.name in EDIT_TOOLS and inside:
             return Decision("allow", "accept_edits 模式")
         return Decision("ask", "需要用户确认")
@@ -90,18 +104,13 @@ class PermissionManager:
             return Decision("allow", "用户允许")
         return Decision("deny", "用户拒绝了这次操作。请询问用户希望怎么做，不要换个方式绕过。")
 
-    def _inside(self, path: str) -> bool:
-        full = os.path.normpath(path if os.path.isabs(path) else os.path.join(self.cwd, path))
-        root = os.path.normpath(self.cwd)
-        return full == root or full.startswith(root + os.sep)
 
-
-def _matches_any(rules: list[str], tool_name: str, target: str) -> bool:
+def _matches_any(rules: list[str], tool_name: str, *targets: str) -> bool:
     for rule in rules:
         m = _RULE.match(rule.strip())
         if not m or m.group(1) != tool_name:
             continue
         pattern = m.group(2)
-        if pattern is None or fnmatch.fnmatchcase(target, pattern):
+        if pattern is None or any(fnmatch.fnmatchcase(t, pattern) for t in targets):
             return True
     return False

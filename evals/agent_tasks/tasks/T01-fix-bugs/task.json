@@ -1,0 +1,6 @@
+{
+  "id": "T01-fix-bugs",
+  "title": "修复多个 bug 让测试通过",
+  "kind": "code",
+  "prompt": "calc.py 里有几个 bug，导致 test_calc.py 失败。请修复 calc.py，让所有测试通过。不要修改测试文件。"
+}

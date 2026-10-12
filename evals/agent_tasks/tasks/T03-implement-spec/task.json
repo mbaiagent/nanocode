@@ -1,0 +1,6 @@
+{
+  "id": "T03-implement-spec",
+  "title": "按文档字符串实现函数",
+  "kind": "code",
+  "prompt": "text_utils.py 里的 slugify 还没实现。请按照它的文档字符串实现它，并自己写几个用例验证。"
+}

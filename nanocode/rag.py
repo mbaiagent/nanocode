@@ -270,6 +270,10 @@ class DocIndex:
         if not self.store:
             return
         os.makedirs(os.path.dirname(self.store), exist_ok=True)
+        ignore = os.path.join(os.path.dirname(self.store), ".gitignore")
+        if not os.path.exists(ignore):   # 索引是生成物，不该被提交进用户的仓库
+            with open(ignore, "w", encoding="utf-8") as f:
+                f.write("*\n")
         data = {"version": INDEX_VERSION, "max_chars": self.max_chars,
                 "embedder": self.embedder.name if self.embedder else None,
                 "files": {rel: {"sig": e["sig"], "chunks": [

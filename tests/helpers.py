@@ -7,6 +7,9 @@ import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# 测试不能读写真实的 ~/.nanocode（个人配置、信任记录、会话记录）
+os.environ["NANOCODE_HOME"] = tempfile.mkdtemp(prefix="nanocode-home-")
+
 from nanocode.agent import Agent
 from nanocode.events import EventBus
 from nanocode.hooks import HookRunner

@@ -48,6 +48,7 @@ def _match(rel: str, pattern: str) -> bool:
 
 class Glob(Tool):
     name = "glob"
+    path_target = True
     is_read_only = True
     description = ("按文件名模式查找文件，例如 `**/*.py`（任意层级）、`src/*.ts`、`*`（当前层）。"
                    "结果按修改时间从新到旧排序，自动忽略 .git、node_modules 等目录。")
@@ -86,6 +87,7 @@ class Glob(Tool):
 
 class Grep(Tool):
     name = "grep"
+    path_target = True
     is_read_only = True
     description = ("用正则表达式搜索文件内容，返回 `文件:行号: 内容`。"
                    "可以用 glob 参数限定文件类型（如 `*.py`）。适合找函数定义、调用点、报错信息。")

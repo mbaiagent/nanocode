@@ -268,22 +268,25 @@ function logRaw(e) {
   box.prepend(pre);
   if (++rawCount > 300) box.lastChild.remove();
 }
+// 令牌由服务器在返回页面时注入；每个 /api 请求都要带上（见 server.py 的 _guard）
+const TOKEN = "__NANOCODE_TOKEN__";
+const getJSON = async (url) => (await fetch(url, { headers: { "x-nanocode-token": TOKEN } })).json();
 async function post(url, body) {
-  const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}) });
+  const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-nanocode-token": TOKEN }, body: JSON.stringify(body || {}) });
   return r.json();
 }
 async function refreshState() {
-  const s = await (await fetch("/api/state")).json();
+  const s = await getJSON("/api/state");
   $("#meta").textContent = `${s.provider}/${s.model} · ${s.cwd}`;
   $("#mode").value = s.mode;
   if (!s.busy) setBusy(false);
   renderTodos(s.todos);
 }
 async function refreshContext() {
-  const c = await (await fetch("/api/context")).json();
+  const c = await getJSON("/api/context");
   $("#system").textContent = c.system;
   $("#tools").innerHTML = c.tools.map((t) => `<details class="step"><summary><b style="color:var(--tool)">${esc(t.name)}</b> — ${esc(t.description.slice(0, 60))}…</summary><pre class="code">${esc(JSON.stringify(t, null, 2))}</pre></details>`).join("");
-  const s = await (await fetch("/api/state")).json();
+  const s = await getJSON("/api/state");
   const pct = Math.min(100, s.context_tokens / s.context_window * 100);
   $("#ctxmeter").innerHTML = `<div class="hint">约 ${s.context_tokens} / ${s.context_window} tokens（${pct.toFixed(1)}%），${c.messages.length} 条消息。超过 80% 会自动压缩。</div><div class="meter"><i style="width:${pct}%"></i></div>`;
   $("#messages").innerHTML = c.messages.length ? c.messages.map((m, i) => `<div class="jmsg ${m.role}"><div class="role">[${i}] ${m.role}</div><pre class="code">${esc(JSON.stringify(m.content, null, 2))}</pre></div>`).join("")
@@ -309,7 +312,7 @@ $("#stop").onclick = () => post("/api/cancel");
 $("#refresh").onclick = refreshContext;
 $("#mode").onchange = () => post("/api/chat", { message: "/mode " + $("#mode").value });
 
-const es = new EventSource("/api/events");
+const es = new EventSource("/api/events?token=" + encodeURIComponent(TOKEN));
 es.onmessage = (m) => onEvent(JSON.parse(m.data));
 renderTimeline(); renderTodos([]); refreshState(); refreshContext();
 </script>

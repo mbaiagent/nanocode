@@ -1,0 +1,6 @@
+{
+  "id": "T04-off-by-one",
+  "title": "修复分页的边界错误",
+  "kind": "code",
+  "prompt": "分页功能有问题：第一页显示的不是前几条，总页数有时也算错。pager.py 里 page 从 1 开始计数。请找出原因并修复，test_pager.py 应当全部通过。"
+}

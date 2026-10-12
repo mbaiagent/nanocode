@@ -31,6 +31,7 @@ def _check_fresh(ctx: ToolContext, path: str) -> None:
 
 class ReadFile(Tool):
     name = "read_file"
+    path_target = True
     is_read_only = True
     description = ("读取一个文本文件，返回带行号的内容（格式：行号<TAB>内容）。"
                    "大文件可以用 offset / limit 分段读取。修改文件之前必须先读取它。")
@@ -72,6 +73,7 @@ class ReadFile(Tool):
 
 class WriteFile(Tool):
     name = "write_file"
+    path_target = True
     description = ("创建新文件，或完整覆盖已有文件（覆盖前必须先 read_file）。"
                    "修改已有文件的一部分时，优先使用 edit_file。会自动创建父目录。")
     input_schema = {
@@ -101,6 +103,7 @@ class WriteFile(Tool):
 
 class EditFile(Tool):
     name = "edit_file"
+    path_target = True
     description = ("在文件中把 old_string 精确替换为 new_string。old_string 必须与文件内容逐字符一致"
                    "（包括缩进），并且在文件中唯一；不唯一时请多带几行上下文，或设置 replace_all=true。"
                    "编辑前必须先 read_file。注意不要把 read_file 输出里的行号前缀带进来。")

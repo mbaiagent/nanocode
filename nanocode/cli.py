@@ -158,6 +158,18 @@ def interactive(session: Session) -> None:
     session.close()
 
 
+def ask_trust(cwd: str, items: list[str]) -> bool:
+    print(paint(f"\n这个项目（{cwd}）的配置要求以下权限：", "yellow", "bold"), file=sys.stderr)
+    for line in items:
+        print(paint(f"  • {line}", "yellow"), file=sys.stderr)
+    print(paint("只有在你信任这个项目的来源时才应同意。不同意的话这些设置会被忽略，其余功能照常可用。", "dim"), file=sys.stderr)
+    try:
+        return input(paint("信任这个项目吗？[y/N] ", "yellow")).strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        print(file=sys.stderr)
+        return False
+
+
 def _safe_send(session: Session, prompt: str) -> None:
     try:
         session.send(prompt)
@@ -176,8 +188,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--api-key", help="API Key（更推荐用环境变量）")
     p.add_argument("--mode", choices=["default", "accept_edits", "plan", "bypass"], help="权限模式")
     p.add_argument("--cwd", default=os.getcwd(), help="工作目录")
-    p.add_argument("--trace", action="store_true", help="把所有事件记录到 .nanocode/traces/*.jsonl")
+    p.add_argument("--trace", action="store_true", help="把所有事件记录到 ~/.nanocode/projects/<项目>/traces/*.jsonl")
     p.add_argument("--resume", action="store_true", help="恢复上一次会话")
+    p.add_argument("--trust", action="store_true", help="信任当前项目的配置（hooks、MCP、allow 规则等），不再询问")
     p.add_argument("--web", action="store_true", help="启动 Web 界面")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8765)
@@ -185,9 +198,10 @@ def main(argv: list[str] | None = None) -> int:
 
     opts = Options(provider=args.provider or "", model=args.model or "", base_url=args.base_url or "",
                    api_key=args.api_key or "", protocol=args.protocol or "", mode=args.mode or "",
-                   cwd=args.cwd, trace=args.trace, mock_delay=0.0 if args.prompt else 0.02)
+                   cwd=args.cwd, trace=args.trace, mock_delay=0.0 if args.prompt else 0.02, trust=args.trust)
     try:
-        session = Session(opts, log=lambda m: print(paint(m, "dim"), file=sys.stderr))
+        trust_fn = ask_trust if sys.stdin.isatty() and not args.prompt else None
+        session = Session(opts, log=lambda m: print(paint(m, "yellow"), file=sys.stderr), trust_fn=trust_fn)
     except LLMError as e:
         print(paint(f"配置错误：{e}", "red"), file=sys.stderr)
         return 2

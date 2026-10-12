@@ -1,0 +1,6 @@
+{
+  "id": "T08-cli-flags",
+  "title": "给命令行工具加参数",
+  "kind": "code",
+  "prompt": "greet.py 是一个命令行工具：python3 greet.py NAME 会输出 Hello, NAME!。请增加两个参数：--shout 让输出变成全大写；--times N 把这一行重复输出 N 次（默认 1，N 必须是正整数，否则以非 0 状态退出）。"
+}

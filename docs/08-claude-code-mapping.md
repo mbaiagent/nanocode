@@ -19,6 +19,7 @@ nanocode 是依据 Claude Code 的**公开文档和可观察行为**写的教学
 | 权限模式 | default / acceptEdits / plan / bypassPermissions | default / accept_edits / plan / bypass | `permissions.py` |
 | 权限规则 | `settings.json` 中的 allow / deny，如 `Bash(npm run test:*)` | 同样的思路，`bash(npm run test*)` | `permissions.py` |
 | 配置分层 | 用户 / 项目 / 本地 settings | 同 | `session.py: load_settings` |
+| 工作区信任 | 在新目录中启动时询问是否信任该目录 | 项目配置含 hooks、MCP、allow 规则等敏感项时询问，配置变化后重新询问 | `trust.py` |
 | Hooks | PreToolUse、PostToolUse、UserPromptSubmit、Stop 等，退出码 2 阻断 | 这四个，同样的退出码约定 | `hooks.py` |
 | 上下文压缩 | `/compact`，以及接近上限时自动压缩 | `/compact` 与自动压缩 | `context.py`、`agent.py` |
 | 自定义命令 | `.claude/commands/*.md`，支持 `$ARGUMENTS` | `.nanocode/commands/*.md` | `context.py: discover_commands` |
@@ -28,6 +29,7 @@ nanocode 是依据 Claude Code 的**公开文档和可观察行为**写的教学
 | 会话恢复 | `--resume` / `--continue` | `--resume`（恢复最近一次） | `session.py` |
 | 中断 | Esc | Ctrl-C / Web 上的"中断"按钮 | `agent.py: cancel` |
 | 多厂商模型 | 主要面向 Claude | 任意 OpenAI / Anthropic 兼容 API | `llm/` |
+| 文档检索 | 主要靠 Grep / Glob 按需搜索 | 另有 `search_docs`（BM25 + 可选向量） | `rag.py` |
 
 ## nanocode 刻意省略的（生产级还需要什么）
 
