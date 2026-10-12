@@ -1,0 +1,27 @@
+{
+  "_comment": "用自然语言提问（不照抄文档原话），expected 是能回答该问题的文档（命中任意一个即算对）。语料就是本项目的 docs/ 目录。",
+  "questions": [
+    {"q": "为什么修改文件前必须先读取它？", "expected": ["docs/03-tools.md"]},
+    {"q": "压缩对话的时候从哪里切开才不会出错？", "expected": ["docs/05-context-engineering.md"]},
+    {"q": "OpenAI 的工具调用参数是对象还是字符串？", "expected": ["docs/02-messages-and-providers.md"]},
+    {"q": "脚本拦截危险命令应该用什么退出码？", "expected": ["docs/04-permissions-and-hooks.md"]},
+    {"q": "怎样避免大量搜索把主对话的上下文撑满？", "expected": ["docs/06-subagents-todos-skills.md"]},
+    {"q": "和外部工具服务器建立连接要经过哪些握手步骤？", "expected": ["docs/07-mcp.md"]},
+    {"q": "命令输出特别大的时候为什么会卡死？", "expected": ["docs/03-tools.md"]},
+    {"q": "技能的说明为什么不一开始全部放进系统提示词？", "expected": ["docs/06-subagents-todos-skills.md"]},
+    {"q": "想让它只看不改、先出方案，应该用哪种模式？", "expected": ["docs/04-permissions-and-hooks.md"]},
+    {"q": "为什么说上下文只追加不修改？", "expected": ["docs/05-context-engineering.md", "docs/02-messages-and-providers.md"]},
+    {"q": "Agent 到什么时候才会停下来？", "expected": ["docs/01-agent-loop.md"]},
+    {"q": "多个层级的项目说明文件怎么合并加载？", "expected": ["docs/05-context-engineering.md"]},
+    {"q": "这个项目和 Claude Code 比还缺少什么生产级功能？", "expected": ["docs/08-claude-code-mapping.md"]},
+    {"q": "长任务里怎么防止模型忘记剩下的步骤？", "expected": ["docs/06-subagents-todos-skills.md"]},
+    {"q": "要接入一家没有预设的新模型厂商需要改哪里？", "expected": ["docs/02-messages-and-providers.md"]},
+    {"q": "怎么衡量改了提示词之后 Agent 变好还是变差？", "expected": ["docs/09-练习.md"]},
+    {"q": "工具执行结果为什么用 user 身份发给模型？", "expected": ["docs/01-agent-loop.md", "docs/02-messages-and-providers.md"]},
+    {"q": "用户拒绝了某个命令后模型会看到什么？", "expected": ["docs/04-permissions-and-hooks.md", "docs/01-agent-loop.md"]},
+    {"q": "流式输出时工具参数是怎么拼起来的？", "expected": ["docs/02-messages-and-providers.md"]},
+    {"q": "怎样给模型增加一个自己写的新工具？", "expected": ["docs/03-tools.md"]},
+    {"q": "子 Agent 的工具调用要不要经过权限检查？", "expected": ["docs/04-permissions-and-hooks.md", "docs/06-subagents-todos-skills.md"]},
+    {"q": "为什么编辑文件用字符串替换而不是 diff？", "expected": ["docs/03-tools.md"]}
+  ]
+}

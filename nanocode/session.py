@@ -97,6 +97,7 @@ class Session:
                            system_prompt=lambda: build_system_prompt(self.cwd, self.skills),
                            max_tokens=int(s.get("max_tokens", 8192)),
                            context_window=int(s.get("context_window", 128000)), skills=self.skills)
+        self.agent.state["rag_config"] = s.get("rag", {})
 
     # ------------------------------------------------------------------ 运行
 

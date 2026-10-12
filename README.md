@@ -7,7 +7,8 @@
 - **实现了 Claude Code 的核心机制**：Agent 循环、流式输出、文件/命令/搜索工具、权限模式与规则、Hooks、项目记忆、上下文压缩、待办清单、子 Agent、Skills、自定义斜杠命令、MCP、会话保存
 - **自带 Web 调试面板**：实时看到每一圈循环、每次发给模型的完整上下文、系统提示词、工具定义
 - **自带 Mock 模型**：不需要 API Key，就能把整套流程跑起来、看清楚
-- **35 个单元测试**，覆盖循环的每个分支和两种协议的流式解析
+- **内置小而完整的 RAG**：切块、中文 BM25、可选向量检索、RRF 混合、增量索引，外加一个评测脚本对比 grep 与检索
+- **51 个单元测试**，覆盖循环的每个分支、两种协议的流式解析和检索管线
 
 > nanocode 是依据 Claude Code 的公开文档和可观察行为，从零写的教学实现，不包含也不来自 Claude Code 的源代码。它追求的是"把原理讲清楚"，不是"功能一样多"。
 
@@ -74,8 +75,10 @@ nanocode/
 │   ├── files.py         read_file / write_file / edit_file
 │   ├── shell.py         bash
 │   ├── search.py        glob / grep
+│   ├── rag_tool.py      search_docs（按含义检索文档）
 │   └── planning.py      todo_write / task（子 Agent）/ skill
 ├── agent.py           ★ 核心循环
+├── rag.py             RAG：切块、BM25、向量、混合检索、增量索引
 ├── permissions.py     权限模式与规则
 ├── hooks.py           生命周期钩子
 ├── context.py         系统提示词、项目记忆、技能/命令发现、上下文压缩
@@ -85,7 +88,7 @@ nanocode/
 ├── cli.py             终端界面
 └── web/               Web 界面（调试面板 + 架构学习页）
 docs/                  分章节的架构讲解（建议按顺序读）
-examples/              MCP 服务器示例、hooks/skills/commands 配置示例
+examples/              MCP 服务器示例、hooks/skills/commands 配置示例、RAG 评测（rag_eval/）
 tests/                 单元测试
 ```
 
@@ -104,6 +107,7 @@ tests/                 单元测试
 | [07 MCP](docs/07-mcp.md) | 让任何人都能给 Agent 加工具 |
 | [08 与 Claude Code 对照](docs/08-claude-code-mapping.md) | 每个模块对应 Claude Code 的哪个功能，生产级还差什么 |
 | [09 练习](docs/09-练习.md) | 动手改代码，检验是否真的懂了 |
+| [10 RAG](docs/10-rag.md) | 什么时候用检索而不是 grep，管线怎么搭，怎么评测 |
 
 ## 运行测试
 
