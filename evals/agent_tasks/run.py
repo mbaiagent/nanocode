@@ -40,11 +40,11 @@ TASKS = os.path.join(HERE, "tasks")
 sys.path.insert(0, ROOT)
 
 
-def load_tasks(selected: str = "") -> list[dict]:
+def load_tasks(selected: str = "", tasks_dir: str = TASKS) -> list[dict]:
     wanted = {s.strip() for s in selected.split(",") if s.strip()}
     tasks = []
-    for name in sorted(os.listdir(TASKS)):
-        d = os.path.join(TASKS, name)
+    for name in sorted(os.listdir(tasks_dir)):
+        d = os.path.join(tasks_dir, name)
         if not os.path.isfile(os.path.join(d, "task.json")):
             continue
         if wanted and not any(name == w or name.startswith(w + "-") for w in wanted):
@@ -171,6 +171,8 @@ def main(argv=None) -> int:
     ap.add_argument("--protocol", default="")
     ap.add_argument("--mode", default="bypass", choices=["bypass", "accept_edits", "default"])
     ap.add_argument("--tasks", default="", help="只跑部分任务，如 T01,T04")
+    ap.add_argument("--tasks-dir", default=TASKS,
+                    help="任务目录，默认是自带的 10 个任务；也可以指向 evals/polyglot/convert.py 生成的目录")
     ap.add_argument("--repeat", type=int, default=1, help="每个任务跑几次（模型有随机性，建议 ≥3）")
     ap.add_argument("--max-steps", type=int, default=30)
     ap.add_argument("--timeout", type=int, default=600, help="单个任务的超时秒数")
@@ -185,7 +187,10 @@ def main(argv=None) -> int:
     # 评测不读写你自己的 ~/.nanocode（会话记录、信任记录）
     os.environ.setdefault("NANOCODE_HOME", tempfile.mkdtemp(prefix="nc-eval-home-"))
 
-    tasks = load_tasks(args.tasks)
+    if not os.path.isdir(args.tasks_dir):
+        print(f"任务目录不存在：{args.tasks_dir}", file=sys.stderr)
+        return 2
+    tasks = load_tasks(args.tasks, args.tasks_dir)
     if not tasks:
         print("没有匹配的任务", file=sys.stderr)
         return 2

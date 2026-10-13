@@ -39,6 +39,24 @@ python3 evals/agent_tasks/run.py --provider openrouter --model openrouter/free -
 - T06 会比对所有文件的哈希，改了任何文件都判失败。
 - T10 用原版实现运行 Agent 写的测试，防止它改被测代码来迁就测试。
 
+## 用公开基准做外部参照（Aider Polyglot）
+
+自带的 10 个任务偏简单，模型第一次就做对的话，看不出"自动验证 / 重试"这类机制有没有用。可以再用 Aider Polyglot（Exercism 习题）做外部参照。适配脚本在 `evals/polyglot/`，只新增评测代码，不改 agent 本身：
+
+```bash
+git clone --depth 1 https://github.com/Aider-AI/polyglot-benchmark /tmp/polyglot-benchmark
+python3 evals/polyglot/convert.py --src /tmp/polyglot-benchmark --language python --limit 10 --seed 0
+python3 evals/agent_tasks/run.py --tasks-dir evals/polyglot/tasks --reference      # 先自检
+python3 evals/agent_tasks/run.py --tasks-dir evals/polyglot/tasks --provider deepseek --model deepseek-chat --repeat 3
+```
+
+- 转换时会逐题自检：**参考答案必须通过、桩代码原样必须失败**，不过的题会被跳过并说明原因。
+- 每个任务里，桩代码和测试都放在工作目录（Agent 可以自己跑测试），判定时再用 `hidden/` 里的原版测试覆盖回去，所以改测试、删测试都没用。
+- `--limit N --seed S` 是固定种子的随机抽样：改动前后一定要用**同一组参数**，比较的才是同一批题。`--exercises a,b` 可以直接指定题目，`--list` 列出全部。
+- 目前只支持 `python`（34 题）。其他语言需要对应的工具链和测试命令，加到 `convert.py` 的 `LANGUAGES` 里。
+- 生成的任务在 `evals/polyglot/tasks/`，已加入 `.gitignore`，不随仓库分发。题目内容版权归 [Exercism](https://exercism.org)。
+- **局限**：这是公开题库，模型可能见过答案，分数适合做改动前后的对比，不适合当绝对能力的结论。
+
 ## 局限
 
 10 个任务都很小、都是 Python、都在单个目录里，只能代表"小范围修改"这一类工作。模型有随机性，单次结果波动大，比较时请用 `--repeat 3` 或更多。
