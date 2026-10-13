@@ -232,6 +232,9 @@ function onEvent(e) {
     case "todos": renderTodos(e.todos); break;
     case "compact": add("note", `↻ 上下文${e.auto ? "自动" : ""}压缩：约 ${e.before} → ${e.after} tokens\n${e.summary}`); break;
     case "hook": add("note", `⚓ hook[${e.hook}] ${e.message || e.warnings.join("\n")}`, a); break;
+    case "memory_pending":
+      add("note", `💡 经验候选 #${e.index}（来自被自动验证打回又修好的回合，确认后才会写入项目记忆）\n${esc(e.text)}\n在输入框发送 /memory accept ${e.index} 写入，/memory reject ${e.index} 丢弃`, a);
+      break;
     case "review": {
       const lines = [`═ ${e.verify === "pass" ? "✓" : "⚠"} 终审：本轮改动 ${e.files.length + e.hidden} 个文件 · 自动验证：${{pass: "通过", fail: "未通过"}[e.verify] || "未配置或未运行"}`];
       for (const f of e.files) lines.push(`  ${f.status}  ${f.path}${f.added != null ? ` (+${f.added} -${f.removed})` : `（${f.note}）`}`);

@@ -15,6 +15,10 @@
     compact        上下文被压缩
     hook           hook 输出了警告/反馈
     verify         自动验证（status: running / pass / fail；见 verify.py）
+    review         终审汇总：本轮改动的文件和 diff（review 模式，见 review.py）
+    lesson         被自动验证打回又修好的回合，附证据（见 lessons.py；Session 据此生成 memory_pending）
+    memory_pending 待用户确认的经验候选（/memory accept 写入，/memory reject 丢弃）
+    subagent_start / subagent_end  子 Agent 启动 / 结束（结束时带验收报告 report，见 subcheck.py）
     turn_end       本轮结束（最终回答、累计用量）
     error          出错
 """

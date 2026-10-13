@@ -35,7 +35,7 @@ from .hooks import HookRunner
 from .llm.base import LLMError, Provider
 from .messages import (Usage, assistant_message, text_block, text_of, tool_result_block, tool_uses)
 from .permissions import EDIT_TOOLS, PermissionManager
-from . import review, subcheck
+from . import lessons, review, subcheck
 from . import verify as verify_mod
 from .tools.base import ToolContext, ToolRegistry, truncate
 
@@ -87,6 +87,7 @@ class Agent:
         self._review_before: dict | None = None   # 终审模式：本轮开始时的文件快照（None = 本轮不做终审）
         self._review_originals: dict = {}          # 终审模式：写文件工具改动之前记下的原文
         self._verify_status: str | None = None     # 本轮最后一次自动验证的结果（pass / fail）
+        self._lesson: dict | None = None           # 本轮第一次被验证打回时的证据，修好并通过后用来生成经验候选（见 lessons.py）
         self.verify_failed = False     # 上一轮是否因验证没通过而被迫停下（单次模式据此返回非零退出码）
         self.ctx = ToolContext(cwd=cwd, state=self.state, emit=self.emit, cancel=self.cancel,
                                run_subagent=self._run_subagent if depth == 0 else None, skills=skills or {})
@@ -111,6 +112,7 @@ class Agent:
         self.verify_failed = False
         if self.depth == 0:   # 子 Agent 共用主 Agent 的终审记录，不能在这里清掉
             self._verify_status = None
+            self._lesson = None
             self._review_before = subcheck.snapshot(self.cwd) if self.permissions.mode == "review" else None
             self._review_originals = {}
 
@@ -255,6 +257,8 @@ class Agent:
         result = tool.execute(call["input"], self.ctx)
         if not tool.is_read_only and not result.is_error:
             self._dirty = True
+            if self._lesson is not None and tool.name in EDIT_TOOLS:   # 打回之后改了哪些文件，是候选里的证据
+                self._lesson["files"].add(os.path.relpath(self.ctx.resolve(str(call["input"].get("path", ""))), self.cwd))
         content = truncate(result.content)
         if self.hooks.has("PostToolUse"):
             out = self.hooks.run("PostToolUse", {"tool_name": tool.name, "tool_input": call["input"],
@@ -300,7 +304,14 @@ class Agent:
         self.emit("verify", status="pass" if result.passed else "fail", attempt=attempt, command=cfg.command,
                   exit_code=result.exit_code, output=verify_mod.tail(result.output), seconds=round(result.seconds, 2))
         self._verify_status = "pass" if result.passed else "fail"
+        if not result.passed and self._lesson is None:
+            self._lesson = {"command": cfg.command, "output": result.output, "files": set()}
         if result.passed:
+            if self._lesson is not None:   # 被打回过、后来修好了：这是唯一会沉淀经验的情形
+                lesson = lessons.build(self._lesson["command"], self._lesson["output"], sorted(self._lesson["files"]))
+                if lesson:
+                    self.emit("lesson", **lesson)
+                self._lesson = None
             self._dirty, self._verify_failures, self._verify_last = False, 0, None
             return ""
         self._verify_failures += 1

@@ -93,6 +93,9 @@ class Renderer:
         elif t == "hook":
             msg = e["message"] or "\n".join(e["warnings"])
             self.w(paint(f"⚓ hook[{e['hook']}] {msg[:300]}", "yellow") + "\n", err=True)
+        elif t == "memory_pending":
+            self.w(paint(f"💡 经验候选 #{e['index']}（来自被自动验证打回又修好的回合，确认后才会写入项目记忆）\n    {e['text']}\n"
+                         f"    写入：/memory accept {e['index']}　丢弃：/memory reject {e['index']}", "yellow") + "\n", err=True)
         elif t == "review":
             ok = e["verify"] == "pass"
             head = review_mod.headline(e["files"], e["hidden"], e["verify"]).replace("**", "")

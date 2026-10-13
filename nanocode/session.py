@@ -134,6 +134,11 @@ class Session:
                            context_window=int(s.get("context_window", 128000)), skills=self.skills,
                            verify=verify_cfg)
         self.agent.state["rag_config"] = s.get("rag", {})
+        # 经验沉淀：自动验证打回又修好的回合会产生候选，等用户用 /memory accept 确认（见 lessons.py）
+        self.suggest_memory = bool(s.get("suggest_memory", True))
+        self.pending_memory: list[dict] = []
+        self._declined_memory: set[str] = set()
+        self.bus.subscribe(self._on_lesson)
 
     # ------------------------------------------------------------------ 运行
 
@@ -231,7 +236,7 @@ class Session:
                      "  /mode [模式]       查看/切换权限模式：" + " | ".join(MODES),
                      "  /tools             列出可用工具",
                      "  /todos             查看待办清单",
-                     "  /memory            查看已加载的 NANOCODE.md",
+                     "  /memory [accept|reject [编号|all]]  查看已加载的 NANOCODE.md 和待确认的经验候选；确认 / 丢弃候选",
                      "  /init              让 Agent 分析项目并生成 NANOCODE.md",
                      "  /resume            恢复上一次会话",
                      "  /providers         列出内置的厂商预设",
@@ -269,9 +274,7 @@ class Session:
             todos = a.state.get("todos") or []
             return "\n".join(f"{STATUS_ICON[t['status']]} {t['content']}" for t in todos) or "暂无待办", None
         if name == "memory":
-            from .context import load_memory
-            mems = load_memory(self.cwd)
-            return "\n\n".join(f"── {p}\n{c}" for p, c in mems) or f"还没有 {MEMORY_FILE}。用 /init 生成，或用 # 追加一条。", None
+            return self.memory_command(arg), None
         if name == "init":
             return "", ("请分析这个项目（目录结构、技术栈、如何构建/运行/测试、代码风格约定），"
                         f"然后在项目根目录创建 {MEMORY_FILE}，内容要简洁实用，供以后的 AI 助手快速了解这个项目。")
@@ -283,6 +286,48 @@ class Session:
             prompt = self.commands[name]["template"].replace("$ARGUMENTS", arg)
             return "", prompt
         return f"未知命令 /{name}，输入 /help 查看帮助", None
+
+    def _on_lesson(self, e: dict) -> None:
+        if e["type"] != "lesson" or not self.suggest_memory:
+            return
+        from .context import load_memory
+        known = "\n".join(c for _, c in load_memory(self.cwd))
+        if e["key"] in known or e["key"] in self._declined_memory or any(p["key"] == e["key"] for p in self.pending_memory):
+            return   # 同一条约束已经记过 / 被拒绝过 / 已在待确认列表里
+        self.pending_memory.append({k: e[k] for k in ("text", "key", "command", "evidence", "files")})
+        self.bus.emit("memory_pending", index=len(self.pending_memory), text=e["text"], evidence=e["evidence"],
+                      files=e["files"], command=e["command"])
+
+    def memory_command(self, arg: str) -> str:
+        """/memory [accept|reject [编号|all]]：查看已加载的记忆和待确认的经验候选，确认或丢弃候选。"""
+        from .context import load_memory
+        action, _, which = arg.partition(" ")
+        which = which.strip() or ("all" if action in ("accept", "reject") else "")
+        if action in ("accept", "reject"):
+            if not self.pending_memory:
+                return "没有待确认的经验候选"
+            if which == "all":
+                picked = list(range(len(self.pending_memory)))
+            elif which.isdigit() and 1 <= int(which) <= len(self.pending_memory):
+                picked = [int(which) - 1]
+            else:
+                return f"编号无效：{which}。当前有 {len(self.pending_memory)} 条候选，用 /memory 查看"
+            chosen = [self.pending_memory[i] for i in picked]
+            self.pending_memory = [p for i, p in enumerate(self.pending_memory) if i not in picked]
+            if action == "accept":
+                for p in chosen:
+                    self.add_memory(p["text"])
+                return f"已写入 {MEMORY_FILE}：{len(chosen)} 条"
+            self._declined_memory.update(p["key"] for p in chosen)
+            return f"已丢弃 {len(chosen)} 条（本次会话不再提示同样的约束）"
+        if action:
+            return "用法：/memory                    查看记忆和待确认的候选\n      /memory accept [编号|all]  把候选写入记忆\n      /memory reject [编号|all]  丢弃候选"
+        mems = load_memory(self.cwd)
+        out = "\n\n".join(f"── {p}\n{c}" for p, c in mems) or f"还没有 {MEMORY_FILE}。用 /init 生成，或用 # 追加一条。"
+        if self.pending_memory:
+            out += "\n\n── 待确认的经验候选（来自被自动验证打回又修好的回合；确认后才会写入）\n" + "\n".join(
+                f"  {i}. {p['text']}" for i, p in enumerate(self.pending_memory, 1)) + "\n  → /memory accept [编号|all] 写入，/memory reject [编号|all] 丢弃"
+        return out
 
     def add_memory(self, text: str) -> str:
         path = os.path.join(self.cwd, MEMORY_FILE)
