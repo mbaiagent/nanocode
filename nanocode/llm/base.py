@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import time
 import urllib.error
@@ -30,6 +31,65 @@ class LLMError(Exception):
     def __init__(self, message: str, status: int | None = None):
         super().__init__(message)
         self.status = status
+
+
+class QuotaExhausted(LLMError):
+    """配额用尽（比如免费档每日限额）。重试没有意义：要等到重置时间之后才会恢复。"""
+
+
+# 429 分两种：瞬时限流（每分钟 N 次，几秒后重试就行）和配额用尽（每日限额，要等几小时）。
+# 服务端告诉我们的重置时间离得比这个远，就当作配额用尽。
+QUOTA_WAIT_SECONDS = 120
+QUOTA_KEYWORDS = ("per-day", "per day", "daily", "quota")
+
+
+def parse_reset(headers, now: float | None = None) -> float | None:
+    """从响应头算出"配额什么时候恢复"（Unix 时间戳，秒），拿不到返回 None。
+
+    X-RateLimit-Reset 在不同服务里写法不一样：毫秒时间戳、秒时间戳、或者"还有多少秒"，按数值大小区分。
+    Retry-After 是"还有多少秒"。
+    """
+    now = time.time() if now is None else now
+    if headers is None:
+        return None
+    reset = headers.get("X-RateLimit-Reset")
+    if reset:
+        try:
+            v = float(reset)
+        except ValueError:
+            v = None
+        if v is not None and v > 0:
+            if v > 1e11:
+                return v / 1000      # 毫秒时间戳
+            if v > 1e8:
+                return v             # 秒时间戳
+            return now + v           # 相对秒数
+    retry_after = headers.get("Retry-After")
+    if retry_after:
+        try:
+            return now + float(retry_after)
+        except ValueError:
+            pass
+    return None
+
+
+def quota_exhausted_message(headers, detail: str, now: float | None = None) -> str | None:
+    """判断一个 429 是不是配额用尽。是就返回给用户看的说明（含本地时间的恢复时间），不是返回 None。"""
+    now = time.time() if now is None else now
+    reset_at = parse_reset(headers, now)
+    wait = reset_at - now if reset_at is not None else None
+    by_header = wait is not None and wait > QUOTA_WAIT_SECONDS
+    by_text = any(k in detail.lower() for k in QUOTA_KEYWORDS)
+    if not (by_header or by_text):
+        return None
+    msg = "HTTP 429：配额已用完，不再重试。"
+    if reset_at is not None and wait > 0:
+        local = datetime.datetime.fromtimestamp(reset_at).astimezone()
+        hours, minutes = divmod(int(wait) // 60, 60)
+        msg += f"预计 {local:%Y-%m-%d %H:%M %Z} 恢复（约 {hours} 小时 {minutes} 分钟后）。"
+    else:
+        msg += "服务端没有说明什么时候恢复。"
+    return msg + f"\n服务端返回：{detail[:300]}"
 
 
 class Provider(ABC):
@@ -66,6 +126,11 @@ class Provider(ABC):
                 resp = urllib.request.urlopen(req, timeout=self.timeout)
             except urllib.error.HTTPError as e:
                 detail = e.read().decode("utf-8", "replace")[:2000]
+                if e.code == 429:
+                    quota_msg = quota_exhausted_message(e.headers, detail)
+                    if quota_msg:
+                        # 配额类 429 在重置时间之前 100% 失败，重试只会白等、还可能多占请求次数
+                        raise QuotaExhausted(quota_msg, status=429) from None
                 retryable = e.code == 429 or e.code >= 500
                 if retryable and attempt < self.max_retries:
                     attempt += 1
