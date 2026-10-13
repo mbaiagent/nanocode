@@ -108,6 +108,32 @@ class TestAnthropic(unittest.TestCase):
         self.assertEqual(body["system"][0]["cache_control"], {"type": "ephemeral"})
         self.assertEqual(body["messages"][2]["content"][0]["tool_use_id"], "c1")
 
+    def run_stream(self, *events):
+        srv = FakeSSEServer(sse(*events))
+        try:
+            return AnthropicProvider("claude-x", api_key="k", base_url=srv.url).complete("SYS", HISTORY, TOOLS)
+        finally:
+            srv.close()
+
+    def test_explicit_null_usage_fields_do_not_crash(self):
+        """OpenRouter 等兼容端点会显式返回 "cache_read_input_tokens": null（#18）。dict.get 的默认值只对"键缺失"生效。"""
+        r = self.run_stream(
+            ("message_start", {"type": "message_start", "message": {"usage": {
+                "input_tokens": 7, "cache_read_input_tokens": None, "cache_creation_input_tokens": None, "output_tokens": None}}}),
+            ("content_block_start", {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": None}}),
+            ("content_block_delta", {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "好"}}),
+            ("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": None}}),
+            ("message_stop", {"type": "message_stop"}))
+        self.assertEqual(r.content[0], {"type": "text", "text": "好"})
+        self.assertEqual((r.usage.input_tokens, r.usage.output_tokens), (7, 0))     # 不能是 None：后面要累加
+
+    def test_whole_usage_object_null(self):
+        r = self.run_stream(
+            ("message_start", {"type": "message_start", "message": {"usage": None}}),
+            ("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": None}),
+            ("message_stop", {"type": "message_stop"}))
+        self.assertEqual((r.usage.input_tokens, r.usage.output_tokens), (0, 0))
+
 
 class TestFactory(unittest.TestCase):
     def test_presets(self):
