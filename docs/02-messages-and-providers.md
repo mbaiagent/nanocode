@@ -75,6 +75,7 @@ LLMResponse(content=[...内容块...], stop_reason="tool_use" | "end_turn" | "ma
 |---|---|---|
 | `system` 参数 | 第一条 `role: system` 消息 | |
 | `tool_use` 块 | assistant 消息的 `tool_calls` | `arguments` 是 **JSON 字符串**，不是对象 |
+| `tool_use` 块的 `extra_content` | tool_call 上同名字段 | 服务端附在调用上、下一轮必须原样带回的数据（Gemini thinking 模型的 `thought_signature`，缺了会 400）。Agent 不解读它，只随消息保存；发给 Anthropic 时会去掉 |
 | `tool_result` 块 | 独立的 `role: tool` 消息 | 每个结果一条；必须紧跟在 assistant 之后、普通 user 文本之前 |
 | `input_schema` | `function.parameters` | 内容相同，换个位置 |
 | `stop_reason: tool_use` | `finish_reason: tool_calls` | 有些厂商不规范，nanocode 以"是否真有工具调用"为准 |
