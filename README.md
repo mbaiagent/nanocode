@@ -166,7 +166,7 @@ nanocode/
 │   └── planning.py      todo_write / task（子 Agent）/ skill
 ├── agent.py           ★ 核心循环
 ├── rag.py             RAG：切块、BM25、向量、混合检索、增量索引
-├── permissions.py     权限模式与规则（路径统一用真实路径判断）
+├── permissions.py     权限模式与规则（路径统一用真实路径判断，bash 复合命令按段匹配）
 ├── trust.py           工作区信任：陌生项目的配置不经同意不生效
 ├── hooks.py           生命周期钩子
 ├── verify.py          自动验证：改完先跑检查命令，不通过就回头修
@@ -222,12 +222,13 @@ T01–T10 是普通任务；T11–T13 专门设了陷阱（最容易写出的第
 
 nanocode 会在你的电脑上执行模型生成的命令。默认模式下每条命令都需要你确认；`review` 模式只对白名单内的检查命令和项目内的编辑免确认，高风险操作永远确认；`bypass` 模式请只在容器或虚拟机里使用。
 
-下面三类问题曾在本项目里真实存在，复现后修复，并由 `tests/test_security.py` 钉住，避免回退：
+下面四类问题曾在本项目里真实存在，复现后修复，并由 `tests/test_security.py`、`tests/test_bash_rules.py` 钉住，避免回退：
 
 | 问题 | 后果 | 修复 |
 |---|---|---|
 | 权限检查和工具各自解析路径，检查时没展开 `~`、没跟随软链接 | 读 `~/.ssh`、通过软链接读项目外文件不需要确认；accept_edits 模式下可以直接改 `~/.bashrc` | 两边共用一个函数，先展开 `~` 再取 `realpath`；路径规则也匹配规范化后的路径 |
 | Web 服务不校验请求来源 | 用户开着 nanocode 时访问恶意网页，网页可以用 `text/plain` 请求或 DNS 重绑定操控 Agent | 每个请求校验 Host 和 Origin；POST 只收 JSON；`/api` 需要启动时随机生成的令牌 |
+| bash 规则对整条命令做通配匹配 | `bash(python3 -m unittest*)` 放行了 `python3 -m unittest && rm -rf /`，却不认模型自己加的 `cd dir &&` 前缀；`bash(rm -rf*)` 拦不住 `cd x && rm -rf y` | 按 `&&` `;` `\|` 等拆成段：allow 每段都要命中，deny 任一段命中就拒绝；`$(…)`、反引号里藏的命令 allow 不放行（`permissions.py: split_command`） |
 | 项目配置不经同意就生效 | clone 一个陌生仓库后启动 nanocode，它配置的 hooks、MCP 命令立即执行；还能改权限模式、把 API 请求发到别处 | 项目配置中的敏感项需要用户确认信任，配置变化后重新确认（`trust.py`） |
 
 这些都是编程 Agent 的典型攻击面，详见 [docs/04-permissions-and-hooks.md](docs/04-permissions-and-hooks.md)。
