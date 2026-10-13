@@ -40,6 +40,8 @@ from . import verify as verify_mod
 from .tools.base import ToolContext, ToolRegistry, truncate
 
 
+LLM_FAILED_PREFIX = "模型调用失败："   # 模型接口出错（配额、网络、服务故障）导致任务中止时，最终回答的开头；评测靠它区分"模型没做好"和"根本没调通"
+
 class Cancelled(Exception):
     pass
 
@@ -146,7 +148,7 @@ class Agent:
                 break
             except LLMError as e:
                 self.emit("error", message=str(e))
-                final = f"模型调用失败：{e}"
+                final = f"{LLM_FAILED_PREFIX}{e}"
                 break
             self.usage.add(resp.usage)
             content = resp.content or [text_block("(空回复)")]
