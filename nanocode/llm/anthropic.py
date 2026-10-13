@@ -71,13 +71,14 @@ class AnthropicProvider(Provider):
             ev = json.loads(data)
             t = ev.get("type")
             if t == "message_start":
-                u = ev["message"].get("usage", {})
-                usage.input_tokens = (u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
-                                      + u.get("cache_creation_input_tokens", 0))
+                # 兼容端点（如 OpenRouter）会显式返回 null；dict.get 的默认值只在"键缺失"时生效，所以全部用 `or 0`
+                u = (ev.get("message") or {}).get("usage") or {}
+                usage.input_tokens = ((u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
+                                      + (u.get("cache_creation_input_tokens") or 0))
             elif t == "content_block_start":
                 cb = ev["content_block"]
                 if cb["type"] == "text":
-                    blocks.append({"type": "text", "text": cb.get("text", "")})
+                    blocks.append({"type": "text", "text": cb.get("text") or ""})
                 elif cb["type"] == "tool_use":
                     blocks.append({"type": "tool_use", "id": cb["id"], "name": cb["name"], "input": {}})
                     json_buf[len(blocks) - 1] = ""
@@ -86,18 +87,21 @@ class AnthropicProvider(Provider):
             elif t == "content_block_delta":
                 d, idx = ev["delta"], len(blocks) - 1
                 if d["type"] == "text_delta":
-                    blocks[idx]["text"] += d["text"]
-                    if on_text:
-                        on_text(d["text"])
+                    piece = d.get("text") or ""
+                    blocks[idx]["text"] += piece
+                    if on_text and piece:
+                        on_text(piece)
                 elif d["type"] == "input_json_delta":
-                    json_buf[idx] += d["partial_json"]
+                    json_buf[idx] += d.get("partial_json") or ""
             elif t == "content_block_stop":
                 idx = len(blocks) - 1
                 if idx in json_buf:
                     blocks[idx]["input"] = parse_tool_input(json_buf.pop(idx))
             elif t == "message_delta":
                 stop = ev["delta"].get("stop_reason") or stop
-                usage.output_tokens = ev.get("usage", {}).get("output_tokens", usage.output_tokens)
+                out = (ev.get("usage") or {}).get("output_tokens")
+                if out is not None:
+                    usage.output_tokens = out
             elif t == "error":
                 raise LLMError(str(ev.get("error")))
 
