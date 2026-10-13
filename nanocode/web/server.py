@@ -40,12 +40,20 @@ LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 class WebApp:
-    def __init__(self, session: Session, permission_timeout: float = 600):
+    def __init__(self, session: Session, permission_timeout: float | None = None, disconnect_grace: float = 30):
         self.session = session
         self.pending: dict[str, dict] = {}
         self.lock = threading.Lock()
         self.token = secrets.token_urlsafe(24)
+        if permission_timeout is None:
+            permission_timeout = float(os.environ.get("NANOCODE_PERMISSION_TIMEOUT") or 600)
         self.permission_timeout = permission_timeout
+        # 权限询问期间如果一个浏览器都没连着（页面关了），宽限这么多秒后按拒绝处理
+        self.disconnect_grace = disconnect_grace
+        self.sse_clients = 0
+        self._sse_lock = threading.Lock()
+        # 事件流空闲时每隔这么多秒发一次心跳；服务端也是靠写心跳才发现浏览器已断开的
+        self.sse_ping_interval = 15
         self.allowed_hosts: set[str] = set(LOCAL_HOSTS)
         self.allowed_origins: set[str] = set()
         session.permissions.ask_fn = self.ask
@@ -61,16 +69,27 @@ class WebApp:
     def ask(self, name: str, input: dict, target: str) -> str:
         """权限询问：发事件给浏览器，然后阻塞等待 /api/permission 的回答。
 
-        超时（默认 10 分钟没人回答，比如浏览器被关掉了）按拒绝处理，Agent 不会永远卡住。
+        按拒绝处理的三种情况，Agent 都不会永远卡住（等待期间 Agent 占着全局 busy 锁，别的请求都会被拒）：
+          - 用户点了中断
+          - 超过 permission_timeout（默认 10 分钟，环境变量 NANOCODE_PERMISSION_TIMEOUT 可改）
+          - 没有任何浏览器连着（页面关了）超过 disconnect_grace 秒。刷新页面会很快重连，不受影响。
         """
         rid = uuid.uuid4().hex[:8]
         slot = {"event": threading.Event(), "answer": "no"}
         self.pending[rid] = slot
         self.session.bus.emit("permission_request", id=rid, name=name, input=input, target=target)
         deadline = time.time() + self.permission_timeout
+        no_client_since = None
         while not slot["event"].wait(0.2):
-            if self.session.agent.cancel.is_set() or time.time() > deadline:
+            now = time.time()
+            if self.session.agent.cancel.is_set() or now > deadline:
                 break
+            if self.sse_clients == 0:
+                no_client_since = no_client_since or now
+                if now - no_client_since > self.disconnect_grace:
+                    break
+            else:
+                no_client_since = None
         self.pending.pop(rid, None)
         self.session.bus.emit("permission_answer", id=rid, decision=slot["answer"])
         return slot["answer"]
@@ -213,12 +232,14 @@ def make_handler(app: WebApp):
             self.end_headers()
             q: queue.Queue = queue.Queue()
             unsubscribe = app.session.bus.subscribe(q.put)
+            with app._sse_lock:
+                app.sse_clients += 1
             try:
                 for e in list(app.session.bus.history):  # 补发历史，刷新页面不丢状态
                     self._send_event(e)
                 while True:
                     try:
-                        e = q.get(timeout=15)
+                        e = q.get(timeout=app.sse_ping_interval)
                     except queue.Empty:
                         self.wfile.write(b": ping\n\n")
                         self.wfile.flush()
@@ -228,6 +249,8 @@ def make_handler(app: WebApp):
                 pass
             finally:
                 unsubscribe()
+                with app._sse_lock:
+                    app.sse_clients -= 1
 
         def _send_event(self, e):
             data = json.dumps(e, ensure_ascii=False, default=str)

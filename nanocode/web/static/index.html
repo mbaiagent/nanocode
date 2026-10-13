@@ -275,11 +275,16 @@ async function post(url, body) {
   const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-nanocode-token": TOKEN }, body: JSON.stringify(body || {}) });
   return r.json();
 }
-async function refreshState() {
+// sync=true 只用于页面刚加载时：以服务端的 busy 为准。历史事件缓冲有上限（2000 条），长任务的
+// "user" 事件可能已被挤掉，光靠重放事件会误判成空闲。
+// 之后的刷新（turn_end / command 触发）不能这样做：turn_end 事件发出时服务端 busy 还没来得及清掉，
+// 用服务端状态覆盖会让界面卡在"忙碌"。
+async function refreshState(sync = false) {
   const s = await getJSON("/api/state");
   $("#meta").textContent = `${s.provider}/${s.model} · ${s.cwd}`;
   $("#mode").value = s.mode;
-  if (!s.busy) setBusy(false);
+  if (sync) setBusy(!!s.busy);
+  else if (!s.busy) setBusy(false);
   renderTodos(s.todos);
 }
 async function refreshContext() {
@@ -314,7 +319,7 @@ $("#mode").onchange = () => post("/api/chat", { message: "/mode " + $("#mode").v
 
 const es = new EventSource("/api/events?token=" + encodeURIComponent(TOKEN));
 es.onmessage = (m) => onEvent(JSON.parse(m.data));
-renderTimeline(); renderTodos([]); refreshState(); refreshContext();
+renderTimeline(); renderTodos([]); refreshState(true); refreshContext();
 </script>
 </body>
 </html>
