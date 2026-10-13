@@ -129,7 +129,8 @@ class Session:
         self.skills = discover_skills(self.cwd)
         self.commands = discover_commands(self.cwd)
         self.agent = Agent(self.provider, self.registry, self.permissions, self.hooks, self.bus, self.cwd,
-                           system_prompt=lambda: build_system_prompt(self.cwd, self.skills),
+                           system_prompt=lambda: build_system_prompt(self.cwd, self.skills, model=self.provider.model,
+                                                                     provider=self.provider_name, protocol=self.provider.name),
                            max_tokens=int(s.get("max_tokens", 8192)),
                            context_window=int(s.get("context_window", 128000)), skills=self.skills,
                            verify=verify_cfg)
