@@ -10,6 +10,9 @@
     llm_response   模型这一步的完整输出（内容块、停止原因、token 用量）
     tool_call      模型要调用某个工具
     permission     权限决策（allow / deny 以及原因）
+    permission_request  需要问用户：请求 id、工具、参数（Web 界面据此弹出确认框）
+    permission_answer   用户回答了（或超时 / 断开按拒绝处理）
+    command        执行了一条 / 斜杠命令（命令原文和输出）
     tool_result    工具执行结果
     todos          待办清单更新
     compact        上下文被压缩

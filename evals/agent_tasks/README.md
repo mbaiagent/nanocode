@@ -44,7 +44,7 @@ python3 evals/agent_tasks/run.py --provider openrouter --model openrouter/free -
 
 ## 用公开基准做外部参照（Aider Polyglot）
 
-自带的 10 个任务偏简单，模型第一次就做对的话，看不出"自动验证 / 重试"这类机制有没有用。可以再用 Aider Polyglot（Exercism 习题）做外部参照。适配脚本在 `evals/polyglot/`，只新增评测代码，不改 agent 本身：
+自带的 T01–T10 偏简单（T11–T13 是专门设了陷阱的，见上一节），模型第一次就做对的话，看不出"自动验证 / 重试"这类机制有没有用。可以再用 Aider Polyglot（Exercism 习题）做外部参照。适配脚本在 `evals/polyglot/`，只新增评测代码，不改 agent 本身：
 
 ```bash
 git clone --depth 1 https://github.com/Aider-AI/polyglot-benchmark /tmp/polyglot-benchmark
@@ -62,7 +62,7 @@ python3 evals/agent_tasks/run.py --tasks-dir evals/polyglot/tasks --provider dee
 
 ## 对验证循环敏感的任务（T11–T13）
 
-前 10 个任务模型第一次就能做对的话，"改完自动验证、失败回头修"（见 `--verify`）这类机制就测不出差别。T11–T13 专门设了陷阱：**最容易写出的第一次尝试是错的**。每个任务带一份 `naive/`，就是这份典型的第一次尝试，`tests/test_agent_eval.py` 会断言它过不了判定，所以"确实有陷阱"是被测试保证的，不是口头声明。陷阱分两类，测的东西不同：
+T01–T10 模型第一次就能做对的话，"改完自动验证、失败回头修"（见 `--verify`）这类机制就测不出差别。T11–T13 专门设了陷阱：**最容易写出的第一次尝试是错的**。每个任务带一份 `naive/`，就是这份典型的第一次尝试，`tests/test_agent_eval.py` 会断言它过不了判定，所以"确实有陷阱"是被测试保证的，不是口头声明。陷阱分两类，测的东西不同：
 
 | 类型 | 任务 | 第一次尝试能通过 Agent 看得到的测试吗 | 用来看什么 |
 |---|---|---|---|
@@ -73,11 +73,13 @@ python3 evals/agent_tasks/run.py --tasks-dir evals/polyglot/tasks --provider dee
 
 ```bash
 python3 evals/agent_tasks/run.py --provider deepseek --model deepseek-chat --tasks T11,T12,T13 --repeat 5
-# 对比：在对应项目里加上 verify 配置后再跑一遍，看成功率、平均步数和 token
+# 对照：同样的参数加上 --verify（Agent 想结束时先在工作目录里跑 python3 -m unittest discover，不过就打回去改），看成功率、平均步数和 token
+python3 evals/agent_tasks/run.py --provider deepseek --model deepseek-chat --tasks T11,T12,T13 --repeat 5 --verify
+# 也可以自己指定检查命令：--verify "python3 -m unittest discover -s . -p 'test_*.py'"
 ```
 
 没有做的：issue 里提到的"需要 20 步以上的长任务"。要得确定、不依赖模型随机性的长任务不好写，先不加。
 
 ## 局限
 
-13 个任务都很小、都是 Python、都在单个目录里，只能代表"小范围修改"这一类工作。模型有随机性，单次结果波动大，比较时请用 `--repeat 3` 或更多。
+T01–T13 都很小、都是 Python、都在单个目录里，只能代表"小范围修改"这一类工作。模型有随机性，单次结果波动大，比较时请用 `--repeat 3` 或更多。

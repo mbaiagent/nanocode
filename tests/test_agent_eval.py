@@ -1,6 +1,7 @@
 """评测框架自检：判定脚本必须"参考答案能过、什么都不做过不了"，否则评测出来的分数没有意义。"""
 
 import importlib.util
+import json
 import os
 import shlex
 import shutil
@@ -158,7 +159,7 @@ class RunnerTest(unittest.TestCase):
         work = run.prepare(task)
         try:
             args = SimpleNamespace(provider="mock", model="", base_url="", protocol="", mode="bypass",
-                                   max_steps=10, timeout=60)
+                                   max_steps=10, timeout=60, verify="")
             stats = run.run_agent(task, work, args)
             self.assertGreater(stats["steps"], 0)
             self.assertGreater(stats["tool_calls"], 0)
@@ -176,6 +177,42 @@ class RunnerTest(unittest.TestCase):
             self.assertEqual([f.rsplit(".", 1)[1] for f in files], ["json", "md"])
             with open(os.path.join(out, files[1]), encoding="utf-8") as f:
                 self.assertIn("通过率：2/2", f.read())
+        finally:
+            shutil.rmtree(out)
+
+    def test_verify_flag_reaches_the_agent_and_the_report(self):
+        """--verify 要真的传给 Agent（回合结束前会跑这条命令），并写进报告，不然对照实验没法区分两组。"""
+        out = tempfile.mkdtemp()
+        try:
+            self.assertEqual(run.main(["--provider", "mock", "--tasks", "T01", "--verify", "true", "--out", out]), 0)
+            files = sorted(os.listdir(out))
+            with open(os.path.join(out, files[0]), encoding="utf-8") as f:
+                data = json.load(f)
+            self.assertEqual(data["meta"]["verify"], "true")
+            with open(os.path.join(out, files[1]), encoding="utf-8") as f:
+                self.assertIn("自动验证：开（true）", f.read())
+        finally:
+            shutil.rmtree(out)
+
+    def test_verify_really_gates_the_agent_run(self):
+        """检查命令永远失败时，开了 --verify 的 Agent 被打回重试，所以步数更多；关着则一圈走完。"""
+        def steps(verify):
+            task = run.load_tasks("T01")[0]
+            work = run.prepare(task)
+            try:
+                args = SimpleNamespace(provider="mock", model="", base_url="", protocol="", mode="bypass",
+                                       max_steps=10, timeout=60, verify=verify)
+                return run.run_agent(task, work, args)["steps"]
+            finally:
+                shutil.rmtree(work)
+        self.assertGreater(steps("false"), steps(""))
+
+    def test_verify_is_off_by_default(self):
+        out = tempfile.mkdtemp()
+        try:
+            run.main(["--provider", "mock", "--tasks", "T01", "--out", out])
+            with open(os.path.join(out, sorted(os.listdir(out))[1]), encoding="utf-8") as f:
+                self.assertIn("自动验证：关", f.read())
         finally:
             shutil.rmtree(out)
 

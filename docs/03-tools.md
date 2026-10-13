@@ -55,7 +55,7 @@ class Tool:
 | `grep` | ✓ | 按内容找 | 正则；`文件:行号: 内容` 格式 |
 | `search_docs` | ✓ | 按含义检索文档 | BM25 + 可选向量，见第 10 章；已知确切名字时用 grep |
 | `todo_write` | ✓ | 待办清单 | 见第 06 章 |
-| `task` | ✓ | 子 Agent | 见第 06 章 |
+| `task` | ✓ | 子 Agent | 见第 06 章；可带 `check`、`allowed_paths` 做验收（第 11 章） |
 | `skill` | ✓ | 加载技能说明 | 见第 06 章 |
 
 ## 三个关键设计

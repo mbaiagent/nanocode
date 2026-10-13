@@ -1,6 +1,6 @@
 # 04 · 权限与 Hooks
 
-> 对应源码：`nanocode/permissions.py`、`nanocode/hooks.py`
+> 对应源码：`nanocode/permissions.py`、`nanocode/hooks.py`、`nanocode/risk.py`
 
 ## 为什么需要权限
 
@@ -28,16 +28,33 @@
 
 deny 永远优先：即使在 bypass 模式下，`bash(rm -rf*)` 规则也会生效。
 
-## 四种模式
+`review`（终审）模式的顺序不同：deny 之后、allow 之前多一道"高风险一律确认"，allow 之后又多一道"项目内编辑 / 白名单检查命令自动放行"。见下一节。
+
+## 五种模式
 
 | 模式 | 读文件 | 改文件 | 执行命令 | 适用场景 |
 |---|---|---|---|---|
 | `default` | 自动 | 询问 | 询问 | 日常使用 |
 | `accept_edits` | 自动 | 自动（工作目录内） | 询问 | 信任它改代码，但命令要看一眼 |
 | `plan` | 自动 | **禁止** | **禁止** | 让它先调研、出方案，你确认后再切模式执行 |
+| `review` | 自动 | 自动（项目内；配置和密钥文件除外） | 白名单内的测试 / 只读命令自动，其余询问 | 少被打断，但**高风险永远问**，结束时看汇总 |
 | `bypass` | 自动 | 自动 | 自动 | 只在容器/虚拟机等隔离环境里用 |
 
 **plan 模式**是一个很实用的工作流：复杂任务先 `/mode plan`，让 Agent 读代码、出方案；你审阅、调整方案；再 `/mode accept_edits` 让它执行。被拒绝的写操作会返回一段说明，模型读到后就知道该先给方案。
+
+### `review` 终审模式
+
+`default` 事事确认，人会习惯性点"允许"，真正危险的那一次也跟着点掉了；想少点几次，只能在 allow 里写 `bash(*)`，但这样 `rm -rf` 也零确认。`review` 在两个极端之间加了一档：
+
+- **自动放行**：读项目内文件、改项目内文件、白名单内的检查命令（`pytest`、`python -m unittest`、`mypy`、`ruff check`、`cargo test`、`go test`、`npm test`、`make test`、只读的 `git status/diff/log/show`、`ls/cat/grep` 等）。
+- **询问**：认不出的一切。
+- **永远确认**：删除、`git push / reset --hard / clean`、提权、改权限、结束进程、安装依赖、`curl | sh`；写项目外的路径、写 `.env`、`.git/`、`.nanocode/`、`.github/`、密钥文件。**无论 allow 规则怎么写**，也不支持「总是允许」（点了只放行这一次，不留规则）。deny 规则照常最优先。
+
+方向是**失败安全**（`risk.py`）：用白名单决定什么能自动放行，自动放行的命令里不能有任何 shell 拼接符（`; & | ` $ < > ( ) { }`），也不能引用项目外路径；认不出的一律问。所以把命令藏进 `python -c` 之类只会变成"询问"。
+
+任务结束时，`review` 模式会汇总本轮改动（文件、diff、自动验证结果）；提交、推送本来就不在白名单里，所以最后一步仍然是你点头。
+
+**局限**：这是启发式规则，不是沙箱。测试命令会执行项目里的代码，包括 Agent 刚写的，所以"写一个会删文件的测试再跑 `pytest`"会被自动放行——汇总是事后给你看的。需要强隔离请用容器或虚拟机。完整讲解见第 11 章。
 
 ## 规则
 
@@ -80,7 +97,7 @@ deny 永远优先：即使在 bypass 模式下，`bash(rm -rf*)` 规则也会生
 
 | 配置项 | 能做什么 |
 |---|---|
-| `hooks`、`mcpServers` | 在你电脑上执行任意命令（MCP 在启动时就执行） |
+| `hooks`、`mcpServers`、`verify` | 在你电脑上执行任意命令（MCP 在启动时就执行；`verify` 在任务结束时执行） |
 | `permissions.allow`、`mode` | 给危险操作开绿灯，甚至直接切到 bypass |
 | `provider`、`base_url`、`protocol`、`headers`、`rag.embedding` | 把请求连同你环境变量里的 API Key 发到攻击者的服务器 |
 
@@ -126,7 +143,7 @@ nanocode 的三道防线（`web/server.py` 的 `_guard`）：
 | `UserPromptSubmit` | 用户消息发给模型前 | 拦截这条消息 | 注入上下文（当前分支、今日日期）；过滤敏感内容 |
 | `PreToolUse` | 工具执行前 | 拦截这次调用，stderr 作为原因反馈给模型 | 自定义安全检查、禁止某些操作 |
 | `PostToolUse` | 工具执行后 | 把 stderr 追加到工具结果里给模型看 | 自动格式化、lint、类型检查、审计日志 |
-| `Stop` | 模型准备结束时 | 不许结束，stderr 作为新指令 | "测试没过不许说完成" |
+| `Stop` | 模型准备结束时 | 不许结束，stderr 作为新指令 | "测试没过不许说完成"（内置的 `verify` 做同样的事，且有重试上限，见第 11 章） |
 
 退出码 0 表示正常（`UserPromptSubmit` 的 stdout 会作为附加上下文）；其他退出码只打印警告。
 
@@ -167,6 +184,7 @@ Claude Code 的 hooks 配置多一层嵌套（`{"matcher": "...", "hooks": [{"ty
 
 ## 思考题
 
-1. `Stop` hook 如果一直返回 2，会发生什么？nanocode 靠什么防止无限循环？
+1. `Stop` hook 如果一直返回 2，会发生什么？nanocode 靠什么防止无限循环？（对比第 11 章的 `verify`，它多了哪两道保险？）
 2. 子 Agent 的工具调用会经过权限检查吗？看 `_run_subagent`：它和主 Agent 共用同一个 `PermissionManager`。这样设计有什么好处？
 3. 为什么 `todo_write` 被标记为只读？它明明修改了状态。
+4. `review` 模式里，为什么高风险检查要放在 allow 规则**之前**？如果放在之后，会发生什么？
