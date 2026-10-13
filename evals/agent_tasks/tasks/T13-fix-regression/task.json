@@ -1,0 +1,7 @@
+{
+  "id": "T13-fix-regression",
+  "title": "修一个 bug，别弄坏已有行为",
+  "kind": "code",
+  "prompt": "slugs.py 里的 slugify('Hello,  World') 返回 'hello--world'，应该是 'hello-world'：连续的非字母数字字符只应该产生一个连字符。请修复它，test_slugs.py 应当通过。其余已有行为不要变。",
+  "trap": "needs_own_checks"
+}
