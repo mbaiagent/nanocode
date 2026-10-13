@@ -90,6 +90,7 @@ def run_check(task: dict, work: str, answer: str) -> tuple[bool, str]:
 
 
 def run_agent(task: dict, work: str, args) -> dict:
+    from nanocode.agent import LLM_FAILED_PREFIX
     from nanocode.session import Options, Session
     events: list[dict] = []
     logs: list[str] = []
@@ -112,6 +113,8 @@ def run_agent(task: dict, work: str, args) -> dict:
     errors = [e for e in events if e["type"] == "error"]
     return {
         "final": final,
+        # 模型接口出错（配额用完、网络断了、服务故障）：任务没被公平地做过，不能算"模型没做好"
+        "infra_error": final.startswith(LLM_FAILED_PREFIX),
         "error": error or (errors[-1]["message"] if errors else ""),
         "timed_out": session.agent.cancel.is_set(),
         "steps": sum(1 for e in events if e["type"] == "llm_request"),
@@ -137,10 +140,12 @@ def git_commit() -> str:
 def summarize(runs: list[dict]) -> list[dict]:
     rows = []
     for tid in sorted({r["task"] for r in runs}):
-        rs = [r for r in runs if r["task"] == tid]
-        avg = lambda k: round(sum(r.get(k, 0) for r in rs) / len(rs), 1)  # noqa: E731
+        all_rs = [r for r in runs if r["task"] == tid]
+        rs = [r for r in all_rs if not r.get("infra_error")]   # 只统计真正让模型做过的运行
+        avg = lambda k: round(sum(r.get(k, 0) for r in rs) / len(rs), 1) if rs else 0.0  # noqa: E731
         fails = [r["check_reason"] for r in rs if not r["passed"]]
         rows.append({"task": tid, "passed": sum(r["passed"] for r in rs), "runs": len(rs),
+                     "infra_errors": len(all_rs) - len(rs),
                      "steps": avg("steps"), "tool_calls": avg("tool_calls"), "tool_errors": avg("tool_errors"),
                      "input_tokens": avg("input_tokens"), "output_tokens": avg("output_tokens"),
                      "seconds": avg("seconds"), "last_failure": fails[-1] if fails else ""})
@@ -150,15 +155,20 @@ def summarize(runs: list[dict]) -> list[dict]:
 def markdown(meta: dict, rows: list[dict]) -> str:
     total = sum(r["runs"] for r in rows)
     passed = sum(r["passed"] for r in rows)
+    infra = sum(r.get("infra_errors", 0) for r in rows)
     lines = [f"# Agent 任务评测：{meta['provider']}/{meta['model']}", "",
              f"- 时间：{meta['date']}　nanocode 提交：{meta['commit'] or '未知'}　Python {meta['python']}　{meta['platform']}",
              f"- 权限模式：{meta['mode']}　最大步数：{meta['max_steps']}　单任务超时：{meta['timeout']}s　每题重复：{meta['repeat']}",
              f"- 自动验证：{('开（' + meta['verify'] + '）') if meta.get('verify') else '关'}",
-             f"- **通过率：{passed}/{total}（{passed / total:.0%}）**" if total else "- 没有运行任何任务",
+             f"- **通过率：{passed}/{total}（{passed / total:.0%}）**" if total else "- **没有一次有效运行，没有通过率**",
+             *([f"- ⚠️ 另有 {infra} 次运行因模型接口出错（配额、网络、服务故障）中止，**未计入通过率**，不能当作模型的成绩。"
+                "表中「通过」列写成 `通过/有效运行（+N 次接口出错）`"] if infra else []),
+             *([f"- ⚠️ 连续 {meta['max_infra_errors']} 次模型接口出错，评测已提前停止，没有跑完全部任务"] if meta.get("aborted") else []),
              "", "| 任务 | 通过 | 平均步数 | 工具调用 | 工具报错 | 输入 tokens | 输出 tokens | 耗时(s) | 最近一次失败原因 |",
              "|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
-        lines.append(f"| {r['task']} | {r['passed']}/{r['runs']} | {r['steps']} | {r['tool_calls']} | {r['tool_errors']} | "
+        shown = f"{r['passed']}/{r['runs']}" + (f"（+{r['infra_errors']} 次接口出错）" if r.get("infra_errors") else "")
+        lines.append(f"| {r['task']} | {shown} | {r['steps']} | {r['tool_calls']} | {r['tool_errors']} | "
                      f"{r['input_tokens']:.0f} | {r['output_tokens']:.0f} | {r['seconds']} | {r['last_failure'].replace('|', '/')} |")
     if meta.get("usage_estimated"):
         lines += ["", "注：该 provider 没有返回 token 用量，表中 token 为估算值。"]
@@ -182,6 +192,8 @@ def main(argv=None) -> int:
                     help=f"打开自动验证：Agent 想结束时先在工作目录里跑这条命令，不过就打回去改（只写 --verify 则用 {DEFAULT_VERIFY!r}，"
                          "即项目里 Agent 看得到的测试）。不加就是关闭，用于对照")
     ap.add_argument("--reference", action="store_true", help="不调模型，用参考答案验证评测框架")
+    ap.add_argument("--max-infra-errors", type=int, default=3, metavar="N",
+                    help="连续 N 次运行因模型接口出错（配额用完、网络断了）就提前停止，不再白白跑完剩下的任务；0 = 不提前停止")
     ap.add_argument("--keep", action="store_true", help="保留每个任务的工作目录，便于排查")
     ap.add_argument("--out", default=os.path.join(HERE, "results"))
     args = ap.parse_args(argv)
@@ -200,7 +212,11 @@ def main(argv=None) -> int:
         print("没有匹配的任务", file=sys.stderr)
         return 2
     runs = []
+    infra_streak = 0
+    aborted = False
     for task in tasks:
+        if aborted:
+            break
         for i in range(args.repeat):
             work = prepare(task)
             if args.reference:
@@ -209,12 +225,22 @@ def main(argv=None) -> int:
             else:
                 stats = run_agent(task, work, args)
                 answer = stats["final"]
-            passed, reason = run_check(task, work, answer)
+            if stats.get("infra_error"):
+                passed, reason = False, "模型接口出错，未计入通过率：" + (stats["error"] or answer).splitlines()[0][:120]
+                infra_streak += 1
+            else:
+                passed, reason = run_check(task, work, answer)
+                infra_streak = 0
             runs.append({"task": task["id"], "attempt": i + 1, "passed": passed, "check_reason": reason,
                          "workdir": work if args.keep else "", **stats})
-            print(f"{'✓' if passed else '✗'} {task['id']} #{i + 1}  步数 {stats['steps']}  {reason}", flush=True)
+            print(f"{'✓' if passed else '⚠' if stats.get('infra_error') else '✗'} {task['id']} #{i + 1}  "
+                  f"步数 {stats['steps']}  {reason}", flush=True)
             if not args.keep:
                 shutil.rmtree(work, ignore_errors=True)
+            if args.max_infra_errors and infra_streak >= args.max_infra_errors:
+                aborted = True
+                print(f"连续 {infra_streak} 次模型接口出错，提前停止（--max-infra-errors 可调整）", file=sys.stderr)
+                break
 
     meta = {"provider": "reference" if args.reference else args.provider,
             "model": "-" if args.reference else (args.model or "default"),
@@ -222,7 +248,8 @@ def main(argv=None) -> int:
             "python": platform.python_version(), "platform": f"{platform.system()} {platform.machine()}",
             "mode": args.mode, "max_steps": args.max_steps, "timeout": args.timeout, "repeat": args.repeat,
             "verify": "" if args.reference else args.verify,
-            "usage_estimated": any(r.get("usage_estimated") for r in runs)}
+            "usage_estimated": any(r.get("usage_estimated") for r in runs),
+            "aborted": aborted, "max_infra_errors": args.max_infra_errors}
     rows = summarize(runs)
     os.makedirs(args.out, exist_ok=True)
     stem = f"{datetime.datetime.now():%Y%m%d-%H%M}-{re.sub(r'[^A-Za-z0-9_.-]+', '_', meta['provider'] + '-' + meta['model'])}"
@@ -233,7 +260,7 @@ def main(argv=None) -> int:
         f.write(report)
     print("\n" + report)
     print(f"结果已写入 {os.path.join(args.out, stem)}.json / .md")
-    return 0
+    return 1 if aborted else 0
 
 
 if __name__ == "__main__":

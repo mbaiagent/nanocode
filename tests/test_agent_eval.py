@@ -10,10 +10,12 @@ import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 import helpers  # noqa: F401  —— 设置 NANOCODE_HOME
 from helpers import call, make_agent
 from nanocode import verify as verify_mod
+from nanocode.llm.base import LLMError, Provider
 from nanocode.messages import text_block
 
 RUN_PY = os.path.join(os.path.dirname(__file__), "..", "evals", "agent_tasks", "run.py")
@@ -215,6 +217,108 @@ class RunnerTest(unittest.TestCase):
                 self.assertIn("自动验证：关", f.read())
         finally:
             shutil.rmtree(out)
+
+
+class _FailingProvider(Provider):
+    """模型接口一直报错（比如免费额度用完），用来模拟"根本没调通"。"""
+
+    name = "failing"
+
+    def __init__(self, *a, **k):
+        super().__init__("failing")
+
+    def complete(self, system, messages, tools, max_tokens=4096, on_text=None):
+        raise LLMError("HTTP 429：配额已用完，不再重试。", status=429)
+
+
+def _infra_stats():
+    return {"final": "模型调用失败：HTTP 429", "error": "HTTP 429：配额已用完", "infra_error": True, "timed_out": False,
+            "steps": 1, "tool_calls": 0, "tool_errors": 0, "denied": 0, "tools_used": [], "input_tokens": 0,
+            "output_tokens": 0, "usage_estimated": False, "seconds": 0.1}
+
+
+class InfraErrorTest(unittest.TestCase):
+    """模型接口出错（配额、网络）不能算成"模型没做好"，否则 0/13 会被当成模型的成绩。"""
+
+    ARGS = SimpleNamespace(provider="mock", model="", base_url="", protocol="", mode="bypass",
+                           max_steps=5, timeout=60, verify="")
+
+    def _run_agent(self):
+        task = run.load_tasks("T01")[0]
+        work = run.prepare(task)
+        try:
+            return run.run_agent(task, work, self.ARGS)
+        finally:
+            shutil.rmtree(work)
+
+    def test_api_failure_is_flagged(self):
+        with mock.patch("nanocode.session.make_provider", lambda *a, **k: _FailingProvider()):
+            stats = self._run_agent()
+        self.assertTrue(stats["infra_error"])
+        self.assertIn("429", stats["error"])
+
+    def test_normal_run_is_not_flagged(self):
+        self.assertFalse(self._run_agent()["infra_error"])
+
+    def test_summary_leaves_infra_runs_out_of_the_pass_rate(self):
+        good = {"task": "T01", "passed": True, "check_reason": "ok", "steps": 4, "seconds": 2.0}
+        bad = {"task": "T01", "passed": False, "check_reason": "FAIL", "steps": 4, "seconds": 2.0}
+        broken = {"task": "T01", "passed": False, "check_reason": "模型接口出错", "infra_error": True, "steps": 1}
+        (row,) = run.summarize([good, bad, broken, broken])
+        self.assertEqual((row["passed"], row["runs"], row["infra_errors"]), (1, 2, 2))
+        self.assertEqual(row["steps"], 4.0)       # 平均值也只算有效运行
+
+    def test_report_with_only_infra_errors_has_no_pass_rate(self):
+        meta = {"provider": "p", "model": "m", "date": "-", "commit": "", "python": "3", "platform": "x", "mode": "bypass",
+                "max_steps": 30, "timeout": 600, "repeat": 1, "verify": "", "aborted": True, "max_infra_errors": 3}
+        rows = run.summarize([{"task": "T01", "passed": False, "check_reason": "x", "infra_error": True}])
+        report = run.markdown(meta, rows)
+        self.assertIn("没有一次有效运行", report)
+        self.assertNotIn("通过率：0/", report)
+        self.assertIn("未计入通过率", report)
+        self.assertIn("提前停止", report)
+        self.assertIn("（+1 次接口出错）", report)
+
+    def _main(self, *extra):
+        out = tempfile.mkdtemp()
+        calls = []
+        def fake(task, work, args):
+            calls.append(task["id"])
+            return _infra_stats()
+        try:
+            with mock.patch.object(run, "run_agent", fake):
+                code = run.main(["--provider", "mock", "--tasks", "T01,T02", "--repeat", "5", "--out", out, *extra])
+            with open(os.path.join(out, sorted(os.listdir(out))[1]), encoding="utf-8") as f:
+                return code, calls, f.read()
+        finally:
+            shutil.rmtree(out)
+
+    def test_main_stops_early_after_consecutive_infra_errors(self):
+        code, calls, report = self._main("--max-infra-errors", "3")
+        self.assertEqual(len(calls), 3)           # 10 次运行里只跑了 3 次就停了
+        self.assertEqual(code, 1)                 # 非 0：脚本能知道这轮没跑完
+        self.assertIn("提前停止", report)
+
+    def test_max_infra_errors_zero_runs_everything(self):
+        code, calls, _ = self._main("--max-infra-errors", "0")
+        self.assertEqual(len(calls), 10)
+        self.assertEqual(code, 0)
+
+    def test_a_good_run_resets_the_streak(self):
+        out = tempfile.mkdtemp()
+        seq = iter([True, True, False, True, True, False])
+        def fake(task, work, args):
+            stats = _infra_stats()
+            if not next(seq):
+                stats.update(infra_error=False, final="完成", error="")
+            return stats
+        try:
+            with mock.patch.object(run, "run_agent", fake):
+                code = run.main(["--provider", "mock", "--tasks", "T01", "--repeat", "6", "--out", out,
+                                 "--max-infra-errors", "3"])
+        finally:
+            shutil.rmtree(out)
+        self.assertEqual(code, 0)                 # 中间有正常运行，连续错误从没到 3 次，所以 6 次都跑完了
 
 
 if __name__ == "__main__":
