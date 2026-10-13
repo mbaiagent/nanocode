@@ -1,0 +1,45 @@
+{
+ "meta": {
+  "provider": "reference",
+  "model": "-",
+  "date": "2026-10-13 20:51",
+  "commit": "0422d2a",
+  "python": "3.12.3",
+  "platform": "Linux x86_64",
+  "mode": "bypass",
+  "max_steps": 30,
+  "timeout": 600,
+  "repeat": 1,
+  "verify": "",
+  "usage_estimated": false
+ },
+ "summary": [
+  {
+   "task": "PG-py-grep",
+   "passed": 1,
+   "runs": 1,
+   "steps": 0.0,
+   "tool_calls": 0.0,
+   "tool_errors": 0.0,
+   "input_tokens": 0.0,
+   "output_tokens": 0.0,
+   "seconds": 0.0,
+   "last_failure": ""
+  }
+ ],
+ "runs": [
+  {
+   "task": "PG-py-grep",
+   "attempt": 1,
+   "passed": true,
+   "check_reason": "PASS: 25 个测试通过",
+   "workdir": "",
+   "steps": 0,
+   "tool_calls": 0,
+   "tool_errors": 0,
+   "input_tokens": 0,
+   "output_tokens": 0,
+   "seconds": 0
+  }
+ ]
+}

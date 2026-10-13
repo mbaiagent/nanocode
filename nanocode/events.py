@@ -23,7 +23,11 @@
     memory_pending 待用户确认的经验候选（/memory accept 写入，/memory reject 丢弃）
     subagent_start / subagent_end  子 Agent 启动 / 结束（结束时带验收报告 report，见 subcheck.py）
     turn_end       本轮结束（最终回答、累计用量）
-    error          出错
+    error          出错（retryable 为真时前端给重试按钮，prompt 是原文）
+    queued         消息在忙时被收下排队（position：第几位）
+    dequeue        排队的消息开始执行（remaining：还剩几条）
+    idle           队列清空、Agent 空闲
+    session_switched  切换了会话（前端重载页面）
 """
 
 from __future__ import annotations

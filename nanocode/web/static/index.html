@@ -79,6 +79,12 @@ pre.code { margin: 4px 0 0; font: 12px/1.5 var(--font-mono); white-space: pre-wr
 .todo.completed { color: var(--muted); text-decoration: line-through }
 .todo.in_progress { color: var(--model); font-weight: 600 }
 .empty { color: var(--muted); text-align: center; padding: 30px 10px }
+/* 调试面板收起时，聊天占满整行 */
+main.debug-hidden { grid-template-columns: 1fr }
+main.debug-hidden .col.debug { display: none }
+#queuebar { display: none; padding: 6px 16px; background: var(--soft); border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted) }
+#queuebar.show { display: block }
+.msg .retry { margin-top: 6px }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important } }
 </style>
 </head>
@@ -87,6 +93,9 @@ pre.code { margin: 4px 0 0; font: 12px/1.5 var(--font-mono); white-space: pre-wr
   <h1>nanocode</h1>
   <span class="meta" id="meta">连接中…</span>
   <span class="spacer"></span>
+  <label class="meta" for="session">会话</label>
+  <select id="session" title="切换历史会话"></select>
+  <button id="newsession" type="button" title="开始新会话">＋新会话</button>
   <label class="meta" for="mode">权限模式</label>
   <select id="mode">
     <option value="default">default · 写操作要确认</option>
@@ -94,11 +103,13 @@ pre.code { margin: 4px 0 0; font: 12px/1.5 var(--font-mono); white-space: pre-wr
     <option value="plan">plan · 只读规划</option>
     <option value="bypass">bypass · 全部放行</option>
   </select>
+  <button id="debugtoggle" type="button" title="显示/隐藏右侧调试面板">调试面板</button>
   <a href="/learn" target="_blank">架构学习页 ↗</a>
 </header>
-<main>
+<main id="main">
   <section class="col" aria-label="对话">
     <div id="chat"></div>
+    <div id="queuebar"></div>
     <form class="composer" id="form">
       <textarea id="input" placeholder="让 Agent 做点什么…（Ctrl/⌘+Enter 发送；/help 查看命令；# 开头写入记忆）"></textarea>
       <div style="display:flex;flex-direction:column;gap:6px">
@@ -107,7 +118,7 @@ pre.code { margin: 4px 0 0; font: 12px/1.5 var(--font-mono); white-space: pre-wr
       </div>
     </form>
   </section>
-  <section class="col" aria-label="Agent 内部">
+  <section class="col debug" aria-label="Agent 内部">
     <div class="tabs" role="tablist">
       <button role="tab" data-tab="timeline" aria-selected="true">循环时间线</button>
       <button role="tab" data-tab="context">上下文</button>
@@ -146,6 +157,7 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const chat = $("#chat");
 let lastSeq = 0, busy = false, currentText = {}, toolCards = {}, steps = {}, rawCount = 0;
+let queueCount = 0, lastUserText = "";
 
 function scroll() { chat.scrollTop = chat.scrollHeight; }
 function host(agent) {
@@ -169,7 +181,12 @@ function argSummary(name, input) {
   if (name === "todo_write") return (input.todos || []).length + " 项";
   return JSON.stringify(input);
 }
-function setBusy(b) { busy = b; $("#send").disabled = b; $("#stop").hidden = !b; }
+function setBusy(b) { busy = b; $("#send").disabled = false; $("#stop").hidden = !b; updateQueuebar(); }
+function updateQueuebar() {
+  const bar = $("#queuebar");
+  if (queueCount > 0) { bar.classList.add("show"); bar.textContent = `⏳ 排队中 ${queueCount} 条，当前任务完成后自动执行`; }
+  else bar.classList.remove("show");
+}
 
 function onEvent(e) {
   if (e.type !== "text_delta") {
@@ -179,7 +196,16 @@ function onEvent(e) {
   const a = e.agent || "main";
   switch (e.type) {
     case "user":
-      if (a === "main") { add("user", esc(e.text)); setBusy(true); }
+      if (a === "main") {
+        // 去重：排队时后端已发过一次 user 事件，实际执行时 agent.run 还会再发一次
+        const h = host(a);
+        const last = h.lastElementChild;
+        if (!last || !last.classList.contains("user") || last.dataset.text !== e.text) {
+          const d = add("user", esc(e.text)); d.dataset.text = e.text;
+        }
+        lastUserText = e.text;
+        setBusy(true);
+      }
       currentText[a] = null; break;
     case "text_delta":
       if (!currentText[a]) currentText[a] = add("assistant", "", a);
@@ -251,7 +277,23 @@ function onEvent(e) {
       break;
     case "subagent_start": host("sub:" + e.description); break;
     case "command": add("note", `${e.input}\n${e.output || ""}`); refreshState(); break;
-    case "error": add("error", "✗ " + esc(e.message), a); break;
+    case "error": {
+      const d = add("error", "✗ " + esc(e.message), a);
+      // 可重试的错误（比如模型调用失败）给一键重试按钮
+      if (e.retryable && e.prompt) {
+        const btn = document.createElement("button");
+        btn.className = "retry"; btn.textContent = "↻ 重试";
+        btn.onclick = () => { post("/api/chat", { message: e.prompt }); btn.disabled = true; btn.textContent = "已重发…"; };
+        d.append(btn);
+      }
+      break;
+    }
+    case "queued":
+      queueCount = e.position; updateQueuebar(); break;
+    case "dequeue":
+      queueCount = e.remaining; updateQueuebar(); break;
+    case "session_switched":
+      add("note", esc(e.message)); break;
     case "turn_end":
       if (a === "main") {
         for (const s of Object.values(steps)) s.done = true;
@@ -260,6 +302,8 @@ function onEvent(e) {
         refreshState(); refreshContext();
       }
       break;
+    case "idle":
+      queueCount = 0; updateQueuebar(); break;
   }
 }
 
@@ -300,7 +344,7 @@ async function refreshState(sync = false) {
   const s = await getJSON("/api/state");
   $("#meta").textContent = `${s.provider}/${s.model} · ${s.cwd}`;
   $("#mode").value = s.mode;
-  if (sync) setBusy(!!s.busy);
+  if (sync) { setBusy(!!s.busy); queueCount = s.queue || 0; updateQueuebar(); }
   else if (!s.busy) setBusy(false);
   renderTodos(s.todos);
 }
@@ -323,16 +367,48 @@ document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => {
 $("#form").onsubmit = async (ev) => {
   ev.preventDefault();
   const text = $("#input").value.trim();
-  if (!text || busy) return;
+  if (!text) return;
   $("#input").value = "";
   const r = await post("/api/chat", { message: text });
   if (!r.ok) add("error", esc(r.error));
+  else if (r.queued) add("note", `⏳ 已排队（第 ${r.position} 位），当前任务完成后自动执行`);
   else if (r.output) add("note", esc(r.output));
 };
 $("#input").onkeydown = (ev) => { if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) $("#form").requestSubmit(); };
 $("#stop").onclick = () => post("/api/cancel");
 $("#refresh").onclick = refreshContext;
 $("#mode").onchange = () => post("/api/chat", { message: "/mode " + $("#mode").value });
+
+// 会话列表：下拉切换历史会话，＋开新会话。切换后整页重载，SSE 重放历史事件恢复界面。
+async function refreshSessions() {
+  const r = await getJSON("/api/sessions");
+  const sel = $("#session");
+  sel.innerHTML = "";
+  for (const s of r.sessions || []) {
+    const o = document.createElement("option");
+    o.value = s.id;
+    const d = new Date(s.mtime * 1000);
+    o.textContent = `${s.id.slice(5)} · ${s.title}`.slice(0, 40);
+    o.title = `${s.id}（${s.messages} 条消息，${d.toLocaleString()}）`;
+    if (s.id === r.current) o.selected = true;
+    sel.append(o);
+  }
+}
+$("#session").onchange = async () => {
+  const r = await post("/api/session", { action: "load", id: $("#session").value });
+  if (r.ok) location.reload();
+  else { add("error", esc(r.error)); refreshSessions(); }
+};
+$("#newsession").onclick = async () => {
+  const r = await post("/api/session", { action: "new" });
+  if (r.ok) location.reload();
+  else add("error", esc(r.error));
+};
+
+// 调试面板：默认在窄屏收起，宽屏也给一键收起，聊天占满
+const main = $("#main");
+if (window.innerWidth < 860) main.classList.add("debug-hidden");
+$("#debugtoggle").onclick = () => main.classList.toggle("debug-hidden");
 
 // 事件流：EventSource 发不出请求头，所以先用令牌（请求头）换一张一次性票据，再把票据放进 URL。
 // 票据用一次就作废，所以连接断开后不能依赖 EventSource 自带的重连（它会重发同一个 URL），要自己重连。
@@ -350,7 +426,7 @@ async function connectEvents() {
   }
 }
 connectEvents();
-renderTimeline(); renderTodos([]); refreshState(true); refreshContext();
+renderTimeline(); renderTodos([]); refreshState(true); refreshContext(); refreshSessions();
 </script>
 </body>
 </html>

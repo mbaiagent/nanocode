@@ -1,0 +1,129 @@
+{
+ "meta": {
+  "provider": "custom",
+  "model": "gemini-3.1-flash-lite",
+  "date": "2026-10-13 09:27",
+  "commit": "2b78584",
+  "python": "3.12.3",
+  "platform": "Linux x86_64",
+  "mode": "bypass",
+  "max_steps": 30,
+  "timeout": 600,
+  "repeat": 1,
+  "verify": "python3 -m unittest discover -s . -p 'test_*.py'",
+  "usage_estimated": false
+ },
+ "summary": [
+  {
+   "task": "T11-signature-change",
+   "passed": 1,
+   "runs": 1,
+   "steps": 21.0,
+   "tool_calls": 19.0,
+   "tool_errors": 0.0,
+   "input_tokens": 75434.0,
+   "output_tokens": 1387.0,
+   "seconds": 110.1,
+   "last_failure": ""
+  },
+  {
+   "task": "T12-spec-edge",
+   "passed": 1,
+   "runs": 1,
+   "steps": 13.0,
+   "tool_calls": 12.0,
+   "tool_errors": 1.0,
+   "input_tokens": 36465.0,
+   "output_tokens": 792.0,
+   "seconds": 77.5,
+   "last_failure": ""
+  },
+  {
+   "task": "T13-fix-regression",
+   "passed": 0,
+   "runs": 1,
+   "steps": 8.0,
+   "tool_calls": 7.0,
+   "tool_errors": 0.0,
+   "input_tokens": 18471.0,
+   "output_tokens": 342.0,
+   "seconds": 37.0,
+   "last_failure": "FAIL: 隐藏测试 5 个，有失败：FAILED (failures=2)"
+  }
+ ],
+ "runs": [
+  {
+   "task": "T11-signature-change",
+   "attempt": 1,
+   "passed": true,
+   "check_reason": "PASS: 隐藏测试 9 个，全部通过",
+   "workdir": "",
+   "final": "已修复 `report.py` 中对 `calc_total` 的调用，现在使用关键字参数 `tax_rate`。运行测试套件，所有 6 个测试用例均已通过。",
+   "error": "",
+   "timed_out": false,
+   "steps": 21,
+   "tool_calls": 19,
+   "tool_errors": 0,
+   "denied": 0,
+   "tools_used": [
+    "bash",
+    "edit_file",
+    "grep",
+    "read_file",
+    "todo_write"
+   ],
+   "input_tokens": 75434,
+   "output_tokens": 1387,
+   "usage_estimated": false,
+   "seconds": 110.1
+  },
+  {
+   "task": "T12-spec-edge",
+   "attempt": 1,
+   "passed": true,
+   "check_reason": "PASS: 隐藏测试 6 个，全部通过",
+   "workdir": "",
+   "final": "splitter.py 中的 `split_bill` 函数已按照 SPEC.md 的要求实现，并更新了测试用例以覆盖余数处理及异常输入情况。现所有测试均已通过。",
+   "error": "",
+   "timed_out": false,
+   "steps": 13,
+   "tool_calls": 12,
+   "tool_errors": 1,
+   "denied": 0,
+   "tools_used": [
+    "bash",
+    "edit_file",
+    "glob",
+    "read_file",
+    "todo_write"
+   ],
+   "input_tokens": 36465,
+   "output_tokens": 792,
+   "usage_estimated": false,
+   "seconds": 77.5
+  },
+  {
+   "task": "T13-fix-regression",
+   "attempt": 1,
+   "passed": false,
+   "check_reason": "FAIL: 隐藏测试 5 个，有失败：FAILED (failures=2)",
+   "workdir": "",
+   "final": "模型调用失败：HTTP 429：配额已用完，不再重试。服务端没有说明什么时候恢复。\n服务端返回：[{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota e",
+   "error": "HTTP 429：配额已用完，不再重试。服务端没有说明什么时候恢复。\n服务端返回：[{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota e",
+   "timed_out": false,
+   "steps": 8,
+   "tool_calls": 7,
+   "tool_errors": 0,
+   "denied": 0,
+   "tools_used": [
+    "bash",
+    "edit_file",
+    "read_file"
+   ],
+   "input_tokens": 18471,
+   "output_tokens": 342,
+   "usage_estimated": false,
+   "seconds": 37.0
+  }
+ ]
+}

@@ -188,6 +188,65 @@ class Session:
                 pass
             self.bus.emit("error", agent="main", message=f"会话保存失败（上一次保存的内容不受影响）：{type(e).__name__}: {e}")
 
+    def list_sessions(self) -> list[dict]:
+        """列出本项目的所有已保存会话：id、消息数、最后修改时间、第一条用户消息做标题。"""
+        d = os.path.join(self.data_dir, "sessions")
+        out = []
+        if not os.path.isdir(d):
+            return out
+        for name in sorted((f for f in os.listdir(d) if f.endswith(".json")),
+                           key=lambda f: os.path.getmtime(os.path.join(d, f)), reverse=True):
+            path = os.path.join(d, name)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+                messages = data.get("messages", []) if isinstance(data, dict) else []
+            except (OSError, ValueError):
+                continue
+            title = ""
+            for m in messages:
+                if m.get("role") == "user":
+                    c = m.get("content")
+                    title = (c if isinstance(c, str) else str(c))[:30]
+                    break
+            out.append({"id": name[:-5], "messages": len(messages),
+                        "mtime": os.path.getmtime(path), "title": title or "（空会话）"})
+        return out
+
+    def resume(self, session_id: str) -> str:
+        """切换到指定会话：先保存当前，再载入目标。"""
+        self.save()
+        d = os.path.join(self.data_dir, "sessions")
+        path = os.path.join(d, f"{session_id}.json")
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or not isinstance(data.get("messages", []), list):
+            raise ValueError("会话文件格式不对")
+        self.agent.messages = data.get("messages", [])
+        self.agent.state["todos"] = data.get("todos", [])
+        u = data.get("usage", {}) or {}
+        self.agent.usage.input_tokens = u.get("input_tokens", 0)
+        self.agent.usage.output_tokens = u.get("output_tokens", 0)
+        self.agent.usage.estimated = u.get("estimated", False)
+        self.session_id = session_id
+        # 切会话时清空事件历史，前端重连后只重放新会话的内容
+        self.bus.history.clear()
+        return f"已切换到会话 {session_id}（{len(self.agent.messages)} 条消息）"
+
+    def new_session(self) -> str:
+        """开新会话：先保存当前，再清空。"""
+        self.save()
+        sid = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        d = os.path.join(self.data_dir, "sessions")
+        # 极小概率撞上已有的 id（比如 1 秒内开了两次），往后挪直到不重
+        while os.path.exists(os.path.join(d, f"{sid}.json")):
+            sid += "_1"
+        self.session_id = sid
+        self.agent.messages = []
+        self.agent.state["todos"] = []
+        self.bus.history.clear()
+        return f"已开始新会话 {self.session_id}"
+
     def resume_latest(self) -> str:
         """恢复最近一次会话。读到损坏的文件就改名为 .corrupt 备份、给出提示，再试更早的一个。"""
         d = os.path.join(self.data_dir, "sessions")

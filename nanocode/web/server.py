@@ -98,6 +98,31 @@ def public_settings(hosts=None, origins=None) -> tuple[list[str], list[str]]:
     return h, o
 
 
+def friendly_error(e: Exception) -> str:
+    """把技术异常翻译成用户能看懂的中文。保留原始信息供排查，但第一句必须是人话。"""
+    from nanocode.llm.base import LLMError, QuotaExhausted
+    raw = f"{type(e).__name__}: {e}"
+    if isinstance(e, QuotaExhausted):
+        # QuotaExhausted 的 message 里已经带了本地时间的恢复时间
+        return f"模型配额用完了，等恢复后再试。\n{raw}"
+    if isinstance(e, LLMError):
+        status = getattr(e, "status", None)
+        if status == 503:
+            return f"模型服务现在太忙了，过几分钟再试。\n{raw}"
+        if status == 429:
+            return f"请求太频繁被限流了，稍后再试。\n{raw}"
+        if status and 500 <= status < 600:
+            return f"模型服务出错了（{status}），过会儿再试。\n{raw}"
+        if "网络错误" in str(e):
+            return f"连不上模型服务，检查一下网络。\n{raw}"
+        return f"模型调用失败。\n{raw}"
+    if isinstance(e, (TimeoutError,)):
+        return f"请求超时了，网络可能有点慢，重试一次。\n{raw}"
+    if isinstance(e, (ConnectionError, OSError)):
+        return f"网络连接出问题了，检查一下网络再试。\n{raw}"
+    return raw
+
+
 class WebApp:
     def __init__(self, session: Session, permission_timeout: float | None = None, disconnect_grace: float = 30):
         self.session = session
@@ -116,6 +141,7 @@ class WebApp:
         self._tickets: dict[str, float] = {}   # 一次性 SSE 票据 → 过期时间
         self.allowed_hosts: set[str] = set(LOCAL_HOSTS)
         self.allowed_origins: set[str] = set()
+        self.queue: list[str] = []      # 忙时排队的消息，按先进先出执行
         session.permissions.ask_fn = self.ask
 
     def issue_ticket(self) -> str | None:
@@ -193,8 +219,6 @@ class WebApp:
     def chat(self, message: str) -> dict:
         s = self.session
         with self.lock:
-            if s.agent.busy:
-                return {"ok": False, "error": "Agent 正在工作，请等它完成或先中断"}
             message = message.strip()
             if message.startswith("#"):
                 return {"ok": True, "output": s.add_memory(message.lstrip("#"))}
@@ -204,16 +228,33 @@ class WebApp:
                 s.bus.emit("command", input=message, output=output)
                 if not prompt:
                     return {"ok": True, "output": output}
+            if s.agent.busy:
+                # 忙时不再拒绝：收下排队，当前任务做完自动执行。立即发 user 事件，
+                # 让前端马上显示这条消息（带排队标记），实际执行时 agent.run 会再发一次，
+                # 前端按文本去重。
+                self.queue.append(prompt)
+                s.bus.emit("user", agent="main", text=message)
+                s.bus.emit("queued", position=len(self.queue))
+                return {"ok": True, "queued": True, "position": len(self.queue)}
             s.agent.busy = True  # 先占住，避免两个请求同时启动
         threading.Thread(target=self._run, args=(prompt,), daemon=True).start()
         return {"ok": True}
 
     def _run(self, prompt: str) -> None:
-        try:
-            self.session.send(prompt)
-        except Exception as e:  # noqa: BLE001
-            self.session.bus.emit("error", agent="main", message=f"{type(e).__name__}: {e}")
-            self.session.agent.busy = False
+        while True:
+            try:
+                self.session.send(prompt)
+            except Exception as e:  # noqa: BLE001
+                self.session.bus.emit("error", agent="main", message=friendly_error(e),
+                                      retryable=True, prompt=prompt)
+            with self.lock:
+                if not self.queue:
+                    self.session.agent.busy = False
+                    self.session.bus.emit("idle")
+                    return
+                prompt = self.queue.pop(0)
+                self.session.bus.emit("dequeue", remaining=len(self.queue))
+            # busy 保持 True，直接进入下一轮
 
 
 def make_handler(app: WebApp):
@@ -315,7 +356,10 @@ def make_handler(app: WebApp):
             if path in ("/learn", "/learn.html"):
                 return self._file("learn.html")
             if path == "/api/state":
-                return self._json(s.info())
+                info = s.info()
+                info["session_id"] = s.session_id
+                info["queue"] = len(app.queue)
+                return self._json(info)
             if path == "/api/context":
                 return self._json({"system": s.agent.system_prompt(), "messages": s.agent.messages,
                                    "tools": s.registry.schemas(), "permissions": {
@@ -323,9 +367,13 @@ def make_handler(app: WebApp):
                                        "deny": s.permissions.deny}})
             if path == "/api/events":
                 return self._sse()
+            if path == "/api/sessions":
+                return self._json({"ok": True, "sessions": s.list_sessions(),
+                                   "current": s.session_id})
             self.send_error(404)
 
         def do_POST(self):
+            s = app.session
             path = self.path.split("?")[0]
             if not self._guard(path, "POST"):
                 return
@@ -349,6 +397,25 @@ def make_handler(app: WebApp):
                 if ticket is None:
                     return self._reject(429, "未使用的票据太多，请稍后再试")
                 return self._json({"ok": True, "ticket": ticket, "expires_in": TICKET_TTL})
+            if path == "/api/session":
+                # 忙时不许切会话，等当前任务做完（或先中断）
+                if app.session.agent.busy or app.queue:
+                    return self._json({"ok": False, "error": "Agent 正在工作，等它做完（或先中断）再切换会话"})
+                action = data.get("action", "")
+                try:
+                    if action == "new":
+                        msg = s.new_session()
+                    elif action == "load":
+                        sid = str(data.get("id", "")).strip()
+                        if not sid or "/" in sid or "\\" in sid or ".." in sid:
+                            return self._json({"ok": False, "error": "会话 id 非法"})
+                        msg = s.resume(sid)
+                    else:
+                        return self._json({"ok": False, "error": "未知操作"})
+                except (OSError, ValueError) as e:
+                    return self._json({"ok": False, "error": f"切换失败：{e}"})
+                s.bus.emit("session_switched", message=msg)
+                return self._json({"ok": True, "output": msg})
             self.send_error(404)
 
         def _sse(self):

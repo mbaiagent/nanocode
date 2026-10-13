@@ -124,12 +124,15 @@ class WebBusyTest(unittest.TestCase):
         self.post("/api/cancel", {})
         self.assertTrue(wait_for(lambda: not self.session.agent.busy, timeout=3))
 
-    def test_second_request_is_rejected_while_busy(self):
-        """现状（#5）：同一时间只跑一个任务，后来的请求被拒。这是单人本地面板的设计，用测试把行为写明。"""
+    def test_second_request_is_queued_while_busy(self):
+        """忙时不再拒绝（#5 缓解）：后来的请求收下排队，当前任务做完自动执行。"""
         self.open_sse()
         self.start_task_and_wait_for_prompt()
         r = self.post("/api/chat", {"message": "你好"})
-        self.assertFalse(r["ok"])
+        self.assertTrue(r["ok"])
+        self.assertTrue(r["queued"])
+        self.assertEqual(r["position"], 1)
+        self.assertEqual(len(self.app.queue), 1)
 
     def test_permission_timeout_from_env(self):
         old = os.environ.get("NANOCODE_PERMISSION_TIMEOUT")
@@ -161,8 +164,8 @@ class RefreshBusyTest(unittest.TestCase):
             html = f.read()
         # 页面加载时必须以服务端 busy 为准；turn_end / command 触发的刷新不能（见 index.html 里的注释）
         self.assertIn("async function refreshState(sync = false)", html)
-        self.assertIn("if (sync) setBusy(!!s.busy);", html)
-        self.assertIn("refreshState(true); refreshContext();", html)
+        self.assertIn("if (sync) { setBusy(!!s.busy);", html)
+        self.assertIn("refreshState(true); refreshContext(); refreshSessions();", html)
         self.assertEqual(html.count("refreshState()"), 2)  # command、turn_end 两处仍是非同步刷新
 
 
