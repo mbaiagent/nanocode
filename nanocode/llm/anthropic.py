@@ -71,7 +71,16 @@ class AnthropicProvider(Provider):
         stop = "end_turn"
         usage = Usage()
         for _event, data in self._post_stream(f"{self.base_url}/v1/messages", headers, body):
-            ev = json.loads(data)
+            # 兼容端点（如 OpenRouter）会在 message_stop 后追加 `event: data` / `data: [DONE]`（#20），
+            # 以及其它非 JSON 的事件：这些都不是 Anthropic 协议的内容，跳过，不能让整轮对话崩溃
+            if data.strip() == "[DONE]":
+                continue
+            try:
+                ev = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(ev, dict):
+                continue
             t = ev.get("type")
             if t == "message_start":
                 # 兼容端点（如 OpenRouter）会显式返回 null；dict.get 的默认值只在"键缺失"时生效，所以全部用 `or 0`

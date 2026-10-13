@@ -180,6 +180,36 @@ class TestAnthropic(unittest.TestCase):
             ("message_stop", {"type": "message_stop"}))
         self.assertEqual((r.usage.input_tokens, r.usage.output_tokens), (0, 0))
 
+    def test_done_sentinel_after_message_stop(self):
+        """OpenRouter 的 Anthropic 端点在 message_stop 之后追加 `event: data` / `data: [DONE]`（#20）。"""
+        stream = sse(
+            ("message_start", {"type": "message_start", "message": {"usage": {"input_tokens": 5}}}),
+            ("content_block_start", {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+            ("content_block_delta", {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "好"}}),
+            ("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 3}}),
+            ("message_stop", {"type": "message_stop"})) + "event: data\ndata: [DONE]\n\n"
+        srv = FakeSSEServer(stream)
+        try:
+            r = AnthropicProvider("claude-x", api_key="k", base_url=srv.url).complete("SYS", HISTORY, TOOLS)
+        finally:
+            srv.close()
+        self.assertEqual(r.content[0], {"type": "text", "text": "好"})
+        self.assertEqual((r.usage.input_tokens, r.usage.output_tokens), (5, 3))
+
+    def test_non_json_events_are_skipped(self):
+        stream = ("event: weird\ndata: not json\n\n"
+                  + sse(("message_start", {"type": "message_start", "message": {"usage": {"input_tokens": 1}}}),
+                        ("content_block_start", {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+                        ("content_block_delta", {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "ok"}}),
+                        ("message_stop", {"type": "message_stop"}))
+                  + "data: [1, 2]\n\n")
+        srv = FakeSSEServer(stream)
+        try:
+            r = AnthropicProvider("claude-x", api_key="k", base_url=srv.url).complete("SYS", HISTORY, TOOLS)
+        finally:
+            srv.close()
+        self.assertEqual(r.content[0], {"type": "text", "text": "ok"})
+
 
 class TestCrossProtocol(unittest.TestCase):
     def test_extra_content_survives_the_agent_loop_and_session_json(self):
