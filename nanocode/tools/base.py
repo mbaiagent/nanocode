@@ -53,7 +53,7 @@ class ToolContext:
     state: dict = field(default_factory=dict)            # 会话级状态：已读文件、待办……
     emit: Callable[..., None] = lambda *a, **k: None      # 发事件（给 UI / trace）
     cancel: threading.Event = field(default_factory=threading.Event)
-    run_subagent: Optional[Callable[[str, str], str]] = None
+    run_subagent: Optional[Callable[..., str]] = None   # (description, prompt, check="", allowed_paths=None) -> 结论 + 验收报告
     skills: dict = field(default_factory=dict)
 
     def __post_init__(self):

@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -33,7 +34,8 @@ from .events import EventBus
 from .hooks import HookRunner
 from .llm.base import LLMError, Provider
 from .messages import (Usage, assistant_message, text_block, text_of, tool_result_block, tool_uses)
-from .permissions import PermissionManager
+from .permissions import EDIT_TOOLS, PermissionManager
+from . import subcheck
 from . import verify as verify_mod
 from .tools.base import ToolContext, ToolRegistry, truncate
 
@@ -46,7 +48,9 @@ SUBAGENT_PROMPT = BASE_PROMPT + """
 
 # 你的身份
 你是被主 Agent 派出去完成一项子任务的子 Agent。你看不到主对话，只能看到下面的任务说明。
-完成后用一段简洁的文字汇报结论（这是主 Agent 唯一能看到的内容），包含关键的文件路径和事实，不要寒暄。"""
+完成后用一段简洁的文字汇报结论（这是主 Agent 唯一能看到的内容），包含关键的文件路径和事实，不要寒暄。
+汇报里要分清两类内容：**已验证**的（你亲眼读到的代码、实际运行过的命令和结果）和**未验证**的（推测、印象、没跑过的东西），
+不要把推测写成事实。任务如果限定了可以修改的范围或要求通过某条检查，系统会在你汇报后核对，不通过会让你重做。"""
 
 
 class Agent:
@@ -79,6 +83,7 @@ class Agent:
         self._dirty = False            # 本轮是否做过会改动东西的操作（检查之后清零）
         self._verify_failures = 0      # 连续失败次数
         self._verify_last: str | None = None   # 上一次失败的指纹
+        self.write_scope: list[str] | None = None   # 子 Agent 允许修改的路径范围（None = 不限制），见 subcheck.py
         self.verify_failed = False     # 上一轮是否因验证没通过而被迫停下（单次模式据此返回非零退出码）
         self.ctx = ToolContext(cwd=cwd, state=self.state, emit=self.emit, cancel=self.cancel,
                                run_subagent=self._run_subagent if depth == 0 else None, skills=skills or {})
@@ -218,6 +223,11 @@ class Agent:
         if decision.behavior == "deny":
             plan["result"] = self._finish(call, f"权限被拒绝：{decision.reason}", True)
             return plan
+        if self.write_scope is not None and tool.name in EDIT_TOOLS:
+            rel = os.path.relpath(self.ctx.resolve(call["input"].get("path", "")), self.cwd)
+            if not subcheck.in_scope(rel, self.write_scope):
+                plan["result"] = self._finish(call, f"{rel} 不在这个子任务允许修改的范围内：{self.write_scope or '(只读，不许改任何文件)'}", True)
+                return plan
         if self.hooks.has("PreToolUse"):
             out = self.hooks.run("PreToolUse", {"tool_name": tool.name, "tool_input": call["input"]}, tool.name)
             self._report_hook("PreToolUse", out)
@@ -320,17 +330,48 @@ class Agent:
 
     # =================================================================== 子 Agent
 
-    def _run_subagent(self, description: str, prompt: str) -> str:
+    def _run_subagent(self, description: str, prompt: str, check: str = "", allowed_paths=None) -> str:
+        """派出子 Agent。返回它的结论 + 系统生成的验收报告（改了什么、有没有越界、检查过没过）。"""
+        scope = subcheck.parse_scope(allowed_paths)   # 写错了抛 ScopeError，task 工具会把它变成给模型的错误
         sub = Agent(self.provider, self.tools.subset({"task", "todo_write"}), self.permissions, self.hooks,
                     self.bus, self.cwd, system_prompt=lambda: SUBAGENT_PROMPT, name=f"sub:{description}",
                     depth=self.depth + 1, max_steps=30, max_tokens=self.max_tokens,
                     context_window=self.context_window, cancel=self.cancel)
-        self.emit("subagent_start", description=description, prompt=prompt)
+        sub.write_scope = scope
+        self.emit("subagent_start", description=description, prompt=prompt, check=check, allowed_paths=scope)
+        before = subcheck.snapshot(self.cwd)
+        report = subcheck.Report(scope=scope, check=check.strip())
         result = sub._run(prompt)  # 用 _run：不能 clear 共享的 cancel 事件
+        for attempt in range(1, subcheck.RETRIES + 2):
+            report.changed = subcheck.changed(before, subcheck.snapshot(self.cwd, before))
+            report.out_of_scope = [p for p in (report.changed or []) if scope is not None and not subcheck.in_scope(p, scope)]
+            output = self._run_sub_check(report, attempt) if report.check else ""
+            if not report.needs_redo or self.cancel.is_set():
+                break
+            if attempt > subcheck.RETRIES:
+                report.gave_up = True
+                break
+            result = sub._run(subcheck.feedback(report, output))   # 子 Agent 保留上下文，接着修
         self._dirty = self._dirty or sub._dirty   # 子 Agent 改了东西，也算本轮有改动
         self.usage.add(sub.usage)
-        self.emit("subagent_end", description=description, result=result, usage=sub.usage.to_dict())
-        return result or "(子 Agent 没有返回内容)"
+        self.emit("subagent_end", description=description, result=result, usage=sub.usage.to_dict(), report=report.to_dict())
+        return f"{result or '(子 Agent 没有返回内容)'}\n\n{report.render()}"
+
+    def _run_sub_check(self, report: "subcheck.Report", attempt: int) -> str:
+        """跑子任务的检查命令。命令是模型传进来的，所以和 bash 一样要过权限，不能绕过确认。"""
+        bash = self.tools.get("bash")
+        if bash is None:
+            report.check_status, report.check_note = "skipped", "没有 bash 工具"
+            return ""
+        decision = self.permissions.resolve(bash, {"command": report.check})
+        if decision.behavior != "allow":
+            report.check_status, report.check_note = "skipped", f"权限未放行：{decision.reason}"
+            return ""
+        report.check_attempts = attempt
+        result = verify_mod.run(verify_mod.VerifyConfig(report.check, 0, 300), self.cwd)
+        report.check_status = "pass" if result.passed else "fail"
+        report.check_note = "" if result.passed else verify_mod.tail(result.output, 1500)
+        return verify_mod.tail(result.output)
 
     def reset(self) -> None:
         self.messages.clear()

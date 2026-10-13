@@ -81,7 +81,12 @@ class Renderer:
         elif t == "subagent_start":
             self.w(paint(f"── 子 Agent 启动：{e['description']} ──", "magenta") + "\n", err=True)
         elif t == "subagent_end":
-            self.w(paint(f"── 子 Agent 完成：{e['description']} ──", "magenta") + "\n", err=True)
+            r = e.get("report") or {}
+            n = "未统计" if r.get("changed") is None else f"改动 {len(r['changed'])} 个文件"
+            check = {"pass": "检查通过", "fail": "检查未通过", "skipped": "检查未执行", "none": "未验证"}.get(r.get("check_status"), "")
+            scope = f" · 越界 {len(r['out_of_scope'])} 个" if r.get("out_of_scope") else ""
+            bad = bool(r) and not r.get("ok", True)
+            self.w(paint(f"── 子 Agent 完成：{e['description']}（{n} · {check}{scope}）──", "red" if bad else "magenta") + "\n", err=True)
         elif t == "compact":
             self.w(paint(f"↻ 上下文已{'自动' if e['auto'] else ''}压缩：{e['before']} → {e['after']} tokens", "yellow") + "\n", err=True)
         elif t == "hook":
