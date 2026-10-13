@@ -232,6 +232,15 @@ function onEvent(e) {
     case "todos": renderTodos(e.todos); break;
     case "compact": add("note", `↻ 上下文${e.auto ? "自动" : ""}压缩：约 ${e.before} → ${e.after} tokens\n${e.summary}`); break;
     case "hook": add("note", `⚓ hook[${e.hook}] ${e.message || e.warnings.join("\n")}`, a); break;
+    case "review": {
+      const lines = [`═ ${e.verify === "pass" ? "✓" : "⚠"} 终审：本轮改动 ${e.files.length + e.hidden} 个文件 · 自动验证：${{pass: "通过", fail: "未通过"}[e.verify] || "未配置或未运行"}`];
+      for (const f of e.files) lines.push(`  ${f.status}  ${f.path}${f.added != null ? ` (+${f.added} -${f.removed})` : `（${f.note}）`}`);
+      if (e.hidden) lines.push(`  … 还有 ${e.hidden} 个文件未列出`);
+      const d = add("note", esc(lines.join("\n")) + "\n" + e.files.filter(f => f.diff).map(f =>
+        `<details><summary>${esc(f.path)} 的 diff</summary>${esc(f.diff)}</details>`).join(""), a);
+      d.insertAdjacentHTML("beforeend", "\n提交、推送等最后一步仍需你确认。");
+      break;
+    }
     case "verify":
       if (e.status === "running") add("note", `⏳ 自动验证（第 ${e.attempt} 次）：${esc(e.command)}`, a);
       else if (e.status === "pass") add("note", `✓ 自动验证通过（第 ${e.attempt} 次，${e.seconds}s）`, a);

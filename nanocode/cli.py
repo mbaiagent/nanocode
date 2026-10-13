@@ -21,6 +21,7 @@ import queue
 import sys
 import threading
 
+from . import review as review_mod
 from .llm import LLMError
 from .session import Options, Session
 
@@ -92,6 +93,19 @@ class Renderer:
         elif t == "hook":
             msg = e["message"] or "\n".join(e["warnings"])
             self.w(paint(f"⚓ hook[{e['hook']}] {msg[:300]}", "yellow") + "\n", err=True)
+        elif t == "review":
+            ok = e["verify"] == "pass"
+            head = review_mod.headline(e["files"], e["hidden"], e["verify"]).replace("**", "")
+            self.w(paint(f"═ {head}", "green" if ok else "yellow") + "\n", err=True)
+            for f in e["files"]:
+                stat = f" (+{f['added']} -{f['removed']})" if f["added"] is not None else f"（{f['note']}）"
+                self.w(f"  {f['status']}  {f['path']}{stat}\n", err=True)
+                for line in (f["diff"] or "").splitlines()[:40]:
+                    color = "green" if line.startswith("+") and not line.startswith("+++") else "red" if line.startswith("-") and not line.startswith("---") else "dim"
+                    self.w(paint("    " + line[:160], color) + "\n", err=True)
+            if e["hidden"]:
+                self.w(f"  … 还有 {e['hidden']} 个文件未列出\n", err=True)
+            self.w(paint("  提交、推送等最后一步仍需你确认。", "dim") + "\n", err=True)
         elif t == "verify":
             if e["status"] == "running":
                 self.w(paint(f"⏳ 自动验证（第 {e['attempt']} 次）：{e['command']}", "yellow") + "\n", err=True)
@@ -199,7 +213,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--base-url", help="自定义 API 地址")
     p.add_argument("--protocol", choices=["openai", "anthropic"], help="自定义 provider 使用的协议")
     p.add_argument("--api-key", help="API Key（更推荐用环境变量）")
-    p.add_argument("--mode", choices=["default", "accept_edits", "plan", "bypass"], help="权限模式")
+    p.add_argument("--mode", choices=["default", "accept_edits", "plan", "review", "bypass"],
+                   help="权限模式；review = 终审：测试和项目内编辑自动放行，高风险操作必须确认，结束时汇总 diff")
     p.add_argument("--cwd", default=os.getcwd(), help="工作目录")
     p.add_argument("--trace", action="store_true", help="把所有事件记录到 ~/.nanocode/projects/<项目>/traces/*.jsonl")
     p.add_argument("--resume", action="store_true", help="恢复上一次会话")
