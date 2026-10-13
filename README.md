@@ -139,4 +139,22 @@ nanocode 会在你的电脑上执行模型生成的命令。默认模式下每�
 
 这些都是编程 Agent 的典型攻击面，详见 [docs/04-permissions-and-hooks.md](docs/04-permissions-and-hooks.md)。
 
+### 放在反向代理后面（nginx 等）
+
+默认只信任本机地址（`127.0.0.1` / `localhost` / `::1`），经过反向代理转发的请求，`Host` 是对外的域名或 IP，会被当成 DNS 重绑定拒绝（403）。显式告诉 nanocode 哪些对外地址可信：
+
+```
+nanocode --web --host 127.0.0.1 --port 8765 --public-host chat.example.com
+# 非默认端口，或者想精确指定 Origin：
+nanocode --web --public-host chat.example.com --public-origin https://chat.example.com:8443
+# 也可以用环境变量（逗号分隔）：NANOCODE_PUBLIC_HOST、NANOCODE_PUBLIC_ORIGIN
+```
+
+- `--public-host`：对外的主机名或 IP，不要写通配符。会同时信任该主机名的 `http://` 和 `https://`（默认端口）Origin。
+- `--public-origin`：完整的 Origin（含协议和端口），用于非默认端口。
+- 反向代理需要原样转发 `Host`（nginx：`proxy_set_header Host $http_host;`），并关闭对 `/api/events` 的缓冲（`proxy_buffering off;`），否则事件流会卡住。
+
+**这只是校验"请求是发给本服务的"，不能代替认证。** 反向代理自己必须做 TLS 和登录（如 basic auth）：页面里带着 API 令牌，任何能打开页面的人都能驱动 Agent 执行命令。
+
+
 MIT License

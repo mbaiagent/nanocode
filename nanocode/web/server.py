@@ -44,6 +44,60 @@ TICKET_TTL = 30                 # SSE 一次性票据的有效期（秒）
 MAX_TICKETS = 64                # 同时存在的未使用票据上限，防止被刷爆内存
 
 
+def normalize_host(value: str) -> str:
+    """把用户写的可信公网地址规范成 Host 头里"不带端口的主机名"（小写）。
+
+    容忍写成 https://Host:8443 或 host:8443；通配符一律拒绝：这个白名单是防 DNS 重绑定的，
+    "*" 等于没有白名单。
+    """
+    v = value.strip()
+    if "://" in v:
+        v = urlparse(v).hostname or ""
+    v = v.strip("[]").lower()
+    if v.count(":") == 1:          # host:port（IPv6 字面量有多个冒号，原样保留）
+        v = v.rsplit(":", 1)[0]
+    if not v or "*" in v or " " in v or "/" in v:
+        raise ValueError(f"无效的公网地址：{value!r}（要写主机名或 IP，不支持通配符）")
+    return v
+
+
+def host_from_header(value: str) -> str:
+    """取出 Host 头里不带端口的主机名（小写）。
+
+    [::1]:8765 → ::1；[2001:db8::1]（默认端口，没有端口）→ 2001:db8::1；example.com:8443 → example.com。
+    不能一律按最后一个冒号切：IPv6 地址自己就带冒号。
+    """
+    v = value.strip().lower()
+    if v.startswith("["):
+        return v[1:].split("]", 1)[0]
+    if v.count(":") == 1:
+        return v.rsplit(":", 1)[0]
+    return v
+
+
+def normalize_origin(value: str) -> str:
+    v = value.strip().rstrip("/")
+    u = urlparse(v)
+    if u.scheme not in ("http", "https") or not u.hostname or u.path or "*" in v:
+        raise ValueError(f"无效的 Origin：{value!r}（写成 https://主机名[:端口]，不支持通配符）")
+    return v.lower()
+
+
+def split_list(values) -> list[str]:
+    """命令行参数（可重复）和环境变量（逗号分隔）都能给多个值。"""
+    out = []
+    for v in values or []:
+        out += [x.strip() for x in str(v).split(",") if x.strip()]
+    return out
+
+
+def public_settings(hosts=None, origins=None) -> tuple[list[str], list[str]]:
+    """合并命令行参数和环境变量 NANOCODE_PUBLIC_HOST / NANOCODE_PUBLIC_ORIGIN。"""
+    h = split_list(hosts) + split_list([os.environ.get("NANOCODE_PUBLIC_HOST", "")])
+    o = split_list(origins) + split_list([os.environ.get("NANOCODE_PUBLIC_ORIGIN", "")])
+    return h, o
+
+
 class WebApp:
     def __init__(self, session: Session, permission_timeout: float | None = None, disconnect_grace: float = 30):
         self.session = session
@@ -85,13 +139,28 @@ class WebApp:
             exp = self._tickets.pop(ticket, None)
         return exp is not None and exp >= time.time()
 
-    def configure(self, host: str, port: int) -> None:
-        """绑定端口后调用：确定哪些 Host / Origin 是"自己人"。"""
+    def configure(self, host: str, port: int, public_hosts=(), public_origins=()) -> None:
+        """绑定端口后调用：确定哪些 Host / Origin 是"自己人"。
+
+        默认只认本机地址。放在反向代理后面时，用 public_hosts / public_origins 显式加上对外的地址：
+          - public_hosts：对外的主机名或 IP（浏览器访问的、反向代理原样转发的 Host）。
+            同时自动信任该主机名的 http:// 和 https://（默认端口）Origin。
+          - public_origins：完整的 Origin，用于非默认端口等情况，例如 https://example.com:8443。
+        这只是校验"请求是不是发给我们的"，不能代替认证：反向代理必须自己做 TLS 和登录（如 basic auth）。
+        """
         hosts = set(LOCAL_HOSTS)
         if host not in ("0.0.0.0", "::", ""):
             hosts.add(host.lower())
+        origins = {f"http://{h}:{port}" for h in hosts} | {f"http://[{h}]:{port}" for h in hosts if ":" in h}
+        for h in public_hosts:
+            h = normalize_host(h)
+            hosts.add(h)
+            shown = f"[{h}]" if ":" in h else h
+            origins |= {f"http://{shown}", f"https://{shown}"}
+        for o in public_origins:
+            origins.add(normalize_origin(o))
         self.allowed_hosts = hosts
-        self.allowed_origins = {f"http://{h}:{port}" for h in hosts} | {f"http://[{h}]:{port}" for h in hosts if ":" in h}
+        self.allowed_origins = origins
 
     def ask(self, name: str, input: dict, target: str) -> str:
         """权限询问：发事件给浏览器，然后阻塞等待 /api/permission 的回答。
@@ -211,7 +280,7 @@ def make_handler(app: WebApp):
                    Origin 头存在时必须是本服务自己。
               3. 其他网页或本机程序猜接口。→ /api/* 必须带上启动时随机生成的令牌。
             """
-            host = (self.headers.get("host") or "").rsplit(":", 1)[0].strip("[]").lower()
+            host = host_from_header(self.headers.get("host") or "")
             if host not in app.allowed_hosts:
                 self._reject(403, "Host 不被允许（防 DNS 重绑定）")
                 return False
@@ -317,20 +386,28 @@ def make_handler(app: WebApp):
     return Handler
 
 
-def make_server(session: Session, host: str = "127.0.0.1", port: int = 8765) -> tuple[ThreadingHTTPServer, WebApp]:
+def make_server(session: Session, host: str = "127.0.0.1", port: int = 8765,
+                public_hosts=(), public_origins=()) -> tuple[ThreadingHTTPServer, WebApp]:
     app = WebApp(session)
+    app.configure(host, port, public_hosts, public_origins)   # 先校验配置，失败就别绑端口了
     server = ThreadingHTTPServer((host, port), make_handler(app))
     server.daemon_threads = True
-    app.configure(host, server.server_address[1])
+    app.configure(host, server.server_address[1], public_hosts, public_origins)   # 端口 0 时要用真实端口重算
     return server, app
 
 
-def serve(session: Session, host: str = "127.0.0.1", port: int = 8765) -> None:
-    server, app = make_server(session, host, port)
+def serve(session: Session, host: str = "127.0.0.1", port: int = 8765,
+          public_hosts=(), public_origins=()) -> None:
+    server, app = make_server(session, host, port, public_hosts, public_origins)
     port = server.server_address[1]
     if host in ("0.0.0.0", "::"):
         print("警告：服务监听在所有网卡上，局域网内的人只要拿到页面就能操作 Agent。除非你清楚后果，请用默认的 127.0.0.1。")
     print(f"nanocode Web 界面：http://{host}:{port}   （学习页：http://{host}:{port}/learn）")
+    if public_hosts or public_origins:
+        print(f"已信任公网 Host：{', '.join(normalize_host(h) for h in public_hosts) or '（无）'}；"
+              f"额外 Origin：{', '.join(normalize_origin(o) for o in public_origins) or '（无）'}")
+        print("提醒：这只是校验请求是发给本服务的，不能代替认证。反向代理必须自己做 TLS 和登录（如 basic auth），"
+              "否则任何能访问到它的人都能拿到令牌、驱动 Agent 执行命令。")
     print(f"模型 {session.provider_name}/{session.provider.model} · 工作目录 {session.cwd} · Ctrl-C 退出")
     try:
         server.serve_forever()
