@@ -15,7 +15,7 @@
 | V09 | 真实模型：Anthropic 协议（可选） | PARTIAL | 直连 OpenRouter 崩溃（#18 未修）；经本地翻译桥走 Gemini 基础对话+工具调用全通 | results/V09.md |
 | V10 | 真实模型：search_docs 与子 Agent | PARTIAL | 检索/索引/子Agent/file数12=12全对；出处引了转引非一手 | results/V10.md |
 | V11 | RAG 向量 / 混合检索评测 | PARTIAL | 基线完成（bm25 R@3 91%）；无 embedding Key | results/V11.md |
-| V12 | Agent 任务评测（13 个任务） | PARTIAL | 11/13 通过；T09/T10 为 lite 模型能力限制；T05–T13 经 Gemini+thought_signature shim 跑通 | results/V12.md |
+| V12 | Agent 任务评测（13 个任务） | PASS | 第三轮 DeepSeek V4 Flash、无 shim、`--repeat 3`：37/39；T10 1/3（漏 mutant_4，已分析为模型能力限制）。前两轮 11/13 | results/V12.md |
 | V13 | 真实模型：验证闭环（`--verify`、终审、子任务验收、经验候选） | PASS | 5/5 检查点真实模型通过（verify 打回修好、终审 diff、子任务验收+越界拦截、经验候选） | results/V13.md |
 
 ## 2026-10-13 19:00：#16/#17/#18/#20 修复验证并关闭
@@ -25,3 +25,7 @@
 - #18：OpenRouter Anthropic 端点基础调用成功，无 TypeError
 - #20：同一次调用正常结束，流末尾 `[DONE]` 被跳过，无 JSONDecodeError
 - 四个 issue 均已评论证据并关闭
+
+## 2026-10-13 23:40：V12 重跑
+- 评测框架自检 `--reference` 13/13；`deepseek/deepseek-v4-flash-0731`（OpenRouter 付费）`--repeat 3` 完整跑完，37/39，T10 1/3；T10 复跑 `--repeat 5 --keep` 0/5，每次都漏 `mutant_4`（`x >= hi + 1`，只有 `hi < x < hi + 1` 的浮点数才能区分）
+- 发现并修复评测脚本问题：API 429 被当成模型失败（Gemini 额度用完时 0/13），`fix/eval-infra-errors` 已合入
