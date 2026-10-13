@@ -9,12 +9,14 @@
     GET  /learn             交互式架构学习页
     GET  /api/state         会话概况
     GET  /api/context       完整上下文：system、messages、tools（就是下一次要发给模型的东西）
-    GET  /api/events        SSE 事件流（连接时先补发历史事件）
+    GET  /api/events        SSE 事件流（连接时先补发历史事件）。浏览器用 ?ticket= 一次性票据
+    POST /api/ticket        换一张 30 秒有效、只能用一次的 SSE 票据
     POST /api/chat          {"message": "..."} 发送消息（也支持 /命令 和 # 记忆）
     POST /api/permission    {"id": "...", "decision": "yes|always|no"}
     POST /api/cancel        中断当前任务
 
-安全：所有请求校验 Host / Origin，/api/* 需要令牌（页面加载时注入），POST 只接受 JSON。
+安全：所有请求校验 Host / Origin，/api/* 需要令牌（页面加载时注入，只认请求头），
+POST 只接受 JSON 且请求体不超过 1MB。
 详见 Handler._guard 的说明。
 """
 
@@ -37,6 +39,9 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 
 
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+MAX_BODY = 1024 * 1024          # POST 请求体上限（字节）
+TICKET_TTL = 30                 # SSE 一次性票据的有效期（秒）
+MAX_TICKETS = 64                # 同时存在的未使用票据上限，防止被刷爆内存
 
 
 class WebApp:
@@ -54,9 +59,31 @@ class WebApp:
         self._sse_lock = threading.Lock()
         # 事件流空闲时每隔这么多秒发一次心跳；服务端也是靠写心跳才发现浏览器已断开的
         self.sse_ping_interval = 15
+        self._tickets: dict[str, float] = {}   # 一次性 SSE 票据 → 过期时间
         self.allowed_hosts: set[str] = set(LOCAL_HOSTS)
         self.allowed_origins: set[str] = set()
         session.permissions.ask_fn = self.ask
+
+    def issue_ticket(self) -> str | None:
+        """签发一张 SSE 用的一次性票据，TICKET_TTL 秒内有效、只能用一次。
+
+        EventSource 发不出自定义请求头，令牌只能放进 URL，而 URL 会被反向代理、监控系统记进日志。
+        所以 URL 里只放这种用完即废的票据，长期有效的令牌始终只走请求头。
+        """
+        now = time.time()
+        with self._sse_lock:
+            for t in [t for t, exp in self._tickets.items() if exp < now]:
+                del self._tickets[t]
+            if len(self._tickets) >= MAX_TICKETS:
+                return None
+            ticket = secrets.token_urlsafe(16)
+            self._tickets[ticket] = now + TICKET_TTL
+            return ticket
+
+    def redeem_ticket(self, ticket: str) -> bool:
+        with self._sse_lock:
+            exp = self._tickets.pop(ticket, None)
+        return exp is not None and exp >= time.time()
 
     def configure(self, host: str, port: int) -> None:
         """绑定端口后调用：确定哪些 Host / Origin 是"自己人"。"""
@@ -144,12 +171,30 @@ def make_handler(app: WebApp):
             self.end_headers()
             self.wfile.write(body)
 
-        def _body(self) -> dict:
-            n = int(self.headers.get("content-length") or 0)
+        def _body(self) -> dict | None:
+            """读请求体。出错时已经回复了错误，返回 None，调用方直接结束。
+
+            Content-Length 是对方说了算的：不设上限就会按它声称的大小一次性分配内存（声称 1.5GB，
+            进程虚拟内存立刻涨 1.5GB），写个非数字或负数还会让处理线程直接崩掉、连接无响应。
+            聊天消息很短，1MB 足够宽裕。
+            """
             try:
-                return json.loads(self.rfile.read(n) or b"{}")
-            except json.JSONDecodeError:
+                n = int(self.headers.get("content-length") or 0)
+            except ValueError:
+                n = -1
+            if n < 0:
+                self.close_connection = True
+                self._reject(400, "Content-Length 无效")
+                return None
+            if n > MAX_BODY:
+                self.close_connection = True   # 没读的请求体还留在连接里，不能再当成下一个请求解析
+                self._reject(413, f"请求体过大（上限 {MAX_BODY} 字节）")
+                return None
+            try:
+                data = json.loads(self.rfile.read(n) or b"{}")
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 return {}
+            return data if isinstance(data, dict) else {}
 
         def _reject(self, status: int, reason: str) -> None:
             self._json({"ok": False, "error": reason}, status)
@@ -179,12 +224,17 @@ def make_handler(app: WebApp):
             if method == "POST" and (self.headers.get("content-type") or "").split(";")[0].strip().lower() != "application/json":
                 self._reject(415, "只接受 application/json")
                 return False
-            query = parse_qs(urlparse(self.path).query)
-            token = self.headers.get("x-nanocode-token") or (query.get("token") or [""])[0]
-            if not hmac.compare_digest(token, app.token):
-                self._reject(403, "缺少或错误的令牌")
-                return False
-            return True
+            # 长期令牌只认请求头，不认 URL 参数（URL 会进代理日志）。
+            # 唯一的例外：事件流 /api/events 可以用一次性票据（?ticket=），因为 EventSource 发不出请求头。
+            token = self.headers.get("x-nanocode-token") or ""
+            if hmac.compare_digest(token, app.token):
+                return True
+            if method == "GET" and path == "/api/events":
+                ticket = (parse_qs(urlparse(self.path).query).get("ticket") or [""])[0]
+                if ticket and app.redeem_ticket(ticket):
+                    return True
+            self._reject(403, "缺少或错误的令牌")
+            return False
 
         def do_GET(self):
             s = app.session
@@ -211,6 +261,8 @@ def make_handler(app: WebApp):
             if not self._guard(path, "POST"):
                 return
             data = self._body()
+            if data is None:
+                return
             if path == "/api/chat":
                 return self._json(app.chat(str(data.get("message", ""))))
             if path == "/api/permission":
@@ -223,6 +275,11 @@ def make_handler(app: WebApp):
             if path == "/api/cancel":
                 app.session.agent.cancel.set()
                 return self._json({"ok": True})
+            if path == "/api/ticket":
+                ticket = app.issue_ticket()
+                if ticket is None:
+                    return self._reject(429, "未使用的票据太多，请稍后再试")
+                return self._json({"ok": True, "ticket": ticket, "expires_in": TICKET_TTL})
             self.send_error(404)
 
         def _sse(self):

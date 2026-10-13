@@ -60,7 +60,8 @@ class WebBusyTest(unittest.TestCase):
     def open_sse(self):
         """模拟一个开着的浏览器页面：连上事件流并保持不断开。"""
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
-        c.request("GET", f"/api/events?token={self.app.token}", headers={"Host": f"127.0.0.1:{self.port}"})
+        c.request("GET", "/api/events", headers={"Host": f"127.0.0.1:{self.port}",
+                                                 "x-nanocode-token": self.app.token})
         r = c.getresponse()
         self.assertEqual(r.status, 200)
         # 响应对象必须留着：这是流式响应，连接的生命周期跟着它走，丢掉就等于断开

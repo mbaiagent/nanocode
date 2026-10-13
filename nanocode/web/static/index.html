@@ -317,8 +317,22 @@ $("#stop").onclick = () => post("/api/cancel");
 $("#refresh").onclick = refreshContext;
 $("#mode").onchange = () => post("/api/chat", { message: "/mode " + $("#mode").value });
 
-const es = new EventSource("/api/events?token=" + encodeURIComponent(TOKEN));
-es.onmessage = (m) => onEvent(JSON.parse(m.data));
+// 事件流：EventSource 发不出请求头，所以先用令牌（请求头）换一张一次性票据，再把票据放进 URL。
+// 票据用一次就作废，所以连接断开后不能依赖 EventSource 自带的重连（它会重发同一个 URL），要自己重连。
+// 重连后服务端会重放历史事件，onEvent 用 seq 去重。
+let es = null;
+async function connectEvents() {
+  try {
+    const t = await post("/api/ticket");
+    if (!t.ticket) throw new Error(t.error || "no ticket");
+    es = new EventSource("/api/events?ticket=" + encodeURIComponent(t.ticket));
+    es.onmessage = (m) => onEvent(JSON.parse(m.data));
+    es.onerror = () => { es.close(); setTimeout(connectEvents, 1500); };
+  } catch (err) {
+    setTimeout(connectEvents, 3000);
+  }
+}
+connectEvents();
 renderTimeline(); renderTodos([]); refreshState(true); refreshContext();
 </script>
 </body>
