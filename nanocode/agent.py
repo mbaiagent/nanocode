@@ -255,7 +255,7 @@ class Agent:
         if self._review_before is not None and tool.name in EDIT_TOOLS:
             review.remember(self._review_originals, self.cwd, self.ctx.resolve(str(call["input"].get("path", ""))))
         result = tool.execute(call["input"], self.ctx)
-        if not tool.is_read_only and not result.is_error:
+        if tool.changes_workspace and not result.is_error:
             self._dirty = True
             if self._lesson is not None and tool.name in EDIT_TOOLS:   # 打回之后改了哪些文件，是候选里的证据
                 self._lesson["files"].add(os.path.relpath(self.ctx.resolve(str(call["input"].get("path", ""))), self.cwd))

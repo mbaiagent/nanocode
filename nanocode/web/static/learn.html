@@ -433,7 +433,7 @@ const SCEN = {
   fix: { sys: 2.1, steps: [
     { line: 0, add: U([T("calc.py 里的 average 好像有 bug，修一下")]), tok: 0.05,
       t: "用户提出请求", p: "循环开始前，messages 里只有一条用户消息。注意 system 提示词和工具定义不在 messages 里，它们是每次调用时单独附带的参数。", s: "agent.py · _run → _append_user" },
-    { line: 2, t: "第 1 圈：调用模型", p: "发送 system + messages + 10 个工具的定义。模型不知道有 Python 代码在执行工具，它只看到一组 JSON 描述的'可用动作'。回复以流式返回，文字一边生成一边显示。", s: "llm/*.py · Provider.complete" },
+    { line: 2, t: "第 1 圈：调用模型", p: "发送 system + messages + 11 个工具的定义。模型不知道有 Python 代码在执行工具，它只看到一组 JSON 描述的'可用动作'。回复以流式返回，文字一边生成一边显示。", s: "llm/*.py · Provider.complete" },
     { line: 3, add: A([T("我先看看代码和测试。"), TU("read_file", { path: "calc.py" }), TU("read_file", { path: "test_calc.py" })]), tok: 0.12,
       t: "模型返回：一段文字 + 两个工具调用", p: "一个回复里可以有多个内容块。这里模型决定同时读两个文件。stop_reason 是 tool_use，说明它还没做完。", s: "agent.py · assistant_message" },
     { line: 4, t: "有工具调用 → 继续", p: "判断循环是否结束的唯一依据：回复里有没有 tool_use。程序没有写死任何流程，下一步做什么完全由模型决定。", s: "agent.py · tool_uses()" },
@@ -533,7 +533,7 @@ const MODS = [
   { id: "agent", core: true, k: "核心", n: "Agent 循环", f: "agent.py", d: "调用模型、执行工具、回填结果，直到模型不再调用工具。外加中断、步数上限、只读工具并行、自动压缩、子 Agent，以及回合结束前的自动验证。", fn: "Agent._run · _run_tools · _run_subagent", cc: "Claude Code 的主循环", doc: "docs/01-agent-loop.md" },
   { id: "msg", k: "数据", n: "统一消息格式", f: "messages.py", d: "text / tool_use / tool_result 三种内容块。Agent 的全部记忆就是这个列表。", fn: "tool_result_block · estimate_tokens", cc: "与 Anthropic Messages 格式一致", doc: "docs/02-messages-and-providers.md" },
   { id: "llm", k: "适配", n: "Provider", f: "llm/", d: "把统一格式翻译成各家 API，解析流式 SSE，拼接分片到达的工具参数，限流时退避重试。", fn: "complete · iter_sse · PRESETS", cc: "Claude Code 主要对接 Claude；nanocode 可接任意厂商", doc: "docs/02-messages-and-providers.md" },
-  { id: "tools", k: "动作", n: "工具", f: "tools/", d: "read/write/edit_file、bash、glob、grep、search_docs。工具说明是写给模型看的使用手册。编辑用精确字符串替换，且必须先读。", fn: "Tool.execute · EditFile · Bash", cc: "Read / Write / Edit / Bash / Glob / Grep", doc: "docs/03-tools.md" },
+  { id: "tools", k: "动作", n: "工具", f: "tools/", d: "read/write/edit_file、bash、glob、grep、search_docs、web_fetch（读网页，默认每次确认）。工具说明是写给模型看的使用手册。编辑用精确字符串替换，且必须先读。", fn: "Tool.execute · EditFile · Bash", cc: "Read / Write / Edit / Bash / Glob / Grep", doc: "docs/03-tools.md" },
   { id: "rag", k: "检索", n: "RAG", f: "rag.py", d: "文档切块、中文 bigram 分词、BM25 关键词检索、可选向量检索、RRF 混合、按 mtime 增量索引。用来回答用户用自然语言问、文档里却是另一种说法的问题。", fn: "DocIndex.search · BM25 · rrf", cc: "Claude Code 主要靠 grep / glob 按需搜索；知识库类需求通常另接检索服务", doc: "docs/10-rag.md" },
   { id: "perm", k: "安全", n: "权限", f: "permissions.py", d: "deny → plan → （review：高风险必问）→ allow → bypass → 只读 → accept_edits → （review：项目内编辑和白名单命令放行）→ 询问。先命中先生效。review 模式把「少打断」和「高风险永远确认」放在一起，结束时汇总 diff。", fn: "PermissionManager.check · resolve · risk.classify_bash", cc: "default / acceptEdits / plan / bypassPermissions，allow / deny 规则；review 是 nanocode 的扩展", doc: "docs/04-permissions-and-hooks.md · docs/11-verification-loop.md" },
   { id: "trust", k: "安全", n: "工作区信任", f: "trust.py", d: "陌生项目的配置里，能执行命令（hooks、MCP）、放宽权限（allow、mode）、改变请求去向（base_url 等）的字段，在你确认信任之前不生效；配置内容变了要重新确认。", fn: "apply_trust · split_sensitive · TrustStore", cc: "在新目录中启动时询问是否信任", doc: "docs/04-permissions-and-hooks.md" },
