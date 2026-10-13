@@ -8,7 +8,7 @@
 - **自带 Web 调试面板**：实时看到每一圈循环、每次发给模型的完整上下文、系统提示词、工具定义
 - **自带 Mock 模型**：不需要 API Key，就能把整套流程跑起来、看清楚
 - **内置小而完整的 RAG**：切块、中文 BM25、可选向量检索、RRF 混合、增量索引，外加一个评测脚本对比 grep 与检索
-- **Agent 任务评测**：10 个编程任务、隐藏测试判定，统计成功率、步数和 token，用来比较模型和改动
+- **Agent 任务评测**：13 个编程任务、隐藏测试判定，统计成功率、步数和 token，用来比较模型和改动
 - **75 个单元测试**，覆盖循环的每个分支、两种协议的流式解析、检索管线、安全回归和评测框架自检
 
 > nanocode 是依据 Claude Code 的公开文档和可观察行为，从零写的教学实现，不包含也不来自 Claude Code 的源代码。它追求的是"把原理讲清楚"，不是"功能一样多"。
@@ -110,7 +110,7 @@ nanocode/
 └── web/               Web 界面（调试面板 + 架构学习页）
 docs/                  分章节的架构讲解（建议按顺序读）
 examples/              MCP 服务器示例、hooks/skills/commands 配置示例、RAG 评测（rag_eval/）
-evals/agent_tasks/     Agent 任务评测：10 个任务、隐藏测试、参考答案、运行器
+evals/agent_tasks/     Agent 任务评测：13 个任务、隐藏测试、参考答案、运行器
 verification/          真实环境验证清单与结果（连真实模型、浏览器实操）
 tests/                 单元测试
 ```
@@ -136,7 +136,7 @@ tests/                 单元测试
 
 ```bash
 python3 -m unittest discover -s tests                     # 单元测试
-python3 evals/agent_tasks/run.py --reference              # 评测框架自检（参考答案应 10/10）
+python3 evals/agent_tasks/run.py --reference              # 评测框架自检（参考答案应 13/13）
 python3 evals/agent_tasks/run.py --provider deepseek --model deepseek-chat --repeat 3   # 用真实模型评测
 ```
 

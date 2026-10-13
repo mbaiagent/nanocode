@@ -1,0 +1,7 @@
+{
+  "id": "T11-signature-change",
+  "title": "改函数签名，调用点分散在多个文件",
+  "kind": "code",
+  "prompt": "billing.py 里的 calc_total(items, tax) 要改成 calc_total(items, *, tax_rate, discount=0)：tax 改名为 tax_rate，并且和新增的 discount 一样只能用关键字传；discount 是从小计里扣掉的金额（分），小计扣完最低为 0，之后再算税。请修改 billing.py，并更新项目里所有用到它的地方，保证各处行为不变。项目里现有的测试应当全部继续通过。",
+  "trap": "caught_by_visible"
+}
