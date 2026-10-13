@@ -26,6 +26,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
+import shlex
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -78,7 +79,10 @@ class PermissionManager:
             norm = os.path.relpath(full, os.path.realpath(self.cwd)) if inside else full
             allow_forms = [norm]                 # allow 只认规范化路径：宁可多问一次
             deny_forms = [target, norm, full]    # deny 任一写法命中都拒绝：宁可多拦一次
-        if _matches_any(self.deny, tool.name, *deny_forms):
+        if tool.name == "bash":
+            if _bash_matches(self.deny, target, deny=True):
+                return Decision("deny", "命中 deny 规则（复合命令里任何一段命中都算）")
+        elif _matches_any(self.deny, tool.name, *deny_forms):
             return Decision("deny", "命中 deny 规则")
         if self.mode == "plan" and not tool.is_read_only:
             return Decision("deny", "当前处于 plan（只读规划）模式，不能执行修改类操作。请先给出方案，等用户切换模式后再执行。")
@@ -86,7 +90,10 @@ class PermissionManager:
             why = self._high_risk(tool, target, inside, allow_forms[0] if getattr(tool, "path_target", False) else "")
             if why:
                 return Decision("ask", f"高风险操作（{why}），终审模式下无论 allow 规则如何都必须确认", high_risk=True)
-        if _matches_any(self.allow + self.session_allow, tool.name, *allow_forms):
+        if tool.name == "bash":
+            if _bash_matches(self.allow, target, cwd=self.cwd, exact=self.session_allow):
+                return Decision("allow", "命中 allow 规则")
+        elif _matches_any(self.allow + self.session_allow, tool.name, *allow_forms):
             return Decision("allow", "命中 allow 规则")
         if self.mode == "bypass":
             return Decision("allow", "bypass 模式")
@@ -117,7 +124,10 @@ class PermissionManager:
         if decision.behavior != "ask":
             return decision
         if not self.ask_fn:
-            return Decision("deny", "需要确认，但当前没有可以询问的用户（非交互模式）。可用 --mode 或 allow 规则放行。")
+            hint = ""
+            if tool.name == "bash" and len(split_command(tool.permission_target(input) or "")[0]) > 1:
+                hint = "这是复合命令（含 && ; | 等），allow 规则要每一段都命中才放行。"
+            return Decision("deny", "需要确认，但当前没有可以询问的用户（非交互模式）。可用 --mode 或 allow 规则放行。" + hint)
         target = tool.permission_target(input) or ""
         answer = self.ask_fn(tool.name, input, target)
         if answer == "always" and decision.high_risk:
@@ -129,6 +139,135 @@ class PermissionManager:
         if answer == "yes":
             return Decision("allow", "用户允许")
         return Decision("deny", "用户拒绝了这次操作。请询问用户希望怎么做，不要换个方式绕过。")
+
+
+# ---------------------------------------------------------------- bash 复合命令
+#
+# 规则是对"一条命令"写的，而模型常写 `cd dir && cmd`、`cmd1; cmd2`、`cmd | tail`。整串做 fnmatch 会两头出错：
+# 该放行的不命中（模型自己加的 cd 前缀就让 allow 失效），不该放行的却命中（`unittest && rm -rf /` 被前缀规则放行；
+# deny 也被 `cd x && rm -rf y` 绕过）。所以先拆成段，再逐段匹配：allow 要每一段都命中，deny 任一段命中就拒绝。
+# 这仍然只是字符串层面的处理，不是沙箱：`bash -c "…"`、`xargs rm`、别名、变量展开等都看不穿。
+
+_SEPARATORS = ("&&", "||", "|&")
+
+
+def split_command(command: str, deep: bool = False) -> tuple[list[str], bool]:
+    """按 && || ; | 换行 & 拆成段（引号里的不拆）。返回 (段列表, 是否有藏在段里的命令)。
+
+    藏起来的命令指 $(…)、反引号、<(…)、(…) 子 shell、{ …; } 命令组：它们在一段之内再执行别的命令。
+    deep=False（匹配 allow 用）：只标记出来，调用方应当拒绝放行；
+    deep=True（匹配 deny 用）：把它们也当作分隔符展开，宁可多拦。
+    """
+    segs: list[str] = []
+    cur: list[str] = []
+    opaque = False
+    quote = ""
+    resume: list[str] = []       # deep 模式：进入 "…$(…)…" 里的命令替换前，记下外层的引号状态
+    i, n = 0, len(command)
+
+    def cut():
+        text = "".join(cur).strip()
+        if text:
+            segs.append(text)
+        cur.clear()
+
+    def hidden(width: int = 1) -> int:
+        nonlocal opaque
+        nonlocal quote
+        opaque = True
+        if deep:
+            cut()
+            if quote == '"':
+                resume.append(quote)
+                quote = ""
+        else:
+            cur.append(command[i:i + width])
+        return i + width
+
+    while i < n:
+        c, two = command[i], command[i:i + 2]
+        if quote == "'":
+            cur.append(c)
+            quote = "" if c == "'" else quote
+            i += 1
+        elif c == "\\" and i + 1 < n:
+            cur.append(two)
+            i += 2
+        elif quote == '"':
+            if c == '"':
+                quote = ""
+                cur.append(c)
+                i += 1
+            elif c == "`":
+                i = hidden()
+            elif two == "$(":
+                i = hidden(2)
+            else:
+                cur.append(c)
+                i += 1
+        elif c in "'\"":
+            quote = c
+            cur.append(c)
+            i += 1
+        elif c == "`":
+            i = hidden()
+        elif two in ("$(", "<(", ">("):
+            i = hidden(2)
+        elif c == ")" and deep and resume:
+            cut()
+            quote = resume.pop()
+            i += 1
+        elif c in "()":
+            i = hidden()
+        elif c in "{}" and (i == 0 or command[i - 1].isspace()) and (i + 1 >= n or command[i + 1].isspace()):
+            i = hidden()                       # 独立的 { 或 }：命令组；`${X}` 和 `find -exec {} \;` 不算
+        elif two in _SEPARATORS:
+            cut()
+            i += 2
+        elif c in ";|\n":
+            cut()
+            i += 1
+        elif c == "&" and not (i > 0 and command[i - 1] in "<>") and command[i + 1:i + 2] != ">":
+            cut()                              # 单个 & 是后台运行；2>&1 和 &> 是重定向，不是分隔符
+            i += 1
+        else:
+            cur.append(c)
+            i += 1
+    cut()
+    return segs, opaque
+
+
+def _is_harmless_cd(segment: str, cwd: str) -> bool:
+    """`cd 项目内的目录` 只改变后面命令的工作目录，不算一个需要规则放行的动作。"""
+    try:
+        tokens = shlex.split(segment)
+    except ValueError:
+        return False
+    if len(tokens) != 2 or tokens[0] != "cd" or tokens[1].startswith(("-", "~", "$")):
+        return False
+    return is_inside(cwd, resolve_path(cwd, tokens[1]))
+
+
+def _bash_matches(rules: list[str], command: str, deny: bool = False, cwd: str = "", exact: list[str] | None = None) -> bool:
+    patterns: list[str | None] = []
+    for rule in rules:
+        m = _RULE.match(rule.strip())
+        if m and m.group(1) == "bash":
+            patterns.append(m.group(2))
+    if deny:
+        # 整串匹配保留原有行为（如 `bash(*sudo*)`）；再逐段匹配，堵住 `cd x && rm -rf y`
+        segments, _ = split_command(command, deep=True)
+        return any(p is None or fnmatch.fnmatchcase(t, p) for p in patterns for t in [command.strip(), *segments])
+    # allow：「总是允许」记下的是整条命令的原文，只认逐字相同的那一条（不当作通配）
+    if any(r.strip() == f"bash({command})" for r in exact or []):
+        return True
+    if any(p is None or p == "*" for p in patterns):
+        return True                                           # 用户明确写了放行所有 bash
+    segments, opaque = split_command(command)
+    if opaque or not segments:
+        return False
+    real = [t for t in segments if not _is_harmless_cd(t, cwd)]
+    return bool(real) and all(any(fnmatch.fnmatchcase(t, p) for p in patterns if p) for t in real)
 
 
 def _matches_any(rules: list[str], tool_name: str, *targets: str) -> bool:
