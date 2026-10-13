@@ -127,11 +127,15 @@ def discover_commands(cwd: str) -> dict[str, dict]:
     return commands
 
 
-def build_system_prompt(cwd: str, skills: dict | None = None, extra: str = "") -> str:
+def build_system_prompt(cwd: str, skills: dict | None = None, extra: str = "",
+                        model: str = "", provider: str = "", protocol: str = "") -> str:
     sections = [BASE_PROMPT]
     is_git = os.path.isdir(os.path.join(cwd, ".git"))
+    # 运行时身份：不告诉模型，被问"你是什么模型"时它只能凭训练数据或项目文档瞎猜
+    identity = f"- 模型：{model}（provider={provider}，protocol={protocol}）\n" if model else ""
     sections.append(
         "# 环境\n"
+        f"{identity}"
         f"- 工作目录：{cwd}\n"
         f"- 是否 git 仓库：{'是' if is_git else '否'}\n"
         f"- 系统：{platform.system()} {platform.release()}\n"
