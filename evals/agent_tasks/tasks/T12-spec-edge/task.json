@@ -1,0 +1,7 @@
+{
+  "id": "T12-spec-edge",
+  "title": "规格文档里一句不起眼的约束",
+  "kind": "code",
+  "prompt": "请实现 splitter.py 里的 split_bill，规格在 SPEC.md。test_splitter.py 应当通过。",
+  "trap": "needs_own_checks"
+}

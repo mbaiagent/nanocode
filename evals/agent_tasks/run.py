@@ -1,4 +1,4 @@
-"""Agent 任务评测：让 nanocode 用真实模型完成 10 个小型编程任务，自动判定成功与否。
+"""Agent 任务评测：让 nanocode 用真实模型完成 13 个小型编程任务，自动判定成功与否。
 
     python3 evals/agent_tasks/run.py --provider deepseek --model deepseek-chat
     python3 evals/agent_tasks/run.py --provider openrouter --model openrouter/free --tasks T01,T04 --repeat 3
@@ -37,6 +37,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 TASKS = os.path.join(HERE, "tasks")
+DEFAULT_VERIFY = "python3 -m unittest discover -s . -p 'test_*.py'"
 sys.path.insert(0, ROOT)
 
 
@@ -93,7 +94,7 @@ def run_agent(task: dict, work: str, args) -> dict:
     events: list[dict] = []
     logs: list[str] = []
     opts = Options(provider=args.provider, model=args.model, base_url=args.base_url, protocol=args.protocol,
-                   mode=args.mode, cwd=work, mock_delay=0)
+                   mode=args.mode, cwd=work, mock_delay=0, verify=args.verify)
     started = time.time()
     session = Session(opts, log=logs.append)
     session.bus.subscribe(lambda e: e["type"] != "text_delta" and events.append(e))
@@ -152,6 +153,7 @@ def markdown(meta: dict, rows: list[dict]) -> str:
     lines = [f"# Agent 任务评测：{meta['provider']}/{meta['model']}", "",
              f"- 时间：{meta['date']}　nanocode 提交：{meta['commit'] or '未知'}　Python {meta['python']}　{meta['platform']}",
              f"- 权限模式：{meta['mode']}　最大步数：{meta['max_steps']}　单任务超时：{meta['timeout']}s　每题重复：{meta['repeat']}",
+             f"- 自动验证：{('开（' + meta['verify'] + '）') if meta.get('verify') else '关'}",
              f"- **通过率：{passed}/{total}（{passed / total:.0%}）**" if total else "- 没有运行任何任务",
              "", "| 任务 | 通过 | 平均步数 | 工具调用 | 工具报错 | 输入 tokens | 输出 tokens | 耗时(s) | 最近一次失败原因 |",
              "|---|---|---|---|---|---|---|---|---|"]
@@ -176,6 +178,9 @@ def main(argv=None) -> int:
     ap.add_argument("--repeat", type=int, default=1, help="每个任务跑几次（模型有随机性，建议 ≥3）")
     ap.add_argument("--max-steps", type=int, default=30)
     ap.add_argument("--timeout", type=int, default=600, help="单个任务的超时秒数")
+    ap.add_argument("--verify", nargs="?", const=DEFAULT_VERIFY, default="", metavar="命令",
+                    help=f"打开自动验证：Agent 想结束时先在工作目录里跑这条命令，不过就打回去改（只写 --verify 则用 {DEFAULT_VERIFY!r}，"
+                         "即项目里 Agent 看得到的测试）。不加就是关闭，用于对照")
     ap.add_argument("--reference", action="store_true", help="不调模型，用参考答案验证评测框架")
     ap.add_argument("--keep", action="store_true", help="保留每个任务的工作目录，便于排查")
     ap.add_argument("--out", default=os.path.join(HERE, "results"))
@@ -216,6 +221,7 @@ def main(argv=None) -> int:
             "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), "commit": git_commit(),
             "python": platform.python_version(), "platform": f"{platform.system()} {platform.machine()}",
             "mode": args.mode, "max_steps": args.max_steps, "timeout": args.timeout, "repeat": args.repeat,
+            "verify": "" if args.reference else args.verify,
             "usage_estimated": any(r.get("usage_estimated") for r in runs)}
     rows = summarize(runs)
     os.makedirs(args.out, exist_ok=True)

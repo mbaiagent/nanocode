@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -33,7 +34,9 @@ from .events import EventBus
 from .hooks import HookRunner
 from .llm.base import LLMError, Provider
 from .messages import (Usage, assistant_message, text_block, text_of, tool_result_block, tool_uses)
-from .permissions import PermissionManager
+from .permissions import EDIT_TOOLS, PermissionManager
+from . import lessons, review, subcheck
+from . import verify as verify_mod
 from .tools.base import ToolContext, ToolRegistry, truncate
 
 
@@ -45,7 +48,9 @@ SUBAGENT_PROMPT = BASE_PROMPT + """
 
 # 你的身份
 你是被主 Agent 派出去完成一项子任务的子 Agent。你看不到主对话，只能看到下面的任务说明。
-完成后用一段简洁的文字汇报结论（这是主 Agent 唯一能看到的内容），包含关键的文件路径和事实，不要寒暄。"""
+完成后用一段简洁的文字汇报结论（这是主 Agent 唯一能看到的内容），包含关键的文件路径和事实，不要寒暄。
+汇报里要分清两类内容：**已验证**的（你亲眼读到的代码、实际运行过的命令和结果）和**未验证**的（推测、印象、没跑过的东西），
+不要把推测写成事实。任务如果限定了可以修改的范围或要求通过某条检查，系统会在你汇报后核对，不通过会让你重做。"""
 
 
 class Agent:
@@ -53,7 +58,7 @@ class Agent:
                  hooks: HookRunner, bus: EventBus, cwd: str, system_prompt: Callable[[], str],
                  name: str = "main", depth: int = 0, max_steps: int = 60, max_tokens: int = 8192,
                  context_window: int = 128000, compact_ratio: float = 0.8, skills: dict | None = None,
-                 cancel: threading.Event | None = None):
+                 cancel: threading.Event | None = None, verify: verify_mod.VerifyConfig | None = None):
         self.provider = provider
         self.tools = tools
         self.permissions = permissions
@@ -73,6 +78,17 @@ class Agent:
         self.cancel = cancel or threading.Event()
         self.busy = False
         self._compacted_at: int | None = None
+        # 自动验证（只对主 Agent 生效，见 verify.py）
+        self.verify = verify if depth == 0 else None
+        self._dirty = False            # 本轮是否做过会改动东西的操作（检查之后清零）
+        self._verify_failures = 0      # 连续失败次数
+        self._verify_last: str | None = None   # 上一次失败的指纹
+        self.write_scope: list[str] | None = None   # 子 Agent 允许修改的路径范围（None = 不限制），见 subcheck.py
+        self._review_before: dict | None = None   # 终审模式：本轮开始时的文件快照（None = 本轮不做终审）
+        self._review_originals: dict = {}          # 终审模式：写文件工具改动之前记下的原文
+        self._verify_status: str | None = None     # 本轮最后一次自动验证的结果（pass / fail）
+        self._lesson: dict | None = None           # 本轮第一次被验证打回时的证据，修好并通过后用来生成经验候选（见 lessons.py）
+        self.verify_failed = False     # 上一轮是否因验证没通过而被迫停下（单次模式据此返回非零退出码）
         self.ctx = ToolContext(cwd=cwd, state=self.state, emit=self.emit, cancel=self.cancel,
                                run_subagent=self._run_subagent if depth == 0 else None, skills=skills or {})
 
@@ -92,6 +108,13 @@ class Agent:
     def _run(self, prompt: str) -> str:
         self.emit("user", text=prompt)
         blocks = [text_block(prompt)]
+        self._dirty, self._verify_failures, self._verify_last = False, 0, None
+        self.verify_failed = False
+        if self.depth == 0:   # 子 Agent 共用主 Agent 的终审记录，不能在这里清掉
+            self._verify_status = None
+            self._lesson = None
+            self._review_before = subcheck.snapshot(self.cwd) if self.permissions.mode == "review" else None
+            self._review_originals = {}
 
         # Hook：UserPromptSubmit —— 可以拦截请求，或附加额外上下文
         if self.depth == 0 and self.hooks.has("UserPromptSubmit"):
@@ -138,6 +161,17 @@ class Agent:
                 final = text_of(self.messages[-1])
                 if resp.stop_reason == "max_tokens":
                     final += "\n\n(回复因达到 max_tokens 被截断)"
+                # 自动验证 —— 做过改动的话，先过一遍检查命令；不通过就把输出交还给模型
+                if self.verify and self._dirty and not self.cancel.is_set():
+                    verdict = self._verify()
+                    if verdict is None:          # 未通过，反馈已追加，继续循环
+                        continue
+                    if verdict:                  # 超过重试上限 / 没有进展：停下来，把失败交给用户
+                        final += verdict
+                        self.verify_failed = True
+                        self._finish_review()
+                        self.emit("turn_end", final=final, usage=self.usage.to_dict(), verify_failed=True)
+                        return final
                 # Hook：Stop —— 可以不让它停，比如"测试没过不许结束"
                 if self.depth == 0 and self.hooks.has("Stop"):
                     out = self.hooks.run("Stop", {"final": final})
@@ -153,6 +187,7 @@ class Agent:
         else:
             final = f"(达到最大步数 {self.max_steps}，已停止)"
 
+        self._finish_review()
         self.emit("turn_end", final=final, usage=self.usage.to_dict())
         return final
 
@@ -199,6 +234,11 @@ class Agent:
         if decision.behavior == "deny":
             plan["result"] = self._finish(call, f"权限被拒绝：{decision.reason}", True)
             return plan
+        if self.write_scope is not None and tool.name in EDIT_TOOLS:
+            rel = os.path.relpath(self.ctx.resolve(call["input"].get("path", "")), self.cwd)
+            if not subcheck.in_scope(rel, self.write_scope):
+                plan["result"] = self._finish(call, f"{rel} 不在这个子任务允许修改的范围内：{self.write_scope or '(只读，不许改任何文件)'}", True)
+                return plan
         if self.hooks.has("PreToolUse"):
             out = self.hooks.run("PreToolUse", {"tool_name": tool.name, "tool_input": call["input"]}, tool.name)
             self._report_hook("PreToolUse", out)
@@ -212,7 +252,13 @@ class Agent:
         if self.cancel.is_set():
             plan["result"] = self._finish(call, "用户中断了操作，工具未执行", True)
             return
+        if self._review_before is not None and tool.name in EDIT_TOOLS:
+            review.remember(self._review_originals, self.cwd, self.ctx.resolve(str(call["input"].get("path", ""))))
         result = tool.execute(call["input"], self.ctx)
+        if not tool.is_read_only and not result.is_error:
+            self._dirty = True
+            if self._lesson is not None and tool.name in EDIT_TOOLS:   # 打回之后改了哪些文件，是候选里的证据
+                self._lesson["files"].add(os.path.relpath(self.ctx.resolve(str(call["input"].get("path", ""))), self.cwd))
         content = truncate(result.content)
         if self.hooks.has("PostToolUse"):
             out = self.hooks.run("PostToolUse", {"tool_name": tool.name, "tool_input": call["input"],
@@ -230,6 +276,56 @@ class Agent:
     def _report_hook(self, event: str, out) -> None:
         if out.warnings or out.message:
             self.emit("hook", hook=event, blocked=out.blocked, message=out.message, warnings=out.warnings)
+
+    # =================================================================== 终审汇总
+
+    def _finish_review(self) -> None:
+        """终审模式：本轮结束时汇总改动（见 review.py）。没有改动就什么都不发。"""
+        if self.depth != 0:   # 子 Agent 结束时不汇总，等主 Agent 整轮结束再一起汇总
+            return
+        before, self._review_before = self._review_before, None
+        if before is None:
+            return
+        changed = subcheck.changed(before, subcheck.snapshot(self.cwd, before))
+        files, hidden = review.build(self._review_originals, changed, self.cwd)
+        self._review_originals = {}
+        if files or hidden or changed is None:
+            self.emit("review", files=files, hidden=hidden, verify=self._verify_status, uncounted=changed is None)
+
+    # =================================================================== 自动验证
+
+    def _verify(self) -> str | None:
+        """跑一次检查。返回 None = 未通过且已把反馈追加进对话（应继续循环）；
+        "" = 通过（可以结束）；非空字符串 = 失败且不再重试，内容是附加到最终回答后面的说明。"""
+        cfg = self.verify
+        attempt = self._verify_failures + 1
+        self.emit("verify", status="running", attempt=attempt, command=cfg.command)
+        result = verify_mod.run(cfg, self.cwd)
+        self.emit("verify", status="pass" if result.passed else "fail", attempt=attempt, command=cfg.command,
+                  exit_code=result.exit_code, output=verify_mod.tail(result.output), seconds=round(result.seconds, 2))
+        self._verify_status = "pass" if result.passed else "fail"
+        if not result.passed and self._lesson is None:
+            self._lesson = {"command": cfg.command, "output": result.output, "files": set()}
+        if result.passed:
+            if self._lesson is not None:   # 被打回过、后来修好了：这是唯一会沉淀经验的情形
+                lesson = lessons.build(self._lesson["command"], self._lesson["output"], sorted(self._lesson["files"]))
+                if lesson:
+                    self.emit("lesson", **lesson)
+                self._lesson = None
+            self._dirty, self._verify_failures, self._verify_last = False, 0, None
+            return ""
+        self._verify_failures += 1
+        sig = verify_mod.signature(result)
+        if sig == self._verify_last:
+            reason = "同一个错误连续出现两次，模型没有取得进展"
+        elif self._verify_failures > cfg.max_retries:
+            reason = f"已重试 {cfg.max_retries} 次仍未通过"
+        else:
+            self._verify_last = sig
+            self._append_user([text_block(f"<verify-feedback>\n{verify_mod.feedback(cfg, result, self._verify_failures)}\n</verify-feedback>")])
+            return None
+        return (f"\n\n(自动验证未通过，已停止：{reason}。检查命令：{cfg.command}，退出码 "
+                f"{result.exit_code if result.exit_code is not None else '超时'}。最后一次输出：)\n{verify_mod.tail(result.output)}")
 
     # =================================================================== 上下文压缩
 
@@ -272,16 +368,49 @@ class Agent:
 
     # =================================================================== 子 Agent
 
-    def _run_subagent(self, description: str, prompt: str) -> str:
+    def _run_subagent(self, description: str, prompt: str, check: str = "", allowed_paths=None) -> str:
+        """派出子 Agent。返回它的结论 + 系统生成的验收报告（改了什么、有没有越界、检查过没过）。"""
+        scope = subcheck.parse_scope(allowed_paths)   # 写错了抛 ScopeError，task 工具会把它变成给模型的错误
         sub = Agent(self.provider, self.tools.subset({"task", "todo_write"}), self.permissions, self.hooks,
                     self.bus, self.cwd, system_prompt=lambda: SUBAGENT_PROMPT, name=f"sub:{description}",
                     depth=self.depth + 1, max_steps=30, max_tokens=self.max_tokens,
                     context_window=self.context_window, cancel=self.cancel)
-        self.emit("subagent_start", description=description, prompt=prompt)
+        sub.write_scope = scope
+        sub._review_before, sub._review_originals = self._review_before, self._review_originals   # 子 Agent 的改动也进终审汇总
+        self.emit("subagent_start", description=description, prompt=prompt, check=check, allowed_paths=scope)
+        before = subcheck.snapshot(self.cwd)
+        report = subcheck.Report(scope=scope, check=check.strip())
         result = sub._run(prompt)  # 用 _run：不能 clear 共享的 cancel 事件
+        for attempt in range(1, subcheck.RETRIES + 2):
+            report.changed = subcheck.changed(before, subcheck.snapshot(self.cwd, before))
+            report.out_of_scope = [p for p in (report.changed or []) if scope is not None and not subcheck.in_scope(p, scope)]
+            output = self._run_sub_check(report, attempt) if report.check else ""
+            if not report.needs_redo or self.cancel.is_set():
+                break
+            if attempt > subcheck.RETRIES:
+                report.gave_up = True
+                break
+            result = sub._run(subcheck.feedback(report, output))   # 子 Agent 保留上下文，接着修
+        self._dirty = self._dirty or sub._dirty   # 子 Agent 改了东西，也算本轮有改动
         self.usage.add(sub.usage)
-        self.emit("subagent_end", description=description, result=result, usage=sub.usage.to_dict())
-        return result or "(子 Agent 没有返回内容)"
+        self.emit("subagent_end", description=description, result=result, usage=sub.usage.to_dict(), report=report.to_dict())
+        return f"{result or '(子 Agent 没有返回内容)'}\n\n{report.render()}"
+
+    def _run_sub_check(self, report: "subcheck.Report", attempt: int) -> str:
+        """跑子任务的检查命令。命令是模型传进来的，所以和 bash 一样要过权限，不能绕过确认。"""
+        bash = self.tools.get("bash")
+        if bash is None:
+            report.check_status, report.check_note = "skipped", "没有 bash 工具"
+            return ""
+        decision = self.permissions.resolve(bash, {"command": report.check})
+        if decision.behavior != "allow":
+            report.check_status, report.check_note = "skipped", f"权限未放行：{decision.reason}"
+            return ""
+        report.check_attempts = attempt
+        result = verify_mod.run(verify_mod.VerifyConfig(report.check, 0, 300), self.cwd)
+        report.check_status = "pass" if result.passed else "fail"
+        report.check_note = "" if result.passed else verify_mod.tail(result.output, 1500)
+        return verify_mod.tail(result.output)
 
     def reset(self) -> None:
         self.messages.clear()

@@ -21,6 +21,7 @@ import queue
 import sys
 import threading
 
+from . import review as review_mod
 from .llm import LLMError
 from .session import Options, Session
 
@@ -81,12 +82,41 @@ class Renderer:
         elif t == "subagent_start":
             self.w(paint(f"── 子 Agent 启动：{e['description']} ──", "magenta") + "\n", err=True)
         elif t == "subagent_end":
-            self.w(paint(f"── 子 Agent 完成：{e['description']} ──", "magenta") + "\n", err=True)
+            r = e.get("report") or {}
+            n = "未统计" if r.get("changed") is None else f"改动 {len(r['changed'])} 个文件"
+            check = {"pass": "检查通过", "fail": "检查未通过", "skipped": "检查未执行", "none": "未验证"}.get(r.get("check_status"), "")
+            scope = f" · 越界 {len(r['out_of_scope'])} 个" if r.get("out_of_scope") else ""
+            bad = bool(r) and not r.get("ok", True)
+            self.w(paint(f"── 子 Agent 完成：{e['description']}（{n} · {check}{scope}）──", "red" if bad else "magenta") + "\n", err=True)
         elif t == "compact":
             self.w(paint(f"↻ 上下文已{'自动' if e['auto'] else ''}压缩：{e['before']} → {e['after']} tokens", "yellow") + "\n", err=True)
         elif t == "hook":
             msg = e["message"] or "\n".join(e["warnings"])
             self.w(paint(f"⚓ hook[{e['hook']}] {msg[:300]}", "yellow") + "\n", err=True)
+        elif t == "memory_pending":
+            self.w(paint(f"💡 经验候选 #{e['index']}（来自被自动验证打回又修好的回合，确认后才会写入项目记忆）\n    {e['text']}\n"
+                         f"    写入：/memory accept {e['index']}　丢弃：/memory reject {e['index']}", "yellow") + "\n", err=True)
+        elif t == "review":
+            ok = e["verify"] == "pass"
+            head = review_mod.headline(e["files"], e["hidden"], e["verify"]).replace("**", "")
+            self.w(paint(f"═ {head}", "green" if ok else "yellow") + "\n", err=True)
+            for f in e["files"]:
+                stat = f" (+{f['added']} -{f['removed']})" if f["added"] is not None else f"（{f['note']}）"
+                self.w(f"  {f['status']}  {f['path']}{stat}\n", err=True)
+                for line in (f["diff"] or "").splitlines()[:40]:
+                    color = "green" if line.startswith("+") and not line.startswith("+++") else "red" if line.startswith("-") and not line.startswith("---") else "dim"
+                    self.w(paint("    " + line[:160], color) + "\n", err=True)
+            if e["hidden"]:
+                self.w(f"  … 还有 {e['hidden']} 个文件未列出\n", err=True)
+            self.w(paint("  提交、推送等最后一步仍需你确认。", "dim") + "\n", err=True)
+        elif t == "verify":
+            if e["status"] == "running":
+                self.w(paint(f"⏳ 自动验证（第 {e['attempt']} 次）：{e['command']}", "yellow") + "\n", err=True)
+            elif e["status"] == "pass":
+                self.w(paint(f"✓ 自动验证通过（第 {e['attempt']} 次，{e['seconds']}s）", "green") + "\n", err=True)
+            else:
+                tail = "\n".join(f"    {l[:160]}" for l in e["output"].splitlines()[-6:])
+                self.w(paint(f"✗ 自动验证未通过（第 {e['attempt']} 次，退出码 {e['exit_code']}）\n{tail}", "red") + "\n", err=True)
         elif t == "error":
             self.w(paint(f"✗ {e['message']}", "red") + "\n", err=True)
         elif t == "turn_end" and not sub:
@@ -186,11 +216,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--base-url", help="自定义 API 地址")
     p.add_argument("--protocol", choices=["openai", "anthropic"], help="自定义 provider 使用的协议")
     p.add_argument("--api-key", help="API Key（更推荐用环境变量）")
-    p.add_argument("--mode", choices=["default", "accept_edits", "plan", "bypass"], help="权限模式")
+    p.add_argument("--mode", choices=["default", "accept_edits", "plan", "review", "bypass"],
+                   help="权限模式；review = 终审：测试和项目内编辑自动放行，高风险操作必须确认，结束时汇总 diff")
     p.add_argument("--cwd", default=os.getcwd(), help="工作目录")
     p.add_argument("--trace", action="store_true", help="把所有事件记录到 ~/.nanocode/projects/<项目>/traces/*.jsonl")
     p.add_argument("--resume", action="store_true", help="恢复上一次会话")
     p.add_argument("--trust", action="store_true", help="信任当前项目的配置（hooks、MCP、allow 规则等），不再询问")
+    p.add_argument("--verify", metavar="CMD", default="", help="自动验证命令：Agent 改动后想结束时先运行，不通过就让它继续修（如 \"pytest -q\"）")
     p.add_argument("--web", action="store_true", help="启动 Web 界面")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8765)
@@ -216,7 +248,7 @@ def main(argv: list[str] | None = None) -> int:
 
     opts = Options(provider=args.provider or "", model=args.model or "", base_url=args.base_url or "",
                    api_key=args.api_key or "", protocol=args.protocol or "", mode=args.mode or "",
-                   cwd=args.cwd, trace=args.trace, mock_delay=0.0 if args.prompt else 0.02, trust=args.trust)
+                   cwd=args.cwd, trace=args.trace, mock_delay=0.0 if args.prompt else 0.02, trust=args.trust, verify=args.verify)
     try:
         trust_fn = ask_trust if sys.stdin.isatty() and not args.prompt else None
         session = Session(opts, log=lambda m: print(paint(m, "yellow"), file=sys.stderr), trust_fn=trust_fn)
@@ -233,10 +265,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.prompt:
         session.bus.subscribe(Renderer(quiet=True))
         try:
-            session.send(args.prompt)
+            result = session.send(args.prompt)
+            failed = session.agent.verify_failed
         finally:
             session.close()
         print()
+        if failed:   # 检查没过：让脚本 / CI 能从退出码看出来
+            print(paint(result[result.rfind("(自动验证未通过"):], "red"), file=sys.stderr)
+            return 1
         return 0
     interactive(session)
     return 0

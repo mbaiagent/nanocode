@@ -10,10 +10,18 @@
     llm_response   模型这一步的完整输出（内容块、停止原因、token 用量）
     tool_call      模型要调用某个工具
     permission     权限决策（allow / deny 以及原因）
+    permission_request  需要问用户：请求 id、工具、参数（Web 界面据此弹出确认框）
+    permission_answer   用户回答了（或超时 / 断开按拒绝处理）
+    command        执行了一条 / 斜杠命令（命令原文和输出）
     tool_result    工具执行结果
     todos          待办清单更新
     compact        上下文被压缩
     hook           hook 输出了警告/反馈
+    verify         自动验证（status: running / pass / fail；见 verify.py）
+    review         终审汇总：本轮改动的文件和 diff（review 模式，见 review.py）
+    lesson         被自动验证打回又修好的回合，附证据（见 lessons.py；Session 据此生成 memory_pending）
+    memory_pending 待用户确认的经验候选（/memory accept 写入，/memory reject 丢弃）
+    subagent_start / subagent_end  子 Agent 启动 / 结束（结束时带验收报告 report，见 subcheck.py）
     turn_end       本轮结束（最终回答、累计用量）
     error          出错
 """

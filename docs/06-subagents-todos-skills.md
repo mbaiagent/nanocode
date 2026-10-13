@@ -1,6 +1,6 @@
 # 06 · 待办、子 Agent、Skills、自定义命令
 
-> 对应源码：`nanocode/tools/planning.py`、`agent.py` 中的 `_run_subagent`、`context.py` 中的 `discover_*`
+> 对应源码：`nanocode/tools/planning.py`、`agent.py` 中的 `_run_subagent`、`subcheck.py`、`context.py` 中的 `discover_*`
 
 这几个功能不直接改变外部世界，它们改变的是 Agent **怎么组织工作**。
 
@@ -58,6 +58,19 @@
 - **共用同一个权限管理器**：子 Agent 的危险操作同样需要确认；
 - 共用同一个取消信号：用户按 Ctrl-C，子 Agent 也停；
 - 子 Agent 的 token 用量计入总用量。
+
+### `task` 工具的参数
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `description` | 是 | 3~8 个字的任务简述 |
+| `prompt` | 是 | 交给子 Agent 的完整任务说明 |
+| `check` | 否 | 检查命令。子 Agent 汇报后由系统运行，不通过就让它接着修（最多重做 2 次）；和 `bash` 一样要过权限 |
+| `allowed_paths` | 否 | 允许修改的路径（相对工作目录，支持目录前缀和 `*`）；空列表 = 只读任务 |
+
+### 验收：不要只信子 Agent 的自述
+
+子 Agent 的结论后面总会附一份**系统生成**的验收报告：改了哪些文件、有没有超出 `allowed_paths`、`check` 有没有通过（没配则标明"未经验证"）。写文件工具越界会被直接拒绝；`bash` 造成的越界靠前后文件快照对比发现，并让子 Agent 还原。这样主 Agent 能区分"核对过的事实"和"子 Agent 的一面之词"。原理、局限和测试方法见第 11 章。
 
 ### 写好任务说明
 

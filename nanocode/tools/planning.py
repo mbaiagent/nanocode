@@ -19,6 +19,7 @@ skill —— 技能（按需加载的说明书）。
 
 from __future__ import annotations
 
+from .. import subcheck
 from .base import Tool, ToolError
 
 STATUS_ICON = {"pending": "☐", "in_progress": "◐", "completed": "☑"}
@@ -66,12 +67,19 @@ class Task(Tool):
     is_read_only = True  # 子 Agent 内部的每个工具调用仍然会单独走权限检查
     description = ("启动一个子 Agent 独立完成一项子任务，它有自己全新的上下文，完成后只返回最终结论。"
                    "适合：大范围搜索代码、调研某个问题、需要读很多文件才能得出结论的工作。"
-                   "prompt 要写清楚任务目标和希望返回什么，因为子 Agent 看不到当前对话。")
+                   "prompt 要写清楚任务目标和希望返回什么，因为子 Agent 看不到当前对话。"
+                   "返回的结论后面会附一份系统生成的验收报告（改了哪些文件、是否越界、检查是否通过），"
+                   "以报告为准，不要只信子 Agent 的自述。会修改文件的子任务建议带上 check 和 allowed_paths。")
     input_schema = {
         "type": "object",
         "properties": {
             "description": {"type": "string", "description": "3~8 个字的任务简述"},
             "prompt": {"type": "string", "description": "交给子 Agent 的完整任务说明"},
+            "check": {"type": "string", "description": "可选。检查命令（如 pytest -q tests/test_x.py）。子 Agent 汇报后由系统运行，"
+                                                        "不通过就让它接着修（最多重做 2 次）；和 bash 一样需要权限放行"},
+            "allowed_paths": {"type": "array", "items": {"type": "string"},
+                              "description": "可选。允许修改的路径（相对工作目录，如 [\"src/parser/\", \"tests/test_parser.py\"]，支持 *）。"
+                                             "超出范围的写入会被拒绝，bash 造成的越界会在验收时发现；空列表 = 只读任务"},
         },
         "required": ["description", "prompt"],
     }
@@ -79,7 +87,14 @@ class Task(Tool):
     def run(self, input, ctx):
         if not ctx.run_subagent:
             raise ToolError("当前环境不支持子 Agent")
-        return ctx.run_subagent(input["description"], input["prompt"])
+        check = input.get("check", "")
+        paths = input.get("allowed_paths")
+        if not isinstance(check, str) or (paths is not None and not isinstance(paths, list)):
+            raise ToolError("check 必须是字符串，allowed_paths 必须是字符串列表")
+        try:
+            return ctx.run_subagent(input["description"], input["prompt"], check=check, allowed_paths=paths)
+        except subcheck.ScopeError as e:
+            raise ToolError(str(e))
 
 
 class Skill(Tool):

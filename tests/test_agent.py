@@ -7,7 +7,7 @@ import unittest
 
 from helpers import ScriptedProvider, Workspace, call, make_agent
 
-from nanocode.context import compact_messages, find_compact_split, load_memory
+from nanocode.context import compact_messages, context_tokens, find_compact_split, load_memory
 from nanocode.mcp import connect_servers
 from nanocode.messages import is_tool_result_message, text_block, user_message
 from nanocode.session import Options, Session
@@ -144,7 +144,9 @@ class AgentLoopTest(unittest.TestCase):
         sub_first_call = provider.calls[1]
         self.assertEqual(len(sub_first_call["messages"]), 1)  # 子 Agent 只看到任务说明
         self.assertNotIn("task", [t["name"] for t in sub_first_call["tools"]])
-        self.assertEqual(agent.messages[2]["content"][0]["content"], "有 0 个文件")
+        result = agent.messages[2]["content"][0]["content"]
+        self.assertTrue(result.startswith("有 0 个文件"))
+        self.assertIn("[验收报告：由系统核对生成，不是子 Agent 自述]", result)   # 子 Agent 的结论后面附了系统生成的验收报告
         self.assertIn("sub:调研", {e.get("agent") for e in events})
 
 
@@ -179,9 +181,12 @@ class ContextTest(unittest.TestCase):
         self.assertEqual(provider.calls[0]["tools"], [])
 
     def test_auto_compact_triggers(self):
-        # 工具定义本身约 1600 tokens；窗口 2600、阈值 80% ≈ 2080，第一轮塞够内容让第二轮开始时超限
+        # 窗口按工具定义的实际大小来定（工具说明改动不应该让这个测试失效）：
+        # 阈值 = 80% 窗口 ≈ 固定部分 + 800 - 20%·固定部分，第一轮塞够内容让第二轮开始时超限
+        probe, _, _ = make_agent(self.ws, [])
+        fixed = context_tokens("测试系统提示词", [], probe.tools.schemas())
         agent, provider, events = make_agent(self.ws, [[text_block("一")], [text_block("摘要")], [text_block("二")]],
-                                             context_window=2600)
+                                             context_window=fixed + 1000)
         agent.run("第一个问题" * 120)
         agent.run("第二个问题")
         compact = [e for e in events if e["type"] == "compact"]

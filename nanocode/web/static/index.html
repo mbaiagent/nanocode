@@ -232,6 +232,23 @@ function onEvent(e) {
     case "todos": renderTodos(e.todos); break;
     case "compact": add("note", `↻ 上下文${e.auto ? "自动" : ""}压缩：约 ${e.before} → ${e.after} tokens\n${e.summary}`); break;
     case "hook": add("note", `⚓ hook[${e.hook}] ${e.message || e.warnings.join("\n")}`, a); break;
+    case "memory_pending":
+      add("note", `💡 经验候选 #${e.index}（来自被自动验证打回又修好的回合，确认后才会写入项目记忆）\n${esc(e.text)}\n在输入框发送 /memory accept ${e.index} 写入，/memory reject ${e.index} 丢弃`, a);
+      break;
+    case "review": {
+      const lines = [`═ ${e.verify === "pass" ? "✓" : "⚠"} 终审：本轮改动 ${e.files.length + e.hidden} 个文件 · 自动验证：${{pass: "通过", fail: "未通过"}[e.verify] || "未配置或未运行"}`];
+      for (const f of e.files) lines.push(`  ${f.status}  ${f.path}${f.added != null ? ` (+${f.added} -${f.removed})` : `（${f.note}）`}`);
+      if (e.hidden) lines.push(`  … 还有 ${e.hidden} 个文件未列出`);
+      const d = add("note", esc(lines.join("\n")) + "\n" + e.files.filter(f => f.diff).map(f =>
+        `<details><summary>${esc(f.path)} 的 diff</summary>${esc(f.diff)}</details>`).join(""), a);
+      d.insertAdjacentHTML("beforeend", "\n提交、推送等最后一步仍需你确认。");
+      break;
+    }
+    case "verify":
+      if (e.status === "running") add("note", `⏳ 自动验证（第 ${e.attempt} 次）：${esc(e.command)}`, a);
+      else if (e.status === "pass") add("note", `✓ 自动验证通过（第 ${e.attempt} 次，${e.seconds}s）`, a);
+      else add("error", `✗ 自动验证未通过（第 ${e.attempt} 次，退出码 ${esc(String(e.exit_code))}）\n${esc(e.output)}`, a);
+      break;
     case "subagent_start": host("sub:" + e.description); break;
     case "command": add("note", `${e.input}\n${e.output || ""}`); refreshState(); break;
     case "error": add("error", "✗ " + esc(e.message), a); break;

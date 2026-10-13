@@ -324,8 +324,32 @@ python3 evals/agent_tasks/run.py --provider "$PROVIDER" --model "$MODEL" --repea
 
 | # | 检查点 | 预期 |
 |---|---|---|
-| 1 | 完整跑完 | 10 个任务都有结果行，最后生成 `evals/agent_tasks/results/*.md` 和 `.json` |
+| 1 | 完整跑完 | 13 个任务都有结果行（T11–T13 是专门设了陷阱的任务，见第 11 章），最后生成 `evals/agent_tasks/results/*.md` 和 `.json` |
 | 2 | 记录 | 把生成的 `.md` 汇总表原样贴进 `results/V12.md`；`.md` 和 `.json` 两个文件一起提交 |
 | 3 | 失败分析 | 对每个失败的任务，用 `--tasks Txx --keep` 再跑一次，看保留下来的工作目录，写一两句失败原因 |
 
 如果有第二个模型，也跑一遍，方便对比。这一项是简历里最有说服力的数据，请务必如实记录，不要挑好的结果。
+
+---
+
+## V13 真实模型：验证闭环（`--verify`、终审模式、子任务验收、经验候选）
+
+这一项验证第 11 章的功能在真实模型下是否真的有用。开发环境没有 API Key，以上功能目前只在脚本化的模拟模型下测过，**没有任何真实模型的数据**，所以这里的每个结论都要如实记录，包括"没有帮助"。
+
+先做对照实验（T11–T13 的陷阱类型见 `evals/agent_tasks/README.md`）：
+
+```bash
+python3 evals/agent_tasks/run.py --provider "$PROVIDER" --model "$MODEL" --tasks T11,T12,T13 --repeat 3
+python3 evals/agent_tasks/run.py --provider "$PROVIDER" --model "$MODEL" --tasks T11,T12,T13 --repeat 3 --verify
+```
+
+| # | 检查点 | 预期 |
+|---|---|---|
+| 1 | 对照 | 两组各 9 次运行，分别记录通过数、平均步数、平均 token。`--verify` 组没有更好也要如实写 |
+| 2 | 验证闭环 | 在临时项目里用 `ncode --verify "python3 -m unittest" -p "..."` 让模型改一个会让测试失败的地方；trace 里能看到 `verify` 事件，失败时 `-p` 退出码为 1（`echo $?`） |
+| 3 | 终审模式 | `ncode --mode review` 让模型改文件并执行 `git push`、`rm -rf`；前者之外的项目内编辑自动放行，后两者必须弹出确认；结束时出现 `review` 事件（Web 面板里能看到 diff） |
+| 4 | 子任务验收 | 让模型用 `task` 工具并带上 `check` 和 `allowed_paths`；故意让子任务改范围外的文件，确认系统生成的报告里列出越界文件 |
+| 5 | 经验候选 | 一次被验证打回又修好的回合之后，出现 `memory_pending`；`/memory accept 1` 之后 NANOCODE.md 里多一行；`/memory reject all` 能清空 |
+| 6 | 记录 | 每个检查点逐个写通过与否；Web 面板（verify / review / memory_pending 的渲染）用浏览器实操，不要只看代码 |
+
+没有 Key 就标记 BLOCKED。检查点 2、3、5 的命令行部分可以用 `--provider mock` 先做一遍，但 mock 的结果不能当作真实模型的结论，要在报告里分开写。

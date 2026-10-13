@@ -293,6 +293,8 @@ footer { margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--rule);
           <option value="bash|git status -s">bash("git status -s")</option>
           <option value="bash|python -m pytest">bash("python -m pytest")</option>
           <option value="bash|rm -rf build">bash("rm -rf build")</option>
+          <option value="bash|git push origin main">bash("git push origin main")</option>
+          <option value="write_file|.git/config">write_file(".git/config")</option>
         </select>
       </label>
       <label for="p-mode">权限模式
@@ -300,6 +302,7 @@ footer { margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--rule);
           <option value="default">default</option>
           <option value="accept_edits">accept_edits</option>
           <option value="plan">plan</option>
+          <option value="review">review（终审）</option>
           <option value="bypass">bypass</option>
         </select>
       </label>
@@ -527,13 +530,14 @@ cur = 2; render(false);
 
 /* ===================================================== 2 地图 */
 const MODS = [
-  { id: "agent", core: true, k: "核心", n: "Agent 循环", f: "agent.py", d: "调用模型、执行工具、回填结果，直到模型不再调用工具。外加中断、步数上限、只读工具并行、自动压缩、子 Agent。", fn: "Agent._run · _run_tools · _run_subagent", cc: "Claude Code 的主循环", doc: "docs/01-agent-loop.md" },
+  { id: "agent", core: true, k: "核心", n: "Agent 循环", f: "agent.py", d: "调用模型、执行工具、回填结果，直到模型不再调用工具。外加中断、步数上限、只读工具并行、自动压缩、子 Agent，以及回合结束前的自动验证。", fn: "Agent._run · _run_tools · _run_subagent", cc: "Claude Code 的主循环", doc: "docs/01-agent-loop.md" },
   { id: "msg", k: "数据", n: "统一消息格式", f: "messages.py", d: "text / tool_use / tool_result 三种内容块。Agent 的全部记忆就是这个列表。", fn: "tool_result_block · estimate_tokens", cc: "与 Anthropic Messages 格式一致", doc: "docs/02-messages-and-providers.md" },
   { id: "llm", k: "适配", n: "Provider", f: "llm/", d: "把统一格式翻译成各家 API，解析流式 SSE，拼接分片到达的工具参数，限流时退避重试。", fn: "complete · iter_sse · PRESETS", cc: "Claude Code 主要对接 Claude；nanocode 可接任意厂商", doc: "docs/02-messages-and-providers.md" },
   { id: "tools", k: "动作", n: "工具", f: "tools/", d: "read/write/edit_file、bash、glob、grep、search_docs。工具说明是写给模型看的使用手册。编辑用精确字符串替换，且必须先读。", fn: "Tool.execute · EditFile · Bash", cc: "Read / Write / Edit / Bash / Glob / Grep", doc: "docs/03-tools.md" },
   { id: "rag", k: "检索", n: "RAG", f: "rag.py", d: "文档切块、中文 bigram 分词、BM25 关键词检索、可选向量检索、RRF 混合、按 mtime 增量索引。用来回答用户用自然语言问、文档里却是另一种说法的问题。", fn: "DocIndex.search · BM25 · rrf", cc: "Claude Code 主要靠 grep / glob 按需搜索；知识库类需求通常另接检索服务", doc: "docs/10-rag.md" },
-  { id: "perm", k: "安全", n: "权限", f: "permissions.py", d: "deny → plan → allow → bypass → 只读 → accept_edits → 询问。先命中先生效。", fn: "PermissionManager.check · resolve", cc: "default / acceptEdits / plan / bypassPermissions，allow / deny 规则", doc: "docs/04-permissions-and-hooks.md" },
+  { id: "perm", k: "安全", n: "权限", f: "permissions.py", d: "deny → plan → （review：高风险必问）→ allow → bypass → 只读 → accept_edits → （review：项目内编辑和白名单命令放行）→ 询问。先命中先生效。review 模式把「少打断」和「高风险永远确认」放在一起，结束时汇总 diff。", fn: "PermissionManager.check · resolve · risk.classify_bash", cc: "default / acceptEdits / plan / bypassPermissions，allow / deny 规则；review 是 nanocode 的扩展", doc: "docs/04-permissions-and-hooks.md · docs/11-verification-loop.md" },
   { id: "trust", k: "安全", n: "工作区信任", f: "trust.py", d: "陌生项目的配置里，能执行命令（hooks、MCP）、放宽权限（allow、mode）、改变请求去向（base_url 等）的字段，在你确认信任之前不生效；配置内容变了要重新确认。", fn: "apply_trust · split_sensitive · TrustStore", cc: "在新目录中启动时询问是否信任", doc: "docs/04-permissions-and-hooks.md" },
+  { id: "verify", k: "校验", n: "验证闭环", f: "verify.py 等", d: "模型说「改好了」不算数：配了 --verify，回合要结束时先跑检查命令，不过就把输出交回去让它改，有重试上限，同一个错误出现两次就停。子 Agent 交回的结果由系统生成验收报告，可带 check 命令和 allowed_paths 范围。review 模式在结束时汇总 diff。被打回又修好的回合会生成经验候选，/memory accept 确认后才写入。", fn: "verify.run · subcheck.snapshot · review.build · lessons.build", cc: "可用 Stop hook 自己拼出类似效果；其余是 nanocode 的扩展", doc: "docs/11-verification-loop.md" },
   { id: "hooks", k: "扩展", n: "Hooks", f: "hooks.py", d: "在固定时刻运行 shell 命令。退出码 2 表示拦截或反馈。用来做确定性的规则：格式化、审计、拦截。", fn: "HookRunner.run", cc: "PreToolUse / PostToolUse / UserPromptSubmit / Stop 等", doc: "docs/04-permissions-and-hooks.md" },
   { id: "ctx", k: "上下文", n: "提示词与记忆", f: "context.py", d: "拼接系统提示词：规则 + 环境 + NANOCODE.md + 技能目录。上下文快满时压缩旧回合。", fn: "build_system_prompt · load_memory · compact_messages", cc: "CLAUDE.md、/init、/compact", doc: "docs/05-context-engineering.md" },
   { id: "plan", k: "组织", n: "待办 / 子 Agent / 技能", f: "tools/planning.py", d: "todo_write 是模型的外部草稿纸；task 开一个独立上下文做子任务；skill 按需加载完整说明。", fn: "TodoWrite · Task · Skill", cc: "TodoWrite、Task / 子 Agent、Skills", doc: "docs/06-subagents-todos-skills.md" },
@@ -620,13 +624,19 @@ function decide() {
   const mode = $("#p-mode").value, allow = $("#p-allow").value, deny = $("#p-deny").value;
   const inside = tool === "bash" || !(target.startsWith("~") || target.startsWith("/"));
   const ro = !!READ_ONLY[tool];
+  // review 模式的风险判断，只是对 risk.py 的极简示意：真实的分类器见 nanocode/risk.py
+  const risky = tool === "bash" ? /^(rm|git push|pip install|curl)\b/.test(target)
+    : !ro && (!inside || /^(\.env|\.git\/|\.github\/)/.test(target));
+  const safeCmd = tool === "bash" && /^(git status|git diff|python -m pytest|npm test)/.test(target) && !/[;&|`$<>]/.test(target);
   const rungs = [
     ["命中 deny 规则？", () => { const r = matches(deny, tool, target); return r && ["deny", `命中 ${r}`]; }],
     ["plan 模式下的修改操作？", () => mode === "plan" && !ro && ["deny", "plan 模式只能读，不能改"]],
+    ["review 模式下的高风险操作？（allow 规则也救不了）", () => mode === "review" && risky && ["ask", "高风险：删除、推送、装依赖、改密钥或 .git，永远确认，且「总是允许」不生效"]],
     ["命中 allow 规则？", () => { const r = matches(allow, tool, target); return r && ["allow", `命中 ${r}`]; }],
     ["bypass 模式？", () => mode === "bypass" && ["allow", "全部放行"]],
     ["只读工具？", () => ro && (inside ? ["allow", "工作目录内的只读操作"] : ["ask", "读取工作目录以外的路径"])],
     ["accept_edits 且是目录内的文件编辑？", () => mode === "accept_edits" && (tool === "edit_file" || tool === "write_file") && inside && ["allow", "自动允许编辑"]],
+    ["review 模式下的项目内编辑，或白名单内的测试 / 只读命令？", () => mode === "review" && !ro && ((tool === "edit_file" || tool === "write_file") ? inside : safeCmd) && ["allow", "自动放行，结束时汇总 diff 供你审查"]],
     ["以上都不是", () => ["ask", "询问用户"]],
   ];
   let hit = -1, res = null;

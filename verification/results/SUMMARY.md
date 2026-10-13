@@ -15,4 +15,5 @@
 | V09 | 真实模型：Anthropic 协议（可选） | BLOCKED | 无 ANTHROPIC_API_KEY | results/V09.md |
 | V10 | 真实模型：search_docs 与子 Agent | 待验证 | | |
 | V11 | RAG 向量 / 混合检索评测 | PARTIAL | 基线完成（bm25 R@3 91%）；无 embedding Key | results/V11.md |
-| V12 | Agent 任务评测（10 个任务） | 待验证 | | |
+| V12 | Agent 任务评测（13 个任务） | 待验证 | | |
+| V13 | 真实模型：验证闭环（`--verify`、终审、子任务验收、经验候选） | 待验证 | 目前只有模拟模型的测试，没有真实模型数据 | |

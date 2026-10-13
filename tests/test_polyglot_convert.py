@@ -203,7 +203,7 @@ class ConvertTest(unittest.TestCase):
         self.assertTrue(all(r["passed"] for r in runs))
 
     def test_runner_default_tasks_unchanged_and_bad_dir_rejected(self):
-        self.assertEqual(len(run.load_tasks()), 10)
+        self.assertEqual(len(run.load_tasks()), 13)
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(run.main(["--reference", "--tasks-dir", os.path.join(self.tmp, "nope")]), 2)
 

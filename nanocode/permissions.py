@@ -11,6 +11,9 @@
   6. accept_edits   —— 工作目录内的文件编辑自动放行，bash 仍需确认
   7. 其余           —— 询问用户（ask）
 
+review（终审）模式的顺序不同，见 check()：deny → plan 之外 → **高风险一律确认**（连 allow 规则也不能放开）→
+allow 规则 / 项目内的编辑 / 白名单内的检查命令自动放行 → 其余询问。高风险和白名单的定义在 risk.py。
+
 规则写法：`工具名` 或 `工具名(模式)`，模式用 * 通配，匹配工具的"主参数"
 （bash 的命令、文件工具的路径）。例如：
 
@@ -26,9 +29,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from . import risk
 from .tools.base import is_inside, resolve_path
 
-MODES = ("default", "accept_edits", "plan", "bypass")
+MODES = ("default", "accept_edits", "plan", "review", "bypass")
 EDIT_TOOLS = {"write_file", "edit_file"}
 _RULE = re.compile(r"^([\w\-]+)(?:\((.*)\))?$")
 
@@ -40,6 +44,7 @@ AskFn = Callable[[str, dict, str], str]
 class Decision:
     behavior: str  # allow | deny | ask
     reason: str = ""
+    high_risk: bool = False   # 终审模式下识别出的高风险操作：不能被 allow 规则放开，也不能"总是允许"
 
 
 @dataclass
@@ -77,6 +82,10 @@ class PermissionManager:
             return Decision("deny", "命中 deny 规则")
         if self.mode == "plan" and not tool.is_read_only:
             return Decision("deny", "当前处于 plan（只读规划）模式，不能执行修改类操作。请先给出方案，等用户切换模式后再执行。")
+        if self.mode == "review":
+            why = self._high_risk(tool, target, inside, allow_forms[0] if getattr(tool, "path_target", False) else "")
+            if why:
+                return Decision("ask", f"高风险操作（{why}），终审模式下无论 allow 规则如何都必须确认", high_risk=True)
         if _matches_any(self.allow + self.session_allow, tool.name, *allow_forms):
             return Decision("allow", "命中 allow 规则")
         if self.mode == "bypass":
@@ -85,7 +94,22 @@ class PermissionManager:
             return Decision("allow", "只读工具") if inside else Decision("ask", "访问工作目录以外的路径")
         if self.mode == "accept_edits" and tool.name in EDIT_TOOLS and inside:
             return Decision("allow", "accept_edits 模式")
+        if self.mode == "review":
+            if tool.name in EDIT_TOOLS and inside:
+                return Decision("allow", "终审模式：项目内的编辑自动放行，结束时汇总 diff 供你审查")
+            if tool.name == "bash" and risk.classify_bash(target) == "safe":
+                return Decision("allow", "终审模式：白名单内的测试 / 只读命令自动放行")
         return Decision("ask", "需要用户确认")
+
+    def _high_risk(self, tool, target: str, inside: bool, rel: str) -> str:
+        """终审模式下的高风险判断，返回原因；空串 = 不算高风险。"""
+        if tool.name == "bash":
+            return risk.risk_reason(target) if risk.classify_bash(target) == "risky" else ""
+        if tool.is_read_only or not getattr(tool, "path_target", False):
+            return ""
+        if not inside:
+            return "修改项目以外的路径"
+        return "修改配置、密钥或版本库内部" if risk.is_protected_path(rel) else ""
 
     def resolve(self, tool, input: dict) -> Decision:
         """check + 必要时询问用户，返回最终的 allow / deny。"""
@@ -96,6 +120,8 @@ class PermissionManager:
             return Decision("deny", "需要确认，但当前没有可以询问的用户（非交互模式）。可用 --mode 或 allow 规则放行。")
         target = tool.permission_target(input) or ""
         answer = self.ask_fn(tool.name, input, target)
+        if answer == "always" and decision.high_risk:
+            return Decision("allow", "用户允许这一次（高风险操作不支持「总是允许」）")
         if answer == "always":
             rule = f"bash({target})" if tool.name == "bash" else tool.name
             self.session_allow.append(rule)

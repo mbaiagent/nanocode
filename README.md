@@ -2,14 +2,15 @@
 
 一个用来**看懂 Agent、看懂 Claude Code 核心架构**的迷你编程 Agent。
 
-- **纯 Python 标准库**，零依赖，核心代码约 2800 行（含大量中文注释），每个文件开头都有讲解
+- **纯 Python 标准库**，零依赖，核心代码约 4600 行（含大量中文注释），每个文件开头都有讲解
 - **可接入任何一家模型**：Claude、GPT、DeepSeek、通义千问、Kimi、智谱 GLM、硅基流动、OpenRouter、本地 Ollama，或任何 OpenAI / Anthropic 兼容的中转服务
 - **实现了 Claude Code 的核心机制**：Agent 循环、流式输出、文件/命令/搜索工具、权限模式与规则、Hooks、项目记忆、上下文压缩、待办清单、子 Agent、Skills、自定义斜杠命令、MCP、会话保存
+- **检查 → 纠正 → 终审的闭环**：自动验证（改完先跑检查，不过就回头修）、子 Agent 验收（系统核对，不信自述）、终审模式（无害步骤自动放行、高风险永远确认、结束时汇总 diff）、经验沉淀（被打回的原因经你确认后写入项目记忆），见 [第 11 章](docs/11-verification-loop.md)
 - **自带 Web 调试面板**：实时看到每一圈循环、每次发给模型的完整上下文、系统提示词、工具定义
 - **自带 Mock 模型**：不需要 API Key，就能把整套流程跑起来、看清楚
 - **内置小而完整的 RAG**：切块、中文 BM25、可选向量检索、RRF 混合、增量索引，外加一个评测脚本对比 grep 与检索
-- **Agent 任务评测**：10 个编程任务、隐藏测试判定，统计成功率、步数和 token，用来比较模型和改动
-- **75 个单元测试**，覆盖循环的每个分支、两种协议的流式解析、检索管线、安全回归和评测框架自检
+- **Agent 任务评测**：13 个编程任务、隐藏测试判定，统计成功率、步数和 token，用来比较模型和改动
+- **200+ 个单元测试**，覆盖循环的每个分支、两种协议的流式解析、检索管线、安全回归、评测框架自检，以及一个让文档和代码保持一致的测试
 
 > nanocode 是依据 Claude Code 的公开文档和可观察行为，从零写的教学实现，不包含也不来自 Claude Code 的源代码。它追求的是"把原理讲清楚"，不是"功能一样多"。
 
@@ -54,12 +55,96 @@ python3 -m nanocode
 nanocode -p "解释一下 main.py"                # 单次模式，跑完就退出（适合脚本、CI）
 nanocode --mode plan                          # 只读规划模式：只能看，不能改
 nanocode --mode accept_edits                  # 自动允许改文件，命令仍需确认
+nanocode --mode review                        # 终审模式：测试和项目内编辑自动放行，高风险操作永远确认，结束时汇总 diff
 nanocode --trace                              # 把所有事件记录到 ~/.nanocode/projects/<项目>/traces/
 nanocode --trust                              # 信任当前项目的配置（hooks、MCP、allow 规则等），见下方「安全」
 nanocode --resume                             # 恢复上一次会话
+nanocode --verify "pytest -q"                 # 自动验证：改完代码想结束时先跑这条命令，不通过就让它继续修
+nanocode --cwd ~/projects/app                 # 指定工作目录（默认当前目录）
+nanocode --api-key sk-xxx                     # 直接给 API Key（更推荐用环境变量，命令行会留在 shell 历史里）
 ```
 
-交互模式里：`/help` 查看命令，`/compact` 压缩上下文，`/context` 看上下文占用，`/mode plan` 切换模式，`/init` 生成项目记忆，`# 一句话` 追加记忆，`Ctrl-C` 中断。
+### 自动验证：让 Agent 改完先自查
+
+模型说"改好了"不算数。配置一条检查命令后，Agent 只要在本轮做过改动（写文件、跑 bash 等非只读操作），准备结束时就会先运行它：
+
+- 通过 → 正常结束；
+- 不通过 → 把输出末尾 4000 字符作为反馈交还给模型继续修，最多重试 `max_retries` 次（默认 3）；
+- 超过次数，或者**同一个错误连续出现两次**（说明没有进展）→ 停下来，把最后一次失败输出附在回答后面交给你。单次模式（`-p`）此时退出码为 1，脚本和 CI 可以直接判断。
+
+```jsonc
+// .nanocode/settings.json（或 ~/.nanocode/settings.json）
+"verify": "pytest -q"
+"verify": {"command": "pytest -q", "max_retries": 3, "timeout": 300}
+```
+
+只读调查、纯问答不会触发检查。检查命令来自项目配置时，和 hooks 一样需要先信任这个项目；`--verify` 是你自己在命令行给的，直接生效。每次检查都会发 `verify` 事件，CLI 和 Web 面板都能看到第几次、通过与否。它只对主 Agent 生效；检查本身要由你保证可靠（测试写得太弱，通过也不代表对）。
+
+### 终审模式：少被打断，但高风险永远问
+
+`default` 事事确认，人会习惯性点"允许"；想少点几次只能在 allow 里写 `bash(*)`，但这样 `rm -rf` 也零确认。`--mode review` 在中间加了一档：
+
+- **自动放行**：读项目内文件、改项目内文件、白名单内的检查命令（`pytest`、`unittest`、`mypy`、`ruff check`、`cargo test`、`go test`、`npm test`、`make test`，只读的 `git status/diff/log/show`、`ls/cat/grep` 等，且命令里不能有 `; & | $ >` 等拼接符）。
+- **询问**：认不出的一切（失败安全：宁可多问，不会放过）。
+- **永远确认**：删除、`git push / reset --hard`、提权、改权限、安装依赖、写项目外路径、写 `.env` / `.git/` / 密钥文件。**无论 allow 规则怎么写**，也没有「总是允许」。
+- **结束时汇总**本轮所有改动的文件和 diff，以及自动验证结果；提交、推送仍需你确认。
+
+局限：这是启发式规则，不是沙箱。**测试命令会执行项目里的代码，包括 Agent 刚写的**；汇总是事后给你看的，不能回滚。需要强隔离请用容器或虚拟机。
+
+### 子 Agent 验收、经验沉淀
+
+- **子 Agent 验收**：子 Agent 的结论后面总会附一份**系统生成**的验收报告（改了哪些文件、有没有越界、检查有没有通过，没配检查则标明"未经验证"）。`task` 工具可带 `check`（检查命令，要过权限）和 `allowed_paths`（允许修改的范围）。
+- **经验沉淀**：被自动验证打回、后来修好的回合会生成一条候选约束（内容来自失败输出的原文，不是模型总结），用 `/memory accept [编号|all]` 确认后才写入项目的 `NANOCODE.md`，`/memory reject` 丢弃。
+
+两者的原理、局限和怎么衡量有没有用，见 [第 11 章](docs/11-verification-loop.md)。
+
+### 斜杠命令
+
+交互模式里输入（Web 界面的输入框同样可用）：
+
+| 命令 | 作用 |
+|---|---|
+| `/help` | 显示帮助 |
+| `/clear` | 清空对话，开始新任务 |
+| `/compact [重点]` | 手动压缩上下文 |
+| `/context` | 查看上下文占用 |
+| `/cost` | 查看 token 用量 |
+| `/mode [模式]` | 查看 / 切换权限模式：`default` `accept_edits` `plan` `review` `bypass` |
+| `/tools` | 列出可用工具 |
+| `/todos` | 查看待办清单 |
+| `/memory [accept\|reject [编号\|all]]` | 查看已加载的 `NANOCODE.md` 和待确认的经验候选；确认 / 丢弃候选 |
+| `/init` | 让 Agent 分析项目并生成 `NANOCODE.md` |
+| `/resume` | 恢复上一次会话 |
+| `/providers` | 列出内置的厂商预设 |
+| `# 一句话` | 把一句话追加到项目 `NANOCODE.md`（记忆） |
+| `/你的命令` | `.nanocode/commands/*.md` 里自定义的命令，见第 06 章 |
+
+`Ctrl-C` 中断当前任务。
+
+## 配置参考
+
+配置合并顺序：`~/.nanocode/settings.json`（你自己的，直接生效）→ 项目 `.nanocode/settings.json` → `.nanocode/settings.local.json`；越靠后优先级越高，列表和字典会合并。**带「需信任」的项目配置在你确认信任这个项目之前不生效**（见下方「安全」）。
+
+| 配置项 | 说明 | 项目配置里 |
+|---|---|---|
+| `"provider"` `"model"` `"base_url"` `"protocol"` `"headers"` | 用哪家模型、怎么连 | `provider` `base_url` `protocol` `headers` 需信任（会把 API Key 发往那里） |
+| `"mode"` | 权限模式：`default` `accept_edits` `plan` `review` `bypass` | 需信任 |
+| `"permissions"` | `{"allow": [...], "deny": [...]}` 规则，如 `"bash(git status*)"` | `allow` 需信任；`deny` 照常生效 |
+| `"hooks"` | 生命周期钩子，见第 04 章 | 需信任 |
+| `"mcpServers"` | MCP 服务器，见第 07 章 | 需信任 |
+| `"verify"` | 自动验证命令，字符串或 `{"command": ..., "max_retries": 3, "timeout": 300}` | 需信任 |
+| `"max_tokens"` `"context_window"` | 单次输出上限；上下文窗口大小（决定何时自动压缩） | 照常生效 |
+| `"rag"` | 文档检索配置，见第 10 章 | `rag.embedding` 需信任 |
+| `"suggest_memory"` | 设为 `false` 关闭经验候选提示（默认开启） | 照常生效 |
+
+环境变量：
+
+| 变量 | 说明 |
+|---|---|
+| `NANOCODE_PROVIDER` `NANOCODE_MODEL` `NANOCODE_BASE_URL` `NANOCODE_API_KEY` | 同命令行的 `--provider` 等；各厂商的 Key 变量见上表 |
+| `NANOCODE_HOME` | 用户级目录（个人配置、记忆、信任记录、会话记录），默认 `~/.nanocode` |
+| `NANOCODE_PERMISSION_TIMEOUT` | Web 界面里权限询问等多久没人回答就按拒绝处理，默认 600 秒 |
+| `NANOCODE_PUBLIC_HOST` `NANOCODE_PUBLIC_ORIGIN` | 放在反向代理后面时信任的对外地址，见下方「安全」 |
 
 ## 目录结构
 
@@ -84,15 +169,20 @@ nanocode/
 ├── permissions.py     权限模式与规则（路径统一用真实路径判断）
 ├── trust.py           工作区信任：陌生项目的配置不经同意不生效
 ├── hooks.py           生命周期钩子
+├── verify.py          自动验证：改完先跑检查命令，不通过就回头修
+├── subcheck.py        子 Agent 验收：修改范围、文件快照、系统生成的验收报告
+├── risk.py            终审模式的风险分类：白名单放行、高风险永远确认
+├── review.py          终审汇总：本轮改动的文件和 diff
+├── lessons.py         经验沉淀：从失败的检查输出生成候选约束
 ├── context.py         系统提示词、项目记忆、技能/命令发现、上下文压缩
 ├── mcp.py             MCP 客户端（stdio）
 ├── events.py          事件总线 + trace
 ├── session.py         组装各部件、斜杠命令、会话保存
 ├── cli.py             终端界面
-└── web/               Web 界面（调试面板 + 架构学习页）
+└── web/               Web 界面：server.py（HTTP 服务 + SSE + 安全校验）、static/（调试面板 + 架构学习页）
 docs/                  分章节的架构讲解（建议按顺序读）
 examples/              MCP 服务器示例、hooks/skills/commands 配置示例、RAG 评测（rag_eval/）
-evals/agent_tasks/     Agent 任务评测：10 个任务、隐藏测试、参考答案、运行器
+evals/agent_tasks/     Agent 任务评测：13 个任务、隐藏测试、参考答案、运行器
 verification/          真实环境验证清单与结果（连真实模型、浏览器实操）
 tests/                 单元测试
 ```
@@ -113,21 +203,24 @@ tests/                 单元测试
 | [08 与 Claude Code 对照](docs/08-claude-code-mapping.md) | 每个模块对应 Claude Code 的哪个功能，生产级还差什么 |
 | [09 练习](docs/09-练习.md) | 动手改代码，检验是否真的懂了 |
 | [10 RAG](docs/10-rag.md) | 什么时候用检索而不是 grep，管线怎么搭，怎么评测 |
+| [11 验证循环](docs/11-verification-loop.md) | 检查 → 纠正 → 终审：自动验证、子 Agent 验收、终审模式、经验沉淀，以及怎么衡量它们有没有用 |
 
 ## 测试、评测与验证
 
 ```bash
 python3 -m unittest discover -s tests                     # 单元测试
-python3 evals/agent_tasks/run.py --reference              # 评测框架自检（参考答案应 10/10）
+python3 evals/agent_tasks/run.py --reference              # 评测框架自检（参考答案应 13/13）
 python3 evals/agent_tasks/run.py --provider deepseek --model deepseek-chat --repeat 3   # 用真实模型评测
 ```
 
-三者的分工：单元测试保证代码逻辑正确；Agent 任务评测衡量"模型 + nanocode"实际能完成多少任务；
+T01–T10 是普通任务；T11–T13 专门设了陷阱（最容易写出的第一次尝试是错的），用来衡量自动验证这类机制有没有用，见 [第 11 章](docs/11-verification-loop.md)和 [evals/agent_tasks/README.md](evals/agent_tasks/README.md)。
+
+三者的分工：单元测试保证代码逻辑正确（其中 `tests/test_docs_consistency.py` 保证文档和代码一一对应：命令行参数、配置项、环境变量、事件、模块、权限模式、斜杠命令、工具参数、各处写的数字，缺了会失败）；Agent 任务评测衡量"模型 + nanocode"实际能完成多少任务；
 [verification/](verification/) 是需要真实环境（真实模型、浏览器）的逐项验证清单，结果汇总在 [verification/results/SUMMARY.md](verification/results/SUMMARY.md)。
 
 ## 安全
 
-nanocode 会在你的电脑上执行模型生成的命令。默认模式下每条命令都需要你确认；`bypass` 模式请只在容器或虚拟机里使用。
+nanocode 会在你的电脑上执行模型生成的命令。默认模式下每条命令都需要你确认；`review` 模式只对白名单内的检查命令和项目内的编辑免确认，高风险操作永远确认；`bypass` 模式请只在容器或虚拟机里使用。
 
 下面三类问题曾在本项目里真实存在，复现后修复，并由 `tests/test_security.py` 钉住，避免回退：
 

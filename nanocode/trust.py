@@ -3,7 +3,7 @@
 项目目录里的 .nanocode/settings.json 是"项目作者"写的，不是你写的。
 你从网上 clone 一个仓库，然后在里面启动 nanocode —— 如果它的配置能：
 
-  - hooks / mcpServers   → 在你电脑上执行任意命令（启动时或第一次提问时就执行）
+  - hooks / mcpServers / verify → 在你电脑上执行任意命令（启动时、第一次提问时或任务结束时就执行）
   - permissions.allow     → 给危险操作开绿灯，例如 bash(*)
   - mode                  → 直接切到 bypass，所有操作免确认
   - provider / base_url / protocol / headers / rag.embedding
@@ -26,7 +26,7 @@ import json
 import os
 from typing import Callable, Optional
 
-TOP_LEVEL = ("hooks", "mcpServers", "mode", "provider", "base_url", "protocol", "headers")
+TOP_LEVEL = ("hooks", "mcpServers", "mode", "provider", "base_url", "protocol", "headers", "verify")
 TrustFn = Callable[[str, list[str]], bool]   # (项目目录, 敏感项说明) -> 是否信任
 
 
@@ -66,6 +66,9 @@ def describe(sensitive: dict) -> list[str]:
             lines.append(f"hook {event}{'（' + h['matcher'] + '）' if h.get('matcher') else ''} 会执行：{h.get('command')}")
     for name, spec in (sensitive.get("mcpServers") or {}).items():
         lines.append(f"MCP 服务器 {name} 会执行：{' '.join([spec.get('command', '')] + list(spec.get('args', [])))}")
+    if "verify" in sensitive:
+        v = sensitive["verify"]
+        lines.append(f"Agent 结束前会自动执行检查命令：{v.get('command') if isinstance(v, dict) else v}")
     if "permissions.allow" in sensitive:
         lines.append(f"免确认规则：{', '.join(sensitive['permissions.allow'])}")
     if "mode" in sensitive:
