@@ -14,6 +14,7 @@
     todos          待办清单更新
     compact        上下文被压缩
     hook           hook 输出了警告/反馈
+    verify         自动验证（status: running / pass / fail；见 verify.py）
     turn_end       本轮结束（最终回答、累计用量）
     error          出错
 """

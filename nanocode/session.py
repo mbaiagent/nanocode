@@ -18,6 +18,7 @@ from . import __version__
 from .agent import Agent
 from .context import MEMORY_FILE, build_system_prompt, context_tokens, discover_commands, discover_skills, home_dir
 from .events import EventBus, TraceWriter
+from . import verify as verify_mod
 from .hooks import HookRunner
 from .llm import PRESETS, make_provider
 from .mcp import connect_servers
@@ -80,6 +81,7 @@ class Options:
     trace: bool = False
     mock_delay: float = 0.02
     trust: bool = False   # True = 不询问，直接信任项目配置（--trust）
+    verify: str = ""       # 自动验证命令（--verify），优先于 settings.json 里的 verify
 
 
 class Session:
@@ -119,12 +121,18 @@ class Session:
         self.permissions = PermissionManager(self.cwd, mode=opts.mode or s.get("mode", "default"),
                                              allow=list(perms.get("allow", [])), deny=list(perms.get("deny", [])))
         self.hooks = HookRunner(s.get("hooks"), self.cwd)
+        try:
+            verify_cfg = verify_mod.parse_config(s.get("verify"), opts.verify)
+        except ValueError as e:   # 写错了要明说，不能悄悄当作没配置
+            log(f"verify 配置无效，自动验证未启用：{e}")
+            verify_cfg = None
         self.skills = discover_skills(self.cwd)
         self.commands = discover_commands(self.cwd)
         self.agent = Agent(self.provider, self.registry, self.permissions, self.hooks, self.bus, self.cwd,
                            system_prompt=lambda: build_system_prompt(self.cwd, self.skills),
                            max_tokens=int(s.get("max_tokens", 8192)),
-                           context_window=int(s.get("context_window", 128000)), skills=self.skills)
+                           context_window=int(s.get("context_window", 128000)), skills=self.skills,
+                           verify=verify_cfg)
         self.agent.state["rag_config"] = s.get("rag", {})
 
     # ------------------------------------------------------------------ 运行

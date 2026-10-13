@@ -57,7 +57,24 @@ nanocode --mode accept_edits                  # 自动允许改文件，命令�
 nanocode --trace                              # 把所有事件记录到 ~/.nanocode/projects/<项目>/traces/
 nanocode --trust                              # 信任当前项目的配置（hooks、MCP、allow 规则等），见下方「安全」
 nanocode --resume                             # 恢复上一次会话
+nanocode --verify "pytest -q"                 # 自动验证：改完代码想结束时先跑这条命令，不通过就让它继续修
 ```
+
+### 自动验证：让 Agent 改完先自查
+
+模型说"改好了"不算数。配置一条检查命令后，Agent 只要在本轮做过改动（写文件、跑 bash 等非只读操作），准备结束时就会先运行它：
+
+- 通过 → 正常结束；
+- 不通过 → 把输出末尾 4000 字符作为反馈交还给模型继续修，最多重试 `max_retries` 次（默认 3）；
+- 超过次数，或者**同一个错误连续出现两次**（说明没有进展）→ 停下来，把最后一次失败输出附在回答后面交给你。单次模式（`-p`）此时退出码为 1，脚本和 CI 可以直接判断。
+
+```jsonc
+// .nanocode/settings.json（或 ~/.nanocode/settings.json）
+"verify": "pytest -q"
+"verify": {"command": "pytest -q", "max_retries": 3, "timeout": 300}
+```
+
+只读调查、纯问答不会触发检查。检查命令来自项目配置时，和 hooks 一样需要先信任这个项目；`--verify` 是你自己在命令行给的，直接生效。每次检查都会发 `verify` 事件，CLI 和 Web 面板都能看到第几次、通过与否。它只对主 Agent 生效；检查本身要由你保证可靠（测试写得太弱，通过也不代表对）。
 
 交互模式里：`/help` 查看命令，`/compact` 压缩上下文，`/context` 看上下文占用，`/mode plan` 切换模式，`/init` 生成项目记忆，`# 一句话` 追加记忆，`Ctrl-C` 中断。
 
@@ -84,6 +101,7 @@ nanocode/
 ├── permissions.py     权限模式与规则（路径统一用真实路径判断）
 ├── trust.py           工作区信任：陌生项目的配置不经同意不生效
 ├── hooks.py           生命周期钩子
+├── verify.py          自动验证：改完先跑检查命令，不通过就回头修
 ├── context.py         系统提示词、项目记忆、技能/命令发现、上下文压缩
 ├── mcp.py             MCP 客户端（stdio）
 ├── events.py          事件总线 + trace

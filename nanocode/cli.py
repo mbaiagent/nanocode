@@ -87,6 +87,14 @@ class Renderer:
         elif t == "hook":
             msg = e["message"] or "\n".join(e["warnings"])
             self.w(paint(f"⚓ hook[{e['hook']}] {msg[:300]}", "yellow") + "\n", err=True)
+        elif t == "verify":
+            if e["status"] == "running":
+                self.w(paint(f"⏳ 自动验证（第 {e['attempt']} 次）：{e['command']}", "yellow") + "\n", err=True)
+            elif e["status"] == "pass":
+                self.w(paint(f"✓ 自动验证通过（第 {e['attempt']} 次，{e['seconds']}s）", "green") + "\n", err=True)
+            else:
+                tail = "\n".join(f"    {l[:160]}" for l in e["output"].splitlines()[-6:])
+                self.w(paint(f"✗ 自动验证未通过（第 {e['attempt']} 次，退出码 {e['exit_code']}）\n{tail}", "red") + "\n", err=True)
         elif t == "error":
             self.w(paint(f"✗ {e['message']}", "red") + "\n", err=True)
         elif t == "turn_end" and not sub:
@@ -191,6 +199,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--trace", action="store_true", help="把所有事件记录到 ~/.nanocode/projects/<项目>/traces/*.jsonl")
     p.add_argument("--resume", action="store_true", help="恢复上一次会话")
     p.add_argument("--trust", action="store_true", help="信任当前项目的配置（hooks、MCP、allow 规则等），不再询问")
+    p.add_argument("--verify", metavar="CMD", default="", help="自动验证命令：Agent 改动后想结束时先运行，不通过就让它继续修（如 \"pytest -q\"）")
     p.add_argument("--web", action="store_true", help="启动 Web 界面")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8765)
@@ -216,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
 
     opts = Options(provider=args.provider or "", model=args.model or "", base_url=args.base_url or "",
                    api_key=args.api_key or "", protocol=args.protocol or "", mode=args.mode or "",
-                   cwd=args.cwd, trace=args.trace, mock_delay=0.0 if args.prompt else 0.02, trust=args.trust)
+                   cwd=args.cwd, trace=args.trace, mock_delay=0.0 if args.prompt else 0.02, trust=args.trust, verify=args.verify)
     try:
         trust_fn = ask_trust if sys.stdin.isatty() and not args.prompt else None
         session = Session(opts, log=lambda m: print(paint(m, "yellow"), file=sys.stderr), trust_fn=trust_fn)
@@ -233,10 +242,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.prompt:
         session.bus.subscribe(Renderer(quiet=True))
         try:
-            session.send(args.prompt)
+            result = session.send(args.prompt)
+            failed = session.agent.verify_failed
         finally:
             session.close()
         print()
+        if failed:   # 检查没过：让脚本 / CI 能从退出码看出来
+            print(paint(result[result.rfind("(自动验证未通过"):], "red"), file=sys.stderr)
+            return 1
         return 0
     interactive(session)
     return 0

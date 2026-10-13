@@ -34,6 +34,7 @@ from .hooks import HookRunner
 from .llm.base import LLMError, Provider
 from .messages import (Usage, assistant_message, text_block, text_of, tool_result_block, tool_uses)
 from .permissions import PermissionManager
+from . import verify as verify_mod
 from .tools.base import ToolContext, ToolRegistry, truncate
 
 
@@ -53,7 +54,7 @@ class Agent:
                  hooks: HookRunner, bus: EventBus, cwd: str, system_prompt: Callable[[], str],
                  name: str = "main", depth: int = 0, max_steps: int = 60, max_tokens: int = 8192,
                  context_window: int = 128000, compact_ratio: float = 0.8, skills: dict | None = None,
-                 cancel: threading.Event | None = None):
+                 cancel: threading.Event | None = None, verify: verify_mod.VerifyConfig | None = None):
         self.provider = provider
         self.tools = tools
         self.permissions = permissions
@@ -73,6 +74,12 @@ class Agent:
         self.cancel = cancel or threading.Event()
         self.busy = False
         self._compacted_at: int | None = None
+        # 自动验证（只对主 Agent 生效，见 verify.py）
+        self.verify = verify if depth == 0 else None
+        self._dirty = False            # 本轮是否做过会改动东西的操作（检查之后清零）
+        self._verify_failures = 0      # 连续失败次数
+        self._verify_last: str | None = None   # 上一次失败的指纹
+        self.verify_failed = False     # 上一轮是否因验证没通过而被迫停下（单次模式据此返回非零退出码）
         self.ctx = ToolContext(cwd=cwd, state=self.state, emit=self.emit, cancel=self.cancel,
                                run_subagent=self._run_subagent if depth == 0 else None, skills=skills or {})
 
@@ -92,6 +99,8 @@ class Agent:
     def _run(self, prompt: str) -> str:
         self.emit("user", text=prompt)
         blocks = [text_block(prompt)]
+        self._dirty, self._verify_failures, self._verify_last = False, 0, None
+        self.verify_failed = False
 
         # Hook：UserPromptSubmit —— 可以拦截请求，或附加额外上下文
         if self.depth == 0 and self.hooks.has("UserPromptSubmit"):
@@ -138,6 +147,16 @@ class Agent:
                 final = text_of(self.messages[-1])
                 if resp.stop_reason == "max_tokens":
                     final += "\n\n(回复因达到 max_tokens 被截断)"
+                # 自动验证 —— 做过改动的话，先过一遍检查命令；不通过就把输出交还给模型
+                if self.verify and self._dirty and not self.cancel.is_set():
+                    verdict = self._verify()
+                    if verdict is None:          # 未通过，反馈已追加，继续循环
+                        continue
+                    if verdict:                  # 超过重试上限 / 没有进展：停下来，把失败交给用户
+                        final += verdict
+                        self.verify_failed = True
+                        self.emit("turn_end", final=final, usage=self.usage.to_dict(), verify_failed=True)
+                        return final
                 # Hook：Stop —— 可以不让它停，比如"测试没过不许结束"
                 if self.depth == 0 and self.hooks.has("Stop"):
                     out = self.hooks.run("Stop", {"final": final})
@@ -213,6 +232,8 @@ class Agent:
             plan["result"] = self._finish(call, "用户中断了操作，工具未执行", True)
             return
         result = tool.execute(call["input"], self.ctx)
+        if not tool.is_read_only and not result.is_error:
+            self._dirty = True
         content = truncate(result.content)
         if self.hooks.has("PostToolUse"):
             out = self.hooks.run("PostToolUse", {"tool_name": tool.name, "tool_input": call["input"],
@@ -230,6 +251,33 @@ class Agent:
     def _report_hook(self, event: str, out) -> None:
         if out.warnings or out.message:
             self.emit("hook", hook=event, blocked=out.blocked, message=out.message, warnings=out.warnings)
+
+    # =================================================================== 自动验证
+
+    def _verify(self) -> str | None:
+        """跑一次检查。返回 None = 未通过且已把反馈追加进对话（应继续循环）；
+        "" = 通过（可以结束）；非空字符串 = 失败且不再重试，内容是附加到最终回答后面的说明。"""
+        cfg = self.verify
+        attempt = self._verify_failures + 1
+        self.emit("verify", status="running", attempt=attempt, command=cfg.command)
+        result = verify_mod.run(cfg, self.cwd)
+        self.emit("verify", status="pass" if result.passed else "fail", attempt=attempt, command=cfg.command,
+                  exit_code=result.exit_code, output=verify_mod.tail(result.output), seconds=round(result.seconds, 2))
+        if result.passed:
+            self._dirty, self._verify_failures, self._verify_last = False, 0, None
+            return ""
+        self._verify_failures += 1
+        sig = verify_mod.signature(result)
+        if sig == self._verify_last:
+            reason = "同一个错误连续出现两次，模型没有取得进展"
+        elif self._verify_failures > cfg.max_retries:
+            reason = f"已重试 {cfg.max_retries} 次仍未通过"
+        else:
+            self._verify_last = sig
+            self._append_user([text_block(f"<verify-feedback>\n{verify_mod.feedback(cfg, result, self._verify_failures)}\n</verify-feedback>")])
+            return None
+        return (f"\n\n(自动验证未通过，已停止：{reason}。检查命令：{cfg.command}，退出码 "
+                f"{result.exit_code if result.exit_code is not None else '超时'}。最后一次输出：)\n{verify_mod.tail(result.output)}")
 
     # =================================================================== 上下文压缩
 
@@ -279,6 +327,7 @@ class Agent:
                     context_window=self.context_window, cancel=self.cancel)
         self.emit("subagent_start", description=description, prompt=prompt)
         result = sub._run(prompt)  # 用 _run：不能 clear 共享的 cancel 事件
+        self._dirty = self._dirty or sub._dirty   # 子 Agent 改了东西，也算本轮有改动
         self.usage.add(sub.usage)
         self.emit("subagent_end", description=description, result=result, usage=sub.usage.to_dict())
         return result or "(子 Agent 没有返回内容)"

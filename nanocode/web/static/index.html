@@ -232,6 +232,11 @@ function onEvent(e) {
     case "todos": renderTodos(e.todos); break;
     case "compact": add("note", `↻ 上下文${e.auto ? "自动" : ""}压缩：约 ${e.before} → ${e.after} tokens\n${e.summary}`); break;
     case "hook": add("note", `⚓ hook[${e.hook}] ${e.message || e.warnings.join("\n")}`, a); break;
+    case "verify":
+      if (e.status === "running") add("note", `⏳ 自动验证（第 ${e.attempt} 次）：${esc(e.command)}`, a);
+      else if (e.status === "pass") add("note", `✓ 自动验证通过（第 ${e.attempt} 次，${e.seconds}s）`, a);
+      else add("error", `✗ 自动验证未通过（第 ${e.attempt} 次，退出码 ${esc(String(e.exit_code))}）\n${esc(e.output)}`, a);
+      break;
     case "subagent_start": host("sub:" + e.description); break;
     case "command": add("note", `${e.input}\n${e.output || ""}`); refreshState(); break;
     case "error": add("error", "✗ " + esc(e.message), a); break;
