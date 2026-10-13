@@ -275,11 +275,16 @@ async function post(url, body) {
   const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-nanocode-token": TOKEN }, body: JSON.stringify(body || {}) });
   return r.json();
 }
-async function refreshState() {
+// sync=true 只用于页面刚加载时：以服务端的 busy 为准。历史事件缓冲有上限（2000 条），长任务的
+// "user" 事件可能已被挤掉，光靠重放事件会误判成空闲。
+// 之后的刷新（turn_end / command 触发）不能这样做：turn_end 事件发出时服务端 busy 还没来得及清掉，
+// 用服务端状态覆盖会让界面卡在"忙碌"。
+async function refreshState(sync = false) {
   const s = await getJSON("/api/state");
   $("#meta").textContent = `${s.provider}/${s.model} · ${s.cwd}`;
   $("#mode").value = s.mode;
-  if (!s.busy) setBusy(false);
+  if (sync) setBusy(!!s.busy);
+  else if (!s.busy) setBusy(false);
   renderTodos(s.todos);
 }
 async function refreshContext() {
@@ -312,9 +317,23 @@ $("#stop").onclick = () => post("/api/cancel");
 $("#refresh").onclick = refreshContext;
 $("#mode").onchange = () => post("/api/chat", { message: "/mode " + $("#mode").value });
 
-const es = new EventSource("/api/events?token=" + encodeURIComponent(TOKEN));
-es.onmessage = (m) => onEvent(JSON.parse(m.data));
-renderTimeline(); renderTodos([]); refreshState(); refreshContext();
+// 事件流：EventSource 发不出请求头，所以先用令牌（请求头）换一张一次性票据，再把票据放进 URL。
+// 票据用一次就作废，所以连接断开后不能依赖 EventSource 自带的重连（它会重发同一个 URL），要自己重连。
+// 重连后服务端会重放历史事件，onEvent 用 seq 去重。
+let es = null;
+async function connectEvents() {
+  try {
+    const t = await post("/api/ticket");
+    if (!t.ticket) throw new Error(t.error || "no ticket");
+    es = new EventSource("/api/events?ticket=" + encodeURIComponent(t.ticket));
+    es.onmessage = (m) => onEvent(JSON.parse(m.data));
+    es.onerror = () => { es.close(); setTimeout(connectEvents, 1500); };
+  } catch (err) {
+    setTimeout(connectEvents, 3000);
+  }
+}
+connectEvents();
+renderTimeline(); renderTodos([]); refreshState(true); refreshContext();
 </script>
 </body>
 </html>

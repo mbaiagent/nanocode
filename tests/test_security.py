@@ -182,7 +182,8 @@ class WebSecurityTest(unittest.TestCase):
         self.assertEqual(self.req("GET", "/api/state")[0], 403)
         self.assertEqual(self.req("GET", "/api/state", headers={"x-nanocode-token": "wrong"})[0], 403)
         self.assertEqual(self.req("GET", "/api/state", headers={"x-nanocode-token": self.app.token})[0], 200)
-        self.assertEqual(self.req("GET", f"/api/state?token={self.app.token}")[0], 200)   # EventSource 用 query
+        # 长期令牌不能放 URL（会进代理日志）；EventSource 改用一次性票据，见 test_web_hardening.py
+        self.assertEqual(self.req("GET", f"/api/state?token={self.app.token}")[0], 403)
 
     def test_cross_site_text_plain_is_rejected(self):
         body = json.dumps({"message": "/help"})

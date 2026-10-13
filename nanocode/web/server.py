@@ -9,12 +9,14 @@
     GET  /learn             交互式架构学习页
     GET  /api/state         会话概况
     GET  /api/context       完整上下文：system、messages、tools（就是下一次要发给模型的东西）
-    GET  /api/events        SSE 事件流（连接时先补发历史事件）
+    GET  /api/events        SSE 事件流（连接时先补发历史事件）。浏览器用 ?ticket= 一次性票据
+    POST /api/ticket        换一张 30 秒有效、只能用一次的 SSE 票据
     POST /api/chat          {"message": "..."} 发送消息（也支持 /命令 和 # 记忆）
     POST /api/permission    {"id": "...", "decision": "yes|always|no"}
     POST /api/cancel        中断当前任务
 
-安全：所有请求校验 Host / Origin，/api/* 需要令牌（页面加载时注入），POST 只接受 JSON。
+安全：所有请求校验 Host / Origin，/api/* 需要令牌（页面加载时注入，只认请求头），
+POST 只接受 JSON 且请求体不超过 1MB。
 详见 Handler._guard 的说明。
 """
 
@@ -37,40 +39,153 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 
 
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+MAX_BODY = 1024 * 1024          # POST 请求体上限（字节）
+TICKET_TTL = 30                 # SSE 一次性票据的有效期（秒）
+MAX_TICKETS = 64                # 同时存在的未使用票据上限，防止被刷爆内存
+
+
+def normalize_host(value: str) -> str:
+    """把用户写的可信公网地址规范成 Host 头里"不带端口的主机名"（小写）。
+
+    容忍写成 https://Host:8443 或 host:8443；通配符一律拒绝：这个白名单是防 DNS 重绑定的，
+    "*" 等于没有白名单。
+    """
+    v = value.strip()
+    if "://" in v:
+        v = urlparse(v).hostname or ""
+    v = v.strip("[]").lower()
+    if v.count(":") == 1:          # host:port（IPv6 字面量有多个冒号，原样保留）
+        v = v.rsplit(":", 1)[0]
+    if not v or "*" in v or " " in v or "/" in v:
+        raise ValueError(f"无效的公网地址：{value!r}（要写主机名或 IP，不支持通配符）")
+    return v
+
+
+def host_from_header(value: str) -> str:
+    """取出 Host 头里不带端口的主机名（小写）。
+
+    [::1]:8765 → ::1；[2001:db8::1]（默认端口，没有端口）→ 2001:db8::1；example.com:8443 → example.com。
+    不能一律按最后一个冒号切：IPv6 地址自己就带冒号。
+    """
+    v = value.strip().lower()
+    if v.startswith("["):
+        return v[1:].split("]", 1)[0]
+    if v.count(":") == 1:
+        return v.rsplit(":", 1)[0]
+    return v
+
+
+def normalize_origin(value: str) -> str:
+    v = value.strip().rstrip("/")
+    u = urlparse(v)
+    if u.scheme not in ("http", "https") or not u.hostname or u.path or "*" in v:
+        raise ValueError(f"无效的 Origin：{value!r}（写成 https://主机名[:端口]，不支持通配符）")
+    return v.lower()
+
+
+def split_list(values) -> list[str]:
+    """命令行参数（可重复）和环境变量（逗号分隔）都能给多个值。"""
+    out = []
+    for v in values or []:
+        out += [x.strip() for x in str(v).split(",") if x.strip()]
+    return out
+
+
+def public_settings(hosts=None, origins=None) -> tuple[list[str], list[str]]:
+    """合并命令行参数和环境变量 NANOCODE_PUBLIC_HOST / NANOCODE_PUBLIC_ORIGIN。"""
+    h = split_list(hosts) + split_list([os.environ.get("NANOCODE_PUBLIC_HOST", "")])
+    o = split_list(origins) + split_list([os.environ.get("NANOCODE_PUBLIC_ORIGIN", "")])
+    return h, o
 
 
 class WebApp:
-    def __init__(self, session: Session, permission_timeout: float = 600):
+    def __init__(self, session: Session, permission_timeout: float | None = None, disconnect_grace: float = 30):
         self.session = session
         self.pending: dict[str, dict] = {}
         self.lock = threading.Lock()
         self.token = secrets.token_urlsafe(24)
+        if permission_timeout is None:
+            permission_timeout = float(os.environ.get("NANOCODE_PERMISSION_TIMEOUT") or 600)
         self.permission_timeout = permission_timeout
+        # 权限询问期间如果一个浏览器都没连着（页面关了），宽限这么多秒后按拒绝处理
+        self.disconnect_grace = disconnect_grace
+        self.sse_clients = 0
+        self._sse_lock = threading.Lock()
+        # 事件流空闲时每隔这么多秒发一次心跳；服务端也是靠写心跳才发现浏览器已断开的
+        self.sse_ping_interval = 15
+        self._tickets: dict[str, float] = {}   # 一次性 SSE 票据 → 过期时间
         self.allowed_hosts: set[str] = set(LOCAL_HOSTS)
         self.allowed_origins: set[str] = set()
         session.permissions.ask_fn = self.ask
 
-    def configure(self, host: str, port: int) -> None:
-        """绑定端口后调用：确定哪些 Host / Origin 是"自己人"。"""
+    def issue_ticket(self) -> str | None:
+        """签发一张 SSE 用的一次性票据，TICKET_TTL 秒内有效、只能用一次。
+
+        EventSource 发不出自定义请求头，令牌只能放进 URL，而 URL 会被反向代理、监控系统记进日志。
+        所以 URL 里只放这种用完即废的票据，长期有效的令牌始终只走请求头。
+        """
+        now = time.time()
+        with self._sse_lock:
+            for t in [t for t, exp in self._tickets.items() if exp < now]:
+                del self._tickets[t]
+            if len(self._tickets) >= MAX_TICKETS:
+                return None
+            ticket = secrets.token_urlsafe(16)
+            self._tickets[ticket] = now + TICKET_TTL
+            return ticket
+
+    def redeem_ticket(self, ticket: str) -> bool:
+        with self._sse_lock:
+            exp = self._tickets.pop(ticket, None)
+        return exp is not None and exp >= time.time()
+
+    def configure(self, host: str, port: int, public_hosts=(), public_origins=()) -> None:
+        """绑定端口后调用：确定哪些 Host / Origin 是"自己人"。
+
+        默认只认本机地址。放在反向代理后面时，用 public_hosts / public_origins 显式加上对外的地址：
+          - public_hosts：对外的主机名或 IP（浏览器访问的、反向代理原样转发的 Host）。
+            同时自动信任该主机名的 http:// 和 https://（默认端口）Origin。
+          - public_origins：完整的 Origin，用于非默认端口等情况，例如 https://example.com:8443。
+        这只是校验"请求是不是发给我们的"，不能代替认证：反向代理必须自己做 TLS 和登录（如 basic auth）。
+        """
         hosts = set(LOCAL_HOSTS)
         if host not in ("0.0.0.0", "::", ""):
             hosts.add(host.lower())
+        origins = {f"http://{h}:{port}" for h in hosts} | {f"http://[{h}]:{port}" for h in hosts if ":" in h}
+        for h in public_hosts:
+            h = normalize_host(h)
+            hosts.add(h)
+            shown = f"[{h}]" if ":" in h else h
+            origins |= {f"http://{shown}", f"https://{shown}"}
+        for o in public_origins:
+            origins.add(normalize_origin(o))
         self.allowed_hosts = hosts
-        self.allowed_origins = {f"http://{h}:{port}" for h in hosts} | {f"http://[{h}]:{port}" for h in hosts if ":" in h}
+        self.allowed_origins = origins
 
     def ask(self, name: str, input: dict, target: str) -> str:
         """权限询问：发事件给浏览器，然后阻塞等待 /api/permission 的回答。
 
-        超时（默认 10 分钟没人回答，比如浏览器被关掉了）按拒绝处理，Agent 不会永远卡住。
+        按拒绝处理的三种情况，Agent 都不会永远卡住（等待期间 Agent 占着全局 busy 锁，别的请求都会被拒）：
+          - 用户点了中断
+          - 超过 permission_timeout（默认 10 分钟，环境变量 NANOCODE_PERMISSION_TIMEOUT 可改）
+          - 没有任何浏览器连着（页面关了）超过 disconnect_grace 秒。刷新页面会很快重连，不受影响。
         """
         rid = uuid.uuid4().hex[:8]
         slot = {"event": threading.Event(), "answer": "no"}
         self.pending[rid] = slot
         self.session.bus.emit("permission_request", id=rid, name=name, input=input, target=target)
         deadline = time.time() + self.permission_timeout
+        no_client_since = None
         while not slot["event"].wait(0.2):
-            if self.session.agent.cancel.is_set() or time.time() > deadline:
+            now = time.time()
+            if self.session.agent.cancel.is_set() or now > deadline:
                 break
+            if self.sse_clients == 0:
+                no_client_since = no_client_since or now
+                if now - no_client_since > self.disconnect_grace:
+                    break
+            else:
+                no_client_since = None
         self.pending.pop(rid, None)
         self.session.bus.emit("permission_answer", id=rid, decision=slot["answer"])
         return slot["answer"]
@@ -125,12 +240,30 @@ def make_handler(app: WebApp):
             self.end_headers()
             self.wfile.write(body)
 
-        def _body(self) -> dict:
-            n = int(self.headers.get("content-length") or 0)
+        def _body(self) -> dict | None:
+            """读请求体。出错时已经回复了错误，返回 None，调用方直接结束。
+
+            Content-Length 是对方说了算的：不设上限就会按它声称的大小一次性分配内存（声称 1.5GB，
+            进程虚拟内存立刻涨 1.5GB），写个非数字或负数还会让处理线程直接崩掉、连接无响应。
+            聊天消息很短，1MB 足够宽裕。
+            """
             try:
-                return json.loads(self.rfile.read(n) or b"{}")
-            except json.JSONDecodeError:
+                n = int(self.headers.get("content-length") or 0)
+            except ValueError:
+                n = -1
+            if n < 0:
+                self.close_connection = True
+                self._reject(400, "Content-Length 无效")
+                return None
+            if n > MAX_BODY:
+                self.close_connection = True   # 没读的请求体还留在连接里，不能再当成下一个请求解析
+                self._reject(413, f"请求体过大（上限 {MAX_BODY} 字节）")
+                return None
+            try:
+                data = json.loads(self.rfile.read(n) or b"{}")
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 return {}
+            return data if isinstance(data, dict) else {}
 
         def _reject(self, status: int, reason: str) -> None:
             self._json({"ok": False, "error": reason}, status)
@@ -147,7 +280,7 @@ def make_handler(app: WebApp):
                    Origin 头存在时必须是本服务自己。
               3. 其他网页或本机程序猜接口。→ /api/* 必须带上启动时随机生成的令牌。
             """
-            host = (self.headers.get("host") or "").rsplit(":", 1)[0].strip("[]").lower()
+            host = host_from_header(self.headers.get("host") or "")
             if host not in app.allowed_hosts:
                 self._reject(403, "Host 不被允许（防 DNS 重绑定）")
                 return False
@@ -160,12 +293,17 @@ def make_handler(app: WebApp):
             if method == "POST" and (self.headers.get("content-type") or "").split(";")[0].strip().lower() != "application/json":
                 self._reject(415, "只接受 application/json")
                 return False
-            query = parse_qs(urlparse(self.path).query)
-            token = self.headers.get("x-nanocode-token") or (query.get("token") or [""])[0]
-            if not hmac.compare_digest(token, app.token):
-                self._reject(403, "缺少或错误的令牌")
-                return False
-            return True
+            # 长期令牌只认请求头，不认 URL 参数（URL 会进代理日志）。
+            # 唯一的例外：事件流 /api/events 可以用一次性票据（?ticket=），因为 EventSource 发不出请求头。
+            token = self.headers.get("x-nanocode-token") or ""
+            if hmac.compare_digest(token, app.token):
+                return True
+            if method == "GET" and path == "/api/events":
+                ticket = (parse_qs(urlparse(self.path).query).get("ticket") or [""])[0]
+                if ticket and app.redeem_ticket(ticket):
+                    return True
+            self._reject(403, "缺少或错误的令牌")
+            return False
 
         def do_GET(self):
             s = app.session
@@ -192,6 +330,8 @@ def make_handler(app: WebApp):
             if not self._guard(path, "POST"):
                 return
             data = self._body()
+            if data is None:
+                return
             if path == "/api/chat":
                 return self._json(app.chat(str(data.get("message", ""))))
             if path == "/api/permission":
@@ -204,6 +344,11 @@ def make_handler(app: WebApp):
             if path == "/api/cancel":
                 app.session.agent.cancel.set()
                 return self._json({"ok": True})
+            if path == "/api/ticket":
+                ticket = app.issue_ticket()
+                if ticket is None:
+                    return self._reject(429, "未使用的票据太多，请稍后再试")
+                return self._json({"ok": True, "ticket": ticket, "expires_in": TICKET_TTL})
             self.send_error(404)
 
         def _sse(self):
@@ -213,12 +358,14 @@ def make_handler(app: WebApp):
             self.end_headers()
             q: queue.Queue = queue.Queue()
             unsubscribe = app.session.bus.subscribe(q.put)
+            with app._sse_lock:
+                app.sse_clients += 1
             try:
                 for e in list(app.session.bus.history):  # 补发历史，刷新页面不丢状态
                     self._send_event(e)
                 while True:
                     try:
-                        e = q.get(timeout=15)
+                        e = q.get(timeout=app.sse_ping_interval)
                     except queue.Empty:
                         self.wfile.write(b": ping\n\n")
                         self.wfile.flush()
@@ -228,6 +375,8 @@ def make_handler(app: WebApp):
                 pass
             finally:
                 unsubscribe()
+                with app._sse_lock:
+                    app.sse_clients -= 1
 
         def _send_event(self, e):
             data = json.dumps(e, ensure_ascii=False, default=str)
@@ -237,20 +386,28 @@ def make_handler(app: WebApp):
     return Handler
 
 
-def make_server(session: Session, host: str = "127.0.0.1", port: int = 8765) -> tuple[ThreadingHTTPServer, WebApp]:
+def make_server(session: Session, host: str = "127.0.0.1", port: int = 8765,
+                public_hosts=(), public_origins=()) -> tuple[ThreadingHTTPServer, WebApp]:
     app = WebApp(session)
+    app.configure(host, port, public_hosts, public_origins)   # 先校验配置，失败就别绑端口了
     server = ThreadingHTTPServer((host, port), make_handler(app))
     server.daemon_threads = True
-    app.configure(host, server.server_address[1])
+    app.configure(host, server.server_address[1], public_hosts, public_origins)   # 端口 0 时要用真实端口重算
     return server, app
 
 
-def serve(session: Session, host: str = "127.0.0.1", port: int = 8765) -> None:
-    server, app = make_server(session, host, port)
+def serve(session: Session, host: str = "127.0.0.1", port: int = 8765,
+          public_hosts=(), public_origins=()) -> None:
+    server, app = make_server(session, host, port, public_hosts, public_origins)
     port = server.server_address[1]
     if host in ("0.0.0.0", "::"):
         print("警告：服务监听在所有网卡上，局域网内的人只要拿到页面就能操作 Agent。除非你清楚后果，请用默认的 127.0.0.1。")
     print(f"nanocode Web 界面：http://{host}:{port}   （学习页：http://{host}:{port}/learn）")
+    if public_hosts or public_origins:
+        print(f"已信任公网 Host：{', '.join(normalize_host(h) for h in public_hosts) or '（无）'}；"
+              f"额外 Origin：{', '.join(normalize_origin(o) for o in public_origins) or '（无）'}")
+        print("提醒：这只是校验请求是发给本服务的，不能代替认证。反向代理必须自己做 TLS 和登录（如 basic auth），"
+              "否则任何能访问到它的人都能拿到令牌、驱动 Agent 执行命令。")
     print(f"模型 {session.provider_name}/{session.provider.model} · 工作目录 {session.cwd} · Ctrl-C 退出")
     try:
         server.serve_forever()

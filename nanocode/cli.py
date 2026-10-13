@@ -194,7 +194,25 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--web", action="store_true", help="启动 Web 界面")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--public-host", action="append", default=[], metavar="HOST",
+                   help="反向代理部署：信任这个对外的主机名/IP（可重复，或逗号分隔；也可用环境变量 NANOCODE_PUBLIC_HOST）")
+    p.add_argument("--public-origin", action="append", default=[], metavar="ORIGIN",
+                   help="反向代理部署：信任这个完整的 Origin，如 https://example.com:8443（可重复；"
+                        "也可用环境变量 NANOCODE_PUBLIC_ORIGIN）")
     args = p.parse_args(argv)
+
+    public_hosts, public_origins = [], []
+    if args.web:
+        from .web.server import normalize_host, normalize_origin, public_settings
+        try:
+            public_hosts, public_origins = public_settings(args.public_host, args.public_origin)
+            for h in public_hosts:
+                normalize_host(h)
+            for o in public_origins:
+                normalize_origin(o)
+        except ValueError as e:
+            print(paint(f"配置错误：{e}", "red"), file=sys.stderr)
+            return 2
 
     opts = Options(provider=args.provider or "", model=args.model or "", base_url=args.base_url or "",
                    api_key=args.api_key or "", protocol=args.protocol or "", mode=args.mode or "",
@@ -210,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.web:
         from .web.server import serve
-        serve(session, args.host, args.port)
+        serve(session, args.host, args.port, public_hosts, public_origins)
         return 0
     if args.prompt:
         session.bus.subscribe(Renderer(quiet=True))
