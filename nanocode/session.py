@@ -150,26 +150,55 @@ class Session:
     # ------------------------------------------------------------------ 保存 / 恢复
 
     def save(self) -> None:
+        """保存会话。先写临时文件、落盘，再用 os.replace 原子替换。
+
+        直接覆盖写的话，写到一半崩溃 / 断电 / 磁盘满，旧的好文件已经被截断，整个会话就丢了。
+        这样做即使中途失败，旧文件也原封不动。失败不会让这一轮崩溃，但会通过事件报告出来，
+        不再静默吞掉（否则用户以为保存成功，实际什么都没存）。
+        """
+        d = os.path.join(self.data_dir, "sessions")
+        path = os.path.join(d, f"{self.session_id}.json")
+        tmp = path + ".tmp"
         try:
-            d = os.path.join(self.data_dir, "sessions")
             os.makedirs(d, exist_ok=True)
-            with open(os.path.join(d, f"{self.session_id}.json"), "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump({"messages": self.agent.messages, "todos": self.agent.state.get("todos", []),
                            "usage": self.agent.usage.to_dict()}, f, ensure_ascii=False, indent=1)
-        except OSError:
-            pass
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except (OSError, TypeError, ValueError) as e:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            self.bus.emit("error", agent="main", message=f"会话保存失败（上一次保存的内容不受影响）：{type(e).__name__}: {e}")
 
     def resume_latest(self) -> str:
+        """恢复最近一次会话。读到损坏的文件就改名为 .corrupt 备份、给出提示，再试更早的一个。"""
         d = os.path.join(self.data_dir, "sessions")
         files = sorted(f for f in os.listdir(d) if f.endswith(".json")) if os.path.isdir(d) else []
-        if not files:
-            return "没有可恢复的会话"
-        with open(os.path.join(d, files[-1]), encoding="utf-8") as f:
-            data = json.load(f)
-        self.agent.messages = data.get("messages", [])
-        self.agent.state["todos"] = data.get("todos", [])
-        self.session_id = files[-1][:-5]
-        return f"已恢复会话 {self.session_id}（{len(self.agent.messages)} 条消息）"
+        notes = []
+        for name in reversed(files):
+            path = os.path.join(d, name)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict) or not isinstance(data.get("messages", []), list):
+                    raise ValueError("格式不对")
+            except (OSError, ValueError) as e:   # JSONDecodeError、UnicodeDecodeError 都是 ValueError
+                try:
+                    os.replace(path, path + ".corrupt")
+                    notes.append(f"会话文件 {name} 已损坏（{type(e).__name__}），已改名为 {name}.corrupt 备份")
+                except OSError:
+                    notes.append(f"会话文件 {name} 无法读取（{type(e).__name__}），已跳过")
+                continue
+            self.agent.messages = data.get("messages", [])
+            self.agent.state["todos"] = data.get("todos", [])
+            self.session_id = name[:-5]
+            msg = f"已恢复会话 {self.session_id}（{len(self.agent.messages)} 条消息）"
+            return "\n".join(notes + [msg])
+        return "\n".join(notes + ["没有可恢复的会话"])
 
     def close(self) -> None:
         for c in self.mcp_clients:
