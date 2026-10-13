@@ -206,6 +206,7 @@ tests/                 单元测试
 | [10 RAG](docs/10-rag.md) | 什么时候用检索而不是 grep，管线怎么搭，怎么评测 |
 | [11 验证循环](docs/11-verification-loop.md) | 检查 → 纠正 → 终审：自动验证、子 Agent 验收、终审模式、经验沉淀，以及怎么衡量它们有没有用 |
 | [12 分布式部署](docs/12-distributed-deployment.md) | 给 1000+ 用户使用还差什么：执行隔离、多租户、状态外置、LLM 网关、分阶段路线图和上线检查清单 |
+| [13 模型视角](docs/13-model-perspective.md) | Agent 的行为从哪里来：模型实际看到什么、训练怎样塑造 Agent 能力、长上下文为什么容易出错、随机性与评测、失败模式的模型层原因、动手实验 |
 
 延伸阅读：[Agent 平台设计文档集](docs/platform/README.md) —— 把编程 Agent 发展成企业级、通用 Agent 平台，支撑千级、千万级、十亿级用户的愿景、架构、详细设计、路线图和架构决策记录。
 
