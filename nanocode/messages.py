@@ -33,8 +33,13 @@ def text_block(text: str) -> Block:
     return {"type": "text", "text": text}
 
 
-def tool_use_block(id: str, name: str, input: dict) -> Block:
-    return {"type": "tool_use", "id": id, "name": name, "input": input}
+def tool_use_block(id: str, name: str, input: dict, extra_content: dict | None = None) -> Block:
+    """extra_content：服务端附在这次工具调用上、下一轮必须原样带回的数据（如 Gemini 的 thought_signature）。
+    Agent 不解读它，只随消息保存；只有对应协议的 Provider 会把它发回去，别的协议会丢掉它。"""
+    block: Block = {"type": "tool_use", "id": id, "name": name, "input": input}
+    if extra_content:
+        block["extra_content"] = extra_content
+    return block
 
 
 def tool_result_block(tool_use_id: str, content: str, is_error: bool = False) -> Block:

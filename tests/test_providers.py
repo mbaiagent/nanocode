@@ -69,6 +69,52 @@ class TestOpenAI(unittest.TestCase):
         self.assertEqual(headers["authorization"], "Bearer k")
         self.assertEqual(req["body"]["tools"][0]["function"]["name"], "read_file")
 
+    SIG = {"google": {"thought_signature": "SIG-abc=="}}
+
+    def two_rounds(self, chunks):
+        """第一轮拿到带工具调用的回复，把它放进历史再发第二轮，返回 (解析出的 tool_use 块, 第二轮请求里回传的 tool_calls)。"""
+        srv = FakeSSEServer(sse(*chunks, done=True))
+        try:
+            p = OpenAICompatProvider("m", api_key="k", base_url=srv.url + "/v1")
+            first = p.complete("SYS", HISTORY[:1], TOOLS)
+            history = HISTORY[:1] + [{"role": "assistant", "content": first.content}] + [
+                {"role": "user", "content": [tool_result_block(b["id"], "ok") for b in first.content if b["type"] == "tool_use"]}]
+            p.complete("SYS", history, TOOLS)
+            body = srv.requests[1]["body"]
+            calls = next(m for m in body["messages"] if m["role"] == "assistant")["tool_calls"]
+            uses = [b for b in first.content if b["type"] == "tool_use"]
+            return uses, calls
+        finally:
+            srv.close()
+
+    def test_extra_content_on_tool_calls_is_sent_back(self):
+        """Gemini 的 thinking 模型经 OpenAI 兼容接口返回 extra_content.google.thought_signature，
+        下一轮必须原样带回，否则 400（#17）。"""
+        uses, calls = self.two_rounds([
+            {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1", "extra_content": self.SIG,
+                                                    "function": {"name": "read_file", "arguments": "{\"path\": \"a\"}"}}]}}]},
+            {"choices": [{"delta": {"tool_calls": [{"index": 1, "id": "call_2", "function": {"name": "read_file", "arguments": "{}"}}]},
+                          "finish_reason": "tool_calls"}]}])
+        self.assertEqual(uses[0]["extra_content"], self.SIG)
+        self.assertNotIn("extra_content", uses[1])                        # 只有带了的那个调用才有
+        self.assertEqual(calls[0]["extra_content"], self.SIG)
+        self.assertNotIn("extra_content", calls[1])
+        self.assertEqual(calls[0]["function"]["name"], "read_file")
+
+    def test_extra_content_arriving_in_a_later_chunk(self):
+        uses, calls = self.two_rounds([
+            {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c", "function": {"name": "read_file", "arguments": "{"}}]}}]},
+            {"choices": [{"delta": {"tool_calls": [{"index": 0, "extra_content": self.SIG, "function": {"arguments": "}"}}]},
+                          "finish_reason": "tool_calls"}]}])
+        self.assertEqual(calls[0]["extra_content"], self.SIG)
+
+    def test_plain_openai_requests_are_unchanged(self):
+        uses, calls = self.two_rounds([
+            {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c", "function": {"name": "read_file", "arguments": "{}"}}]},
+                          "finish_reason": "tool_calls"}]}])
+        self.assertNotIn("extra_content", uses[0])
+        self.assertEqual(set(calls[0]), {"id", "type", "function"})
+
     def test_http_error(self):
         srv = FakeSSEServer('{"error": "bad key"}', status=401)
         try:
@@ -107,6 +153,31 @@ class TestAnthropic(unittest.TestCase):
         self.assertEqual(srv.requests[0]["path"], "/v1/messages")
         self.assertEqual(body["system"][0]["cache_control"], {"type": "ephemeral"})
         self.assertEqual(body["messages"][2]["content"][0]["tool_use_id"], "c1")
+
+
+class TestCrossProtocol(unittest.TestCase):
+    def test_extra_content_survives_the_agent_loop_and_session_json(self):
+        """签名要经过 Agent 循环、会话保存和恢复（json 往返）之后仍然在，否则恢复会话后的第一轮会 400。"""
+        from helpers import Workspace, make_agent
+        ws = Workspace()
+        ws.write("a.py", "x = 1\n")
+        sig = {"google": {"thought_signature": "S"}}
+        agent, _, _ = make_agent(ws, [[dict(tool_use_block("t1", "read_file", {"path": "a.py"}), extra_content=sig)],
+                                      [{"type": "text", "text": "好了"}]])
+        agent.run("读 a.py")
+        restored = json.loads(json.dumps(agent.messages))
+        uses = [b for m in restored if m["role"] == "assistant" for b in m["content"] if b["type"] == "tool_use"]
+        self.assertEqual(uses[0]["extra_content"], sig)
+        wire = OpenAICompatProvider.to_openai_messages("S", restored)
+        self.assertEqual(next(m for m in wire if m.get("tool_calls"))["tool_calls"][0]["extra_content"], sig)
+
+
+    def test_provider_specific_extras_are_not_sent_to_anthropic(self):
+        """历史里的 tool_use 块可能带着别的协议的附加字段（如 Gemini 的 extra_content），Anthropic 接口不认，必须去掉。"""
+        block = dict(tool_use_block("c1", "read_file", {"path": "a.py"}), extra_content={"google": {"thought_signature": "S"}})
+        out = AnthropicProvider.to_anthropic_messages([{"role": "assistant", "content": [block]}])
+        self.assertEqual(out[0]["content"][0], {"type": "tool_use", "id": "c1", "name": "read_file", "input": {"path": "a.py"}})
+        self.assertIn("extra_content", block)                              # 不能改动原消息：换回 Gemini 时还要用
 
 
 class TestFactory(unittest.TestCase):

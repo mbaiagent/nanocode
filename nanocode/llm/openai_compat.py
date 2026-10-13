@@ -39,7 +39,10 @@ class OpenAICompatProvider(Provider):
                 text = "".join(b["text"] for b in msg["content"] if b["type"] == "text")
                 calls = [
                     {"id": b["id"], "type": "function",
-                     "function": {"name": b["name"], "arguments": json.dumps(b["input"], ensure_ascii=False)}}
+                     "function": {"name": b["name"], "arguments": json.dumps(b["input"], ensure_ascii=False)},
+                     # Gemini 的 thinking 模型要求把 extra_content.google.thought_signature 原样带回，否则 400；
+                     # 纯 OpenAI 的服务端不会返回它，所以没有这个键时请求和以前完全一样
+                     **({"extra_content": b["extra_content"]} if b.get("extra_content") else {})}
                     for b in msg["content"] if b["type"] == "tool_use"
                 ]
                 m: dict = {"role": "assistant", "content": text or None}
@@ -104,6 +107,8 @@ class OpenAICompatProvider(Provider):
                 for tc in delta.get("tool_calls") or []:
                     slot = calls.setdefault(tc.get("index", 0), {"id": "", "name": "", "args": ""})
                     slot["id"] = tc.get("id") or slot["id"]
+                    if tc.get("extra_content"):                 # 可能在任意一个分片里到达
+                        slot["extra"] = tc["extra_content"]
                     fn = tc.get("function") or {}
                     slot["name"] += fn.get("name") or ""
                     slot["args"] += fn.get("arguments") or ""
@@ -112,7 +117,7 @@ class OpenAICompatProvider(Provider):
 
         blocks = [text_block(text)]
         for i, c in enumerate(calls[k] for k in sorted(calls)):
-            blocks.append(tool_use_block(c["id"] or f"call_{i}", c["name"], parse_tool_input(c["args"])))
+            blocks.append(tool_use_block(c["id"] or f"call_{i}", c["name"], parse_tool_input(c["args"]), c.get("extra")))
         blocks = finalize_text_blocks(blocks)
 
         if calls:

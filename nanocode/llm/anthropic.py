@@ -42,6 +42,9 @@ class AnthropicProvider(Provider):
                 elif b["type"] == "text":
                     if b["text"]:
                         blocks.append({"type": "text", "text": b["text"]})
+                elif b["type"] == "tool_use":
+                    # 只发 Anthropic 认识的字段：历史里可能有别的协议的附加数据（如 Gemini 的 extra_content）
+                    blocks.append({"type": "tool_use", "id": b["id"], "name": b["name"], "input": b["input"]})
                 else:
                     blocks.append(b)
             out.append({"role": msg["role"], "content": blocks or [{"type": "text", "text": "(空)"}]})
