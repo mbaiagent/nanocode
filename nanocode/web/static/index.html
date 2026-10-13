@@ -406,9 +406,13 @@ $("#newsession").onclick = async () => {
 };
 
 // 调试面板：默认在窄屏收起，宽屏也给一键收起，聊天占满
-const main = $("#main");
-if (window.innerWidth < 860) main.classList.add("debug-hidden");
-$("#debugtoggle").onclick = () => main.classList.toggle("debug-hidden");
+//（变量名避开 main：iOS 内嵌浏览器可能注入同名脚本导致 const 重声明报错）
+const mainEl = $("#main");
+const dbgBtn = $("#debugtoggle");
+function syncDbgBtn() { dbgBtn.textContent = mainEl.classList.contains("debug-hidden") ? "显示调试面板" : "隐藏调试面板"; }
+if (window.innerWidth < 860) mainEl.classList.add("debug-hidden");
+dbgBtn.onclick = () => { mainEl.classList.toggle("debug-hidden"); syncDbgBtn(); };
+syncDbgBtn();
 
 // 事件流：EventSource 发不出请求头，所以先用令牌（请求头）换一张一次性票据，再把票据放进 URL。
 // 票据用一次就作废，所以连接断开后不能依赖 EventSource 自带的重连（它会重发同一个 URL），要自己重连。
