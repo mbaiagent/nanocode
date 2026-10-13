@@ -70,6 +70,12 @@ class Tool:
     is_read_only: bool = False
     path_target: bool = False   # permission_target() 返回的是文件路径（权限系统据此判断是否在项目内）
 
+    @property
+    def changes_workspace(self) -> bool:
+        """成功执行后，项目里的东西是否可能变了（决定"改完要验证"的闸门要不要关上）。默认：不是只读就算。
+        联网这类"有副作用、但不改项目"的工具可以在子类里覆盖成 False。"""
+        return not self.is_read_only
+
     def run(self, input: dict, ctx: ToolContext) -> str:
         raise NotImplementedError
 

@@ -29,6 +29,7 @@ nanocode 是依据 Claude Code 的**公开文档和可观察行为**写的教学
 | 会话恢复 | `--resume` / `--continue` | `--resume`（恢复最近一次） | `session.py` |
 | 中断 | Esc | Ctrl-C / Web 上的"中断"按钮 | `agent.py: cancel` |
 | 多厂商模型 | 主要面向 Claude | 任意 OpenAI / Anthropic 兼容 API | `llm/` |
+| 读网页 | WebFetch | `web_fetch`（默认每次确认，拒绝本机和内网地址） | `tools/web.py` |
 | 文档检索 | 主要靠 Grep / Glob 按需搜索 | 另有 `search_docs`（BM25 + 可选向量） | `rag.py` |
 | 改完自动检查 | 可以用 `Stop` hook 自己实现 | 内置 `verify`：有重试上限和"同一错误两次就停"，失败时 `-p` 退出码为 1 | `verify.py` |
 | 子任务验收 | 无直接对应 | `task` 的 `check` / `allowed_paths` + 系统生成的验收报告 | `subcheck.py` |
@@ -47,7 +48,7 @@ nanocode 是依据 Claude Code 的**公开文档和可观察行为**写的教学
 - 敏感文件保护、网络访问控制
 
 **能力**
-- WebFetch / WebSearch 等联网工具
+- WebSearch（联网搜索）：nanocode 只有 `web_fetch`（读一个已知地址，见第 04 章）；搜索需要后端，可接 MCP 搜索服务器
 - 图片输入（截图、设计稿）
 - Notebook 编辑、IDE 集成（读取诊断信息、显示 diff）
 - 扩展思考（thinking）内容的处理

@@ -43,7 +43,7 @@ class Tool:
 
 `execute()` 包了一层：参数校验 → `run()` → 把所有异常变成 `ToolResult(..., is_error=True)`。
 
-## nanocode 的 10 个工具
+## nanocode 的 11 个工具
 
 | 工具 | 只读 | 作用 | 设计要点 |
 |---|---|---|---|
@@ -54,6 +54,7 @@ class Tool:
 | `glob` | ✓ | 按文件名找 | 支持 `**`；按修改时间排序；忽略 .git 等 |
 | `grep` | ✓ | 按内容找 | 正则；`文件:行号: 内容` 格式 |
 | `search_docs` | ✓ | 按含义检索文档 | BM25 + 可选向量，见第 10 章；已知确切名字时用 grep |
+| `web_fetch` | | 读一个网页 | 默认每次确认；拒绝本机和内网地址；HTML 转纯文本；见第 04 章 |
 | `todo_write` | ✓ | 待办清单 | 见第 06 章 |
 | `task` | ✓ | 子 Agent | 见第 06 章；可带 `check`、`allowed_paths` 做验收（第 11 章） |
 | `skill` | ✓ | 加载技能说明 | 见第 06 章 |
@@ -108,9 +109,11 @@ class Tool:
 
 ## 加一个新工具
 
+最小的工具只要四样东西：名字、说明、参数 Schema、`run()`。下面是一个**最朴素的**联网工具，早期版本的样子：
+
 ```python
-class WebFetch(Tool):
-    name = "web_fetch"
+class NaiveFetch(Tool):
+    name = "naive_fetch"
     is_read_only = True
     description = "获取一个网页的文本内容。适合查阅在线文档。"
     input_schema = {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}
@@ -124,4 +127,6 @@ class WebFetch(Tool):
             return r.read().decode("utf-8", "replace")[:50000]
 ```
 
-然后在 `tools/__init__.py` 的 `default_tools()` 里加上 `WebFetch()`。就这样，模型下一次请求就能看到并使用它。（练习：这个实现有什么安全问题？参考第 04 章。）
+在 `tools/__init__.py` 的 `default_tools()` 里加上它，模型下一次请求就能使用。但它有一串安全问题（练习：先自己找，再看第 04 章"联网工具"一节）：`file:///etc/passwd` 能读本地文件；`http://169.254.169.254/` 能读云服务的临时凭证；`http://127.0.0.1:端口/` 能打本机服务；DNS 重绑定和重定向能绕过只看一次域名的检查；标成只读意味着不经确认就能把数据拼进 URL 送出去；没有大小限制，一个大文件就撑爆内存；HTML 原样塞进上下文。
+
+内置的 `web_fetch`（`tools/web.py`）就是把这些逐条补上之后的版本：默认每次确认、只收 http/https、解析出的每个地址都要是公网地址并把连接固定到它、重定向逐跳检查、下载 / 耗时 / 返回字符数都有上限、HTML 转纯文本。
