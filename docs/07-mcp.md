@@ -82,6 +82,8 @@ MCP 基于 JSON-RPC 2.0。最简单的传输方式是 **stdio**：Agent 把服�
 
 5. 想看真实生态的服务器，进 `examples/extensions/` 启动：那里配好了官方的 filesystem、memory（Node.js）和 fetch（uv）服务器，外加几个技能，用 `/mcp` 和 `/skills` 查看。
 
+> **部署方式说明**：以上项目级 `.nanocode/settings.json` 配置适用于直接运行 nanocode CLI 或 `nanocode --web`。如果使用 `nanocode_server` 多用户版，每个会话有独立工作区和配置目录，用户和项目配置中的 `mcpServers` 会被平台策略过滤。管理员通过 `NCS_SANDBOX_MCP_SERVERS` 为沙箱配置 MCP 服务器；这份配置会用于每个沙箱，不是按登录用户分别配置。不要把某个用户的个人令牌放进这份共享配置。MCP 命令还必须能在沙箱镜像中运行；Docker / Kubernetes 沙箱默认没有外网。`local` 启动器只是本机子进程，没有真正的系统级隔离。详见 [`server/README.md`](../server/README.md#配置)。
+
 `examples/mcp_server_demo.py` 只有 80 行，是理解服务器端的最好材料。读完它，试着写一个你自己的服务器，比如查询本地 SQLite 数据库。
 
 ## nanocode 没实现的部分

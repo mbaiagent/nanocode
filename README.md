@@ -35,7 +35,7 @@
 - **内置小而完整的 RAG**：切块、中文 BM25、可选向量检索、RRF 混合、增量索引，外加一个评测脚本对比 grep 与检索
 - **Agent 任务评测**：13 个编程任务、隐藏测试判定，统计成功率、步数和 token，用来比较模型和改动
 - **多用户部署平台**（[server/](server/README.md)）：按千人规模设计的控制面 + 模型网关 + 沙箱，PostgreSQL / Redis / Docker / K8s 有就用、没有也能在单机跑
-- **370+ 个单元测试**，覆盖循环的每个分支、两种协议的流式解析、检索管线、安全回归、评测框架自检，以及一个让文档和代码保持一致的测试
+- **440+ 个自动化测试**：核心 370+ 个、平台 70+ 个，覆盖循环、两种协议的流式解析、检索管线、安全回归和评测框架自检
 
 > nanocode 是依据 Claude Code 的公开文档和可观察行为，从零写的教学实现，不包含也不来自 Claude Code 的源代码。它追求的是"把原理讲清楚"，不是"功能一样多"。
 
@@ -241,7 +241,7 @@ nanocode --api-key sk-xxx                     # 直接给 API Key（更推荐用
 |---|---|
 | `NANOCODE_PROVIDER` `NANOCODE_MODEL` `NANOCODE_BASE_URL` `NANOCODE_API_KEY` | 同命令行的 `--provider` 等；各厂商的 Key 变量见上表 |
 | `NANOCODE_HOME` | 用户级目录（个人配置、记忆、信任记录、会话记录），默认 `~/.nanocode` |
-| `NANOCODE_PERMISSION_TIMEOUT` | Web 界面里权限询问等多久没人回答就按拒绝处理，默认 600 秒 |
+| `NANOCODE_PERMISSION_TIMEOUT` | 直接运行 nanocode CLI / `nanocode --web` 时，权限询问等待多久后按拒绝处理；默认 600 秒。`nanocode_server` 当前不把此变量传入会话沙箱 |
 | `NANOCODE_PUBLIC_HOST` `NANOCODE_PUBLIC_ORIGIN` | 放在反向代理后面时信任的对外地址，见下方「安全」 |
 | `NANOCODE_POLICY` | 平台策略文件（多用户部署时由平台只读挂载）：锁定模型去向、限制可选的权限模式、删除用户和项目配置里的指定键、打开审计日志；优先级高于一切配置和命令行参数，配置了却读不出来就拒绝启动。见 `policy.py` 和[第 12 章](docs/12-distributed-deployment.md#九实现状态) |
 | `NANOCODE_WEB_TOKEN` | Web 界面的 API 令牌，不设则每次启动随机生成；多用户部署时由控制面注入（至少 16 个字符） |
