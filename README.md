@@ -1,18 +1,114 @@
+<div align="center">
+
 # nanocode
 
-一个用来**看懂 Agent、看懂 Claude Code 核心架构**的迷你编程 Agent。
+**一个用来看懂 Agent、看懂 Claude Code 核心架构的迷你编程 Agent**
 
-- **纯 Python 标准库**，零依赖，核心代码约 5100 行（含大量中文注释），每个文件开头都有讲解
+纯 Python 标准库 · 零依赖 · 每个文件都有讲解 · 不需要 API Key 就能跑起来
+
+![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
+![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
+![Tests](https://img.shields.io/badge/tests-440%2B%20passing-brightgreen)
+![Eval](https://img.shields.io/badge/agent%20eval-37%2F39-blue)
+![License](https://img.shields.io/badge/license-MIT-lightgrey)
+
+[30 秒跑起来](#30-秒跑起来不需要-api-key) ·
+[截图](#截图) ·
+[架构](#架构) ·
+[怎么学](#怎么学) ·
+[多用户部署](server/README.md) ·
+[开发历程](docs/journey.md) ·
+[写进简历](docs/resume.md)
+
+<img src="docs/images/web-loop.png" alt="Web 调试面板：左边对话，右边是 Agent 循环每转一圈的时间线" width="900">
+
+</div>
+
+## 亮点
+
+- **纯 Python 标准库**，零依赖，核心代码约 5500 行（含大量中文注释），每个文件开头都有讲解
 - **可接入任何一家模型**：Claude、GPT、DeepSeek、通义千问、Kimi、智谱 GLM、硅基流动、OpenRouter、本地 Ollama，或任何 OpenAI / Anthropic 兼容的中转服务
 - **实现了 Claude Code 的核心机制**：Agent 循环、流式输出、文件/命令/搜索/读网页工具、权限模式与规则、Hooks、项目记忆、上下文压缩、待办清单、子 Agent、Skills、自定义斜杠命令、MCP、会话保存
 - **检查 → 纠正 → 终审的闭环**：自动验证（改完先跑检查，不过就回头修）、子 Agent 验收（系统核对，不信自述）、终审模式（无害步骤自动放行、高风险永远确认、结束时汇总 diff）、经验沉淀（被打回的原因经你确认后写入项目记忆），见 [第 11 章](docs/11-verification-loop.md)
-- **自带 Web 调试面板**：实时看到每一圈循环、每次发给模型的完整上下文、系统提示词、工具定义
+- **自带 Web 调试面板**：实时看到每一圈循环、每次发给模型的完整上下文、系统提示词、工具定义、已安装的 MCP 服务器和技能
 - **自带 Mock 模型**：不需要 API Key，就能把整套流程跑起来、看清楚
 - **内置小而完整的 RAG**：切块、中文 BM25、可选向量检索、RRF 混合、增量索引，外加一个评测脚本对比 grep 与检索
 - **Agent 任务评测**：13 个编程任务、隐藏测试判定，统计成功率、步数和 token，用来比较模型和改动
-- **350+ 个单元测试**，覆盖循环的每个分支、两种协议的流式解析、检索管线、安全回归、评测框架自检，以及一个让文档和代码保持一致的测试
+- **多用户部署平台**（[server/](server/README.md)）：按千人规模设计的控制面 + 模型网关 + 沙箱，PostgreSQL / Redis / Docker / K8s 有就用、没有也能在单机跑
+- **370+ 个单元测试**，覆盖循环的每个分支、两种协议的流式解析、检索管线、安全回归、评测框架自检，以及一个让文档和代码保持一致的测试
 
 > nanocode 是依据 Claude Code 的公开文档和可观察行为，从零写的教学实现，不包含也不来自 Claude Code 的源代码。它追求的是"把原理讲清楚"，不是"功能一样多"。
+
+## 截图
+
+<table>
+<tr>
+<td width="50%"><b>终端：接真实模型改代码、跑测试</b><br><img src="docs/images/cli.png" alt="终端版"></td>
+<td width="50%"><b>上下文：模型"记得"的一切都在这里</b><br><img src="docs/images/web-context.png" alt="上下文面板"></td>
+</tr>
+<tr>
+<td><b>扩展：MCP 服务器、技能、自定义命令</b><br><img src="docs/images/web-extensions.png" alt="扩展面板"></td>
+<td><b>架构学习页：单步看 messages 一条条长出来</b><br><img src="docs/images/learn.png" alt="学习页"></td>
+</tr>
+<tr>
+<td><b>多用户平台：会话、模型切换、审批</b><br><img src="server/docs/session.png" alt="多用户平台会话页"></td>
+<td><b>多用户平台：模型与 API Key 管理</b><br><img src="server/docs/settings.png" alt="多用户平台设置页"></td>
+</tr>
+</table>
+
+## 架构
+
+### 一次请求是怎么走完的
+
+```mermaid
+flowchart LR
+    U([用户]) -->|CLI / Web| S[Session<br/>组装各部件]
+    S --> A{{Agent 循环<br/>agent.py}}
+    A -->|system + messages + tools| P[Provider<br/>Anthropic / OpenAI 兼容]
+    P -->|文字 + tool_use| A
+    A -->|每个工具调用| G[权限检查<br/>模式 · allow/deny · hooks]
+    G -->|放行| T[工具<br/>文件 · bash · 搜索 · 网页 · 子 Agent · 技能 · MCP]
+    G -.->|需要确认| U
+    T -->|tool_result| A
+    A -->|没有工具调用了| V[自动验证（可选）<br/>verify.py]
+    V -->|不通过：带着失败输出回头修| A
+    V -->|通过| U
+    A -.->|事件| E[(事件总线<br/>CLI · Web · trace · 审计)]
+```
+
+循环本身只有几十行：调用模型 → 模型要用工具就执行、把结果追加进 messages → 再调用模型，直到模型不再要工具。
+其余所有模块都是围着这个循环搭起来的：
+
+```mermaid
+flowchart TB
+    IN["入口<br/>cli.py · web/server.py（HTTP + SSE）"] --> SES["session.py<br/>读配置、组装部件、斜杠命令、保存会话"]
+    SES --> AG{{"agent.py ★ 循环"}}
+    AG --> CTX["上下文<br/>context.py · messages.py · rag.py"]
+    AG --> LLM["模型层 llm/<br/>anthropic · openai_compat · mock"]
+    AG --> TL["工具层<br/>tools/ · mcp.py"]
+    AG --> SAFE["安全<br/>permissions · trust · policy · hooks"]
+    AG --> QA["质量<br/>verify · subcheck · risk · review · lessons"]
+    AG --> EV["events.py<br/>CLI · Web · trace · 审计"]
+```
+
+### 多用户部署（千人规模）
+
+```mermaid
+flowchart LR
+    B([浏览器]) --> AP[认证代理<br/>OIDC / SSO]
+    AP --> CP[控制面<br/>会话 · 用户 · 模型目录 · 反向代理]
+    CP --> DB[(SQLite / PostgreSQL)]
+    CP --> RL[(内存 / Redis 限流)]
+    CP -->|启动 / 回收| L{{启动器<br/>本机进程 · Docker · K8s}}
+    L --> SB1[沙箱：nanocode --web]
+    L --> SB2[沙箱：nanocode --web]
+    SB1 -->|短期签名令牌| GW[模型网关<br/>限额 · 计量 · 强制模型]
+    SB2 -->|短期签名令牌| GW
+    GW -->|解密后的 Key| M[(模型厂商)]
+```
+
+每个会话一个沙箱，用户的 API Key 加密存在库里、只在网关解密，**沙箱里永远没有真密钥**；Docker / K8s 沙箱没有外网，只能访问网关。
+设计见 [第 12 章](docs/12-distributed-deployment.md)，代码和运行方式见 [server/README.md](server/README.md)。
 
 ---
 
@@ -214,6 +310,8 @@ tests/                 单元测试
 | [11 验证循环](docs/11-verification-loop.md) | 检查 → 纠正 → 终审：自动验证、子 Agent 验收、终审模式、经验沉淀，以及怎么衡量它们有没有用 |
 | [12 分布式部署](docs/12-distributed-deployment.md) | 给 1000+ 用户使用还差什么：执行隔离、多租户、状态外置、LLM 网关、分阶段路线图和上线检查清单 |
 | [13 模型视角](docs/13-model-perspective.md) | Agent 的行为从哪里来：模型实际看到什么、训练怎样塑造 Agent 能力、长上下文为什么容易出错、随机性与评测、失败模式的模型层原因、动手实验 |
+
+开发历程：[怎么做出来的、踩过哪些坑](docs/journey.md) —— 9 个阶段的时间线，22 个真实问题的现象、原因、解决办法和教训。
 
 找工作用：[把这个项目写进简历](docs/resume.md) —— 按岗位挑重点、能写的数字和出处、标准版 / 精简版 / 英文版写法、面试常被追问的问题、诚实的边界。
 
