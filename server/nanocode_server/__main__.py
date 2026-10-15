@@ -4,6 +4,7 @@
     python -m nanocode_server control      只启动控制面（分布式部署）
     python -m nanocode_server gateway      只启动模型网关（分布式部署）
     python -m nanocode_server demo         模拟多个用户同时使用，检查互相隔离，打印报告
+    python -m nanocode_server loadtest     压测：多个用户同时使用，量每一步的耗时、失败率和内存
 
 配置全部来自 NCS_* 环境变量，见 config.py 和 server/README.md。
 """
@@ -25,6 +26,9 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "demo":
         from .demo import run_demo
         return run_demo(argv[1:])
+    if cmd == "loadtest":
+        from .loadtest import run_loadtest
+        return run_loadtest(argv[1:])
     if cmd not in ("standalone", "control", "gateway"):
         print(__doc__)
         return 2

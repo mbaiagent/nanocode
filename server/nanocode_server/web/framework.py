@@ -156,6 +156,12 @@ def static_dir() -> str:
     return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
 
 
+class _Server(ThreadingHTTPServer):
+    # 标准库默认的监听队列只有 5：一下子来几十个连接（比如几十个用户同时点"新建会话"），
+    # 队列满了内核会丢弃 SYN，客户端要等 1 秒重试，或者直接被重置。压测时就是这样发现的。
+    request_queue_size = 256
+
+
 def make_server(app: App, host: str, port: int) -> ThreadingHTTPServer:
     class RequestHandler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.0"          # 写完就关连接：流式响应不需要分块编码
@@ -207,7 +213,7 @@ def make_server(app: App, host: str, port: int) -> ThreadingHTTPServer:
         def do_DELETE(self):
             self._serve("DELETE")
 
-    server = ThreadingHTTPServer((host, port), RequestHandler)
+    server = _Server((host, port), RequestHandler)
     server.daemon_threads = True
     return server
 

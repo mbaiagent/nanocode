@@ -192,6 +192,18 @@ class PlatformTest(unittest.TestCase):
                 r["browser"].request("POST", f"/api/sessions/{r['session']}/delete", {})
 
 
+class ListenBacklogTest(unittest.TestCase):
+    def test_burst_of_connections_is_queued_not_dropped(self):
+        """标准库默认监听队列只有 5，几十个用户同时连进来会被内核丢弃，客户端要等 1 秒重试或被重置（压测发现）。"""
+        from nanocode_server.web.framework import make_server
+        from nanocode_server.web.framework import App
+        server = make_server(App(), "127.0.0.1", 0)
+        try:
+            self.assertGreaterEqual(server.request_queue_size, 128)
+        finally:
+            server.server_close()
+
+
 class SandboxMcpConfigTest(unittest.TestCase):
     def test_from_env_inline_or_file(self):
         servers = {"demo": {"command": "python3", "args": ["x.py"]}}
