@@ -30,14 +30,18 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, ROOT)
 
 from nanocode.rag import DocIndex, make_embedder, tokenize  # noqa: E402
-from nanocode.tools.search import walk_files  # noqa: E402
+from nanocode.tools.search import glob_to_regex, walk_files  # noqa: E402
+
+CORPUS_GLOB = "docs/*.md"   # 语料范围：本项目 docs/ 下的顶层 Markdown 文件
 
 
 def load_corpus(root):
+    """语料必须和 DocIndex 的 include 完全一致（docs/*.md，不含子目录），否则 grep 基线和 BM25 比的不是同一批文档。"""
     corpus = {}
+    pattern = glob_to_regex(CORPUS_GLOB)
     for path in walk_files(root):
         rel = os.path.relpath(path, root).replace(os.sep, "/")
-        if rel.endswith(".md") and rel.startswith("docs/"):
+        if pattern.match(rel):
             with open(path, encoding="utf-8") as f:
                 corpus[rel] = f.read().splitlines()
     return corpus
@@ -90,7 +94,7 @@ def main():
     with open(args.questions, encoding="utf-8") as f:
         questions = json.load(f)["questions"]
     corpus = load_corpus(args.root)
-    index = DocIndex(args.root, include=["docs/*.md"])
+    index = DocIndex(args.root, include=[CORPUS_GLOB])
     index.refresh()
     print(f"语料：{len(corpus)} 篇文档，{len(index.chunks)} 个块；问题：{len(questions)} 道\n")
 
@@ -100,7 +104,7 @@ def main():
     emb = make_embedder({"provider": args.embed_provider, "model": args.embed_model, "base_url": args.embed_base_url}) \
         if args.embed_model else None
     if emb:
-        vindex = DocIndex(args.root, include=["docs/*.md"], embedder=emb)
+        vindex = DocIndex(args.root, include=[CORPUS_GLOB], embedder=emb)
         vindex.refresh()
         if vindex.warning:
             print("向量化失败，跳过向量/混合：", vindex.warning, "\n")

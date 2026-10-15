@@ -1,0 +1,33 @@
+OpenRouter 模型列表快照（2026-10-15，/api/v1/models）：共 462 个，支持 tools 且有明确价格的 389 个
+价格单位：美元 / 百万 token。按 输入+输出 单价排序，只列前 30 个。
+路由器（价格为 -1，按实际模型计费，不可比）：typesafe/jev-router, nvidia/switchyard, openrouter/auto-beta, openrouter/fusion, openrouter/pareto-code, openrouter/bodybuilder, openrouter/auto
+cohere/north-mini-code:free                             输入    0.000  输出    0.000  上下文 256000
+dots-studio/dots-3-note-preview:free                    输入    0.000  输出    0.000  上下文 512000
+google/gemma-4-26b-a4b-it:free                          输入    0.000  输出    0.000  上下文 262144
+google/gemma-4-31b-it:free                              输入    0.000  输出    0.000  上下文 262144
+liquid/lfm-2.5-2.6b:free                                输入    0.000  输出    0.000  上下文 65536
+nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free      输入    0.000  输出    0.000  上下文 256000
+nvidia/nemotron-3-super-120b-a12b:free                  输入    0.000  输出    0.000  上下文 262144
+nvidia/nemotron-3-ultra-550b-a55b:free                  输入    0.000  输出    0.000  上下文 1000000
+nvidia/nemotron-3.5-lightning:free                      输入    0.000  输出    0.000  上下文 1000000
+openrouter/free                                         输入    0.000  输出    0.000  上下文 200000
+poolside/laguna-s-2.1:free                              输入    0.000  输出    0.000  上下文 262144
+poolside/laguna-xs-2.1:free                             输入    0.000  输出    0.000  上下文 262144
+thinkingmachines/inkling-small:free                     输入    0.000  输出    0.000  上下文 1048576
+thinkingmachines/inkling:free                           输入    0.000  输出    0.000  上下文 1048576
+mistralai/mistral-nemo                                  输入    0.029  输出    0.030  上下文 131072
+inclusionai/ling-3.0-flash                              输入    0.021  输出    0.063  上下文 262144
+openai/gpt-oss-20b                                      输入    0.018  输出    0.090  上下文 131072
+meta-llama/llama-3.1-8b-instruct                        输入    0.050  输出    0.080  上下文 131072
+openai/gpt-oss-20b:batch                                输入    0.024  输出    0.112  上下文 131072
+mistralai/ministral-8b-2512:batch                       输入    0.075  输出    0.075  上下文 262144
+qwen/qwen3.7-flash                                      输入    0.030  输出    0.130  上下文 1000000
+openai/gpt-oss-120b:batch                               输入    0.030  输出    0.136  上下文 131072
+amazon/nova-micro-v1                                    输入    0.035  输出    0.140  上下文 128000
+poolside/laguna-xs-2.1                                  输入    0.060  输出    0.120  上下文 262144
+inception/mercury-2.5                                   输入    0.040  输出    0.150  上下文 260000
+google/gemma-3-12b-it                                   输入    0.050  输出    0.150  上下文 131072
+mistralai/ministral-3b-2512                             输入    0.100  输出    0.100  上下文 131072
+rekaai/reka-edge                                        输入    0.100  输出    0.100  上下文 16384
+openai/gpt-5-nano:batch                                 输入    0.025  输出    0.200  上下文 400000
+inclusionai/ling-3.0-flash-vl                           输入    0.060  输出    0.180  上下文 131072
