@@ -61,6 +61,22 @@ BM25 的分数可能是 0 到 30，余弦相似度是 0 到 1，量纲不同，�
 
 `DocIndex.refresh()` 比较每个文件的 `mtime + size`：没变的复用旧块和旧向量，变了的重新切块，只给缺向量的块调用 embedding。索引存放在 `.nanocode/index/docs.json`。`search_docs` 每次调用前都会 refresh，没有变化时开销只是一次 stat。
 
+## 文档从哪里来
+
+RAG 的语料有两个来源，要分清楚：
+
+| 场景 | 语料范围 | 由什么决定 |
+|---|---|---|
+| Agent 调用 `search_docs` | **Agent 的工作目录**（启动 nanocode 时所在的项目）下匹配的文件 | 默认 `**/*.md`、`**/*.markdown`、`**/*.txt`、`**/*.rst`；可用 `settings.json` 的 `rag.include` 改成别的范围 |
+| 评测 `examples/rag_eval/` | 本项目（`--root` 指定，默认 nanocode 本身）的 `docs/*.md`，即 `docs/` 顶层的 17 个文件，不含子目录 | 脚本里的 `CORPUS_GLOB = "docs/*.md"`；grep 基线和 BM25、向量用的是同一份语料 |
+
+几点要注意：
+
+- **工具只索引工作目录，不索引 nanocode 自己的源码。** 在别人的项目里启动 nanocode，`search_docs` 查的是那个项目的 README 和文档。
+- **索引缓存在工作目录的 `.nanocode/index/docs.json`**，目录里自带 `.gitignore`，不会被提交。文件的修改时间或大小变了才会重新切块、重新计算向量。
+- **目录遍历会跳过 `.git` 等忽略目录。** 其余匹配的文件都会进入索引，包括你不想让模型读到的内容，所以大项目建议用 `rag.include` 收窄范围。
+- **评测的语料是 nanocode 自己的 `docs/` 顶层文档，17 篇、221 个块**：01–13 章原理文档、学习路线、练习、以及 journey、resume、workflow 三篇流程文档。不包括 `docs/platform/` 下的平台设计文档。题目是 22 道用自然语言转述知识点的问题（见 `examples/rag_eval/questions.json`），所有标准答案都在这 17 个文件里。这意味着评测结果是在"本项目文档"上的结果，换成别的语料，排序可能不同。
+
 ## 使用
 
 默认不需要任何配置，`search_docs` 会用 BM25 检索工作目录里的 `.md / .txt / .rst`。要启用向量和混合检索，在 `.nanocode/settings.json` 里加：
@@ -87,16 +103,20 @@ python3 examples/rag_eval/run_eval.py --embed-provider qwen --embed-model text-e
 
 指标按文件粒度：**recall@k**（前 k 个结果里有正确文档的问题占比）和 **MRR**（正确文档排名倒数的平均值）。
 
-在本项目 docs/（11 篇文档、102 个块）上的一次运行结果：
+在本项目 `docs/` 顶层（17 篇文档、221 个块）上的运行结果，向量来自 OpenRouter 的 `qwen/qwen3-embedding-8b`（4096 维）：
 
 | 方法 | recall@1 | recall@3 | recall@5 | MRR |
 |---|---|---|---|---|
 | grep-原句 | 0% | 0% | 0% | 0.00 |
-| grep-关键词 | 50% | 73% | 91% | 0.64 |
-| bm25 | 41% | 91% | 91% | 0.67 |
+| grep-关键词 | 0% | 32% | 55% | 0.25 |
+| bm25 | 36% | 91% | 95% | 0.61 |
+| vector | 77% | 91% | 100% | 0.84 |
+| hybrid（RRF） | 73% | 95% | 95% | 0.84 |
+
+更早的一次运行是在 11 篇文档、102 个块上测的（bm25 recall@3 91%，grep-关键词 73%）。语料变了，数字就不能直接比较，这也正是下面要强调的。另有一次运行的 grep 基线误用了包括 `docs/platform/` 在内的 32 个文件，而 BM25 和向量只索引 17 个，比较不公平，数字已作废；修正过程见 `verification/results/V11.md`。
 
 方法说明：`grep-原句` 把整句问题当字符串去 grep；`grep-关键词` 把问题拆成关键词（和 BM25 同一套分词），任一词命中的行都算，按命中行数给文件排序；`bm25` 是分块后取每个文件得分最高的块。
-注意：这些文档本身会被检索，所以每增加或修改一篇文档（包括这一章），数字都可能小幅变化。
+注意：这些文档本身会被检索，所以每增加或修改一篇文档（包括这一章），数字都可能小幅变化。完整的运行记录见 `verification/results/V11.md`。
 
 ### 这组结果该怎么读
 

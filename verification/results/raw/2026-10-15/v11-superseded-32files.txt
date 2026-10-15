@@ -1,0 +1,54 @@
+语料：32 篇文档，220 个块；问题：22 道
+
+方法            recall@1  recall@3  recall@5     MRR
+grep-原句             0%        0%        0%    0.00
+grep-关键词            0%       23%       41%    0.20
+bm25               36%       91%       95%    0.62
+vector             77%       86%      100%    0.84
+hybrid             73%       95%       95%    0.84
+
+逐题（✓ 第 1 名正确 / 数字 = 正确文档的排名 / ✗ 没找到）
+  为什么修改文件前必须先读取它？
+    grep-原句:✗  grep-关键词:5  bm25:✓  vector:✓  hybrid:✓
+  压缩对话的时候从哪里切开才不会出错？
+    grep-原句:✗  grep-关键词:2  bm25:2  vector:✓  hybrid:✓
+  OpenAI 的工具调用参数是对象还是字符串？
+    grep-原句:✗  grep-关键词:13  bm25:✓  vector:✓  hybrid:✓
+  脚本拦截危险命令应该用什么退出码？
+    grep-原句:✗  grep-关键词:2  bm25:3  vector:✓  hybrid:✓
+  怎样避免大量搜索把主对话的上下文撑满？
+    grep-原句:✗  grep-关键词:4  bm25:3  vector:3  hybrid:2
+  和外部工具服务器建立连接要经过哪些握手步骤？
+    grep-原句:✗  grep-关键词:5  bm25:3  vector:✓  hybrid:✓
+  命令输出特别大的时候为什么会卡死？
+    grep-原句:✗  grep-关键词:12  bm25:10  vector:4  hybrid:7
+  技能的说明为什么不一开始全部放进系统提示词？
+    grep-原句:✗  grep-关键词:6  bm25:2  vector:✓  hybrid:✓
+  想让它只看不改、先出方案，应该用哪种模式？
+    grep-原句:✗  grep-关键词:2  bm25:✓  vector:✓  hybrid:✓
+  为什么说上下文只追加不修改？
+    grep-原句:✗  grep-关键词:12  bm25:✓  vector:✓  hybrid:✓
+  Agent 到什么时候才会停下来？
+    grep-原句:✗  grep-关键词:8  bm25:✓  vector:4  hybrid:✓
+  多个层级的项目说明文件怎么合并加载？
+    grep-原句:✗  grep-关键词:9  bm25:2  vector:3  hybrid:2
+  这个项目和 Claude Code 比还缺少什么生产级功能？
+    grep-原句:✗  grep-关键词:4  bm25:2  vector:✓  hybrid:✓
+  长任务里怎么防止模型忘记剩下的步骤？
+    grep-原句:✗  grep-关键词:13  bm25:3  vector:✓  hybrid:✓
+  要接入一家没有预设的新模型厂商需要改哪里？
+    grep-原句:✗  grep-关键词:26  bm25:✓  vector:✓  hybrid:✓
+  怎么衡量改了提示词之后 Agent 变好还是变差？
+    grep-原句:✗  grep-关键词:8  bm25:4  vector:4  hybrid:3
+  工具执行结果为什么用 user 身份发给模型？
+    grep-原句:✗  grep-关键词:9  bm25:2  vector:✓  hybrid:✓
+  用户拒绝了某个命令后模型会看到什么？
+    grep-原句:✗  grep-关键词:3  bm25:2  vector:✓  hybrid:2
+  流式输出时工具参数是怎么拼起来的？
+    grep-原句:✗  grep-关键词:21  bm25:✓  vector:✓  hybrid:✓
+  怎样给模型增加一个自己写的新工具？
+    grep-原句:✗  grep-关键词:13  bm25:2  vector:✓  hybrid:✓
+  子 Agent 的工具调用要不要经过权限检查？
+    grep-原句:✗  grep-关键词:7  bm25:2  vector:✓  hybrid:2
+  为什么编辑文件用字符串替换而不是 diff？
+    grep-原句:✗  grep-关键词:3  bm25:✓  vector:✓  hybrid:✓
