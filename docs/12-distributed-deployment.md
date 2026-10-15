@@ -281,51 +281,46 @@ nanocode 核心坚持只用标准库，这是学习项目的特点，应该保�
 
 ## 九、实现状态
 
-方案 A 的第一阶段已经实现：nanocode 本体的改动在 `nanocode/` 里，控制面和模型网关是独立的包 [`server/`](../server/README.md)，镜像和 Kubernetes 清单在 [`deploy/`](../deploy/)。本机可以直接试用：
+方案 A 已经实现成可以运行的平台：nanocode 本体的改动在 `nanocode/` 里，控制面和模型网关是独立的包 [`server/`](../server/README.md)，镜像和 Kubernetes 清单在 [`deploy/`](../deploy/)。一台电脑上就能跑：
 
 ```bash
-PYTHONPATH=server:. python3 -m nanocode_server dev      # 打开 http://127.0.0.1:8700，沙箱用 mock 模型，不需要 Key
+PYTHONPATH=server:. python3 -m nanocode_server               # 打开 http://127.0.0.1:8700，登录页输入任意用户名
+PYTHONPATH=server:. python3 -m nanocode_server demo --users 10   # 模拟 10 个用户同时使用，检查互相隔离
 ```
+
+可选组件有就用、没有也能跑：数据库 SQLite / PostgreSQL，限流 内存 / Redis，沙箱 本机进程 / Docker / Kubernetes。页面上可以添加自己的 API Key、为每个会话切换模型；Key 加密保存，只在模型网关里使用，不会进入沙箱。
 
 ### 对照第六节的代码改动清单
 
 | 计划 | 状态 | 实现 |
 |---|---|---|
-| 每一步增量保存 | ✅ | `session.py` `_autosave`：主 Agent 每次调用模型前保存，进程被杀最多丢一步 |
-| 存储后端接口（写数据库） | ⏳ | 会话仍是 JSON 文件，放在每个会话自己的持久卷上；控制面自己的会话表在 SQLite（`server/nanocode_server/store.py`），换 PostgreSQL 只需替换这个类 |
-| 平台策略层 | ✅ | `policy.py`：`NANOCODE_POLICY` 只读挂载，锁定 provider / model / base_url / protocol / mode，`forbid` 删除用户和项目配置里的危险键，读不出来就拒绝启动 |
-| 由策略决定信任 | ✅ | 沙箱里不询问（没有终端），需要信任的项目配置默认忽略；策略的 `forbid` 再把 hooks、mcpServers、verify、permissions.allow、headers、rag 全部删掉 |
-| 限制可选的权限模式 | ✅ | `permissions.py` `allowed_modes`；`/mode` 和网页下拉框切换到不允许的模式会被拒绝 |
-| 事件导出 | ⏳ | 有审计订阅者（`events.py` `AuditWriter`），但写在沙箱里；导出到 Redis Streams、日志管道还没做 |
-| `Last-Event-ID` 续传、令牌由控制面注入 | ✅ | `web/server.py`：事件带 `id`，按 `Last-Event-ID` 或 `?after=` 只补发之后的；`NANOCODE_WEB_TOKEN` |
-| 网关额度错误的清晰提示 | ✅ | 不需要改 `llm/base.py`：网关的每日限额响应带 "daily quota"，nanocode 识别为配额用完、不重试（有测试） |
-| `nanocode-server`：登录、会话管理、路由、事件流转发、沙箱调度、配额 | ✅ | `server/`：认证代理传身份 + 共享密钥、按用户授权、总容量和每人上限、反向代理、空闲回收、模型网关的限流和限额 |
+| 每一步增量保存 | ✅ | `session.py` `_autosave`：主 Agent 每次调用模型前保存 |
+| 存储后端接口（写数据库） | ⏳ | 平台数据（会话、Key、用量）在 SQLite / PostgreSQL；每个会话的对话记录仍是 JSON 文件，放在会话自己的工作区卷上 |
+| 平台策略层、由策略决定信任、限制权限模式 | ✅ | `policy.py`、`permissions.py` `allowed_modes`；每个会话的策略由控制面生成，换模型时重写 |
+| 事件导出 | ⏳ | 有审计订阅者（`events.py` `AuditWriter`），但写在沙箱里；导出到日志管道还没做 |
+| `Last-Event-ID` 续传、令牌由控制面注入 | ✅ | `web/server.py` |
+| 网关额度错误的清晰提示 | ✅ | 网关的每日限额响应带 "daily quota"，nanocode 识别为配额用完、不重试 |
+| `nanocode-server`：登录、会话、路由、事件流转发、沙箱调度、配额 | ✅ | `server/`：开发登录 / 认证代理、按用户授权、容量和每人上限、反向代理、空闲回收、多副本安全的启动抢占；模型网关的按会话选 Key、限流、额度、计量 |
+| 模型与 Key 管理（第 12 章之后新增） | ✅ | 用户添加自己的 Key（加密保存、防 SSRF），每个会话可切换模型 |
 | 计费、管理后台 | ❌ | 只有用量计量和用户自己的用量显示 |
-| 部署配置 | ✅（未在真实集群验证） | `deploy/`：两个 Dockerfile；K8s 清单含 gVisor RuntimeClass、默认拒绝的 NetworkPolicy、最小权限 RBAC、oauth2-proxy 示例 |
+| 部署配置 | ✅（K8s 未在真实集群验证） | `deploy/`：两个 Dockerfile（已构建验证）；K8s 清单含 gVisor、默认拒绝的 NetworkPolicy、最小权限 RBAC、PostgreSQL / Redis 示例、oauth2-proxy 示例 |
 
 ### 对照第八节的上线前检查清单
 
 | 检查项 | 状态 |
 |---|---|
-| 每个会话运行在强隔离沙箱里，有资源限制 | ✅ Pod 清单（gVisor、CPU / 内存 / 临时存储限制、最长存活时间）；需要在集群里验证 |
-| 沙箱默认禁止出站，只放行白名单 | ✅ NetworkPolicy（只放行 DNS 和网关）；需要在集群里验证 |
-| 沙箱里没有真实的模型 Key | ✅ 只有网关令牌；真实链路测试确认过沙箱进程的环境变量里没有 |
-| 登录、会话授权、跨租户访问测试 | ✅ 别人的会话一律 404，有端到端测试 |
-| `provider`、`base_url`、`headers` 只能由平台设置 | ✅ 平台策略；测试里篡改沙箱的 settings.json 后重启，仍然指向网关 |
+| 每个会话运行在强隔离沙箱里，有资源限制 | ✅ Docker（实测）、K8s Pod 清单（gVisor，需在集群验证） |
+| 沙箱默认禁止出站，只放行白名单 | ✅ Docker 内部网络（实测出不了外网和元数据地址，只能访问网关）；K8s NetworkPolicy（需在集群验证） |
+| 沙箱里没有真实的模型 Key | ✅ 只有网关令牌 |
+| 登录、会话授权、跨租户访问测试 | ✅ 端到端测试 + 多用户模拟 |
+| `provider`、`base_url`、`headers` 只能由平台设置 | ✅ 平台策略 + 网关按会话强制模型 |
 | 每一步持久化 | ✅ |
 | 事件流断线续传 | ✅ |
-| 按用户的限流和预算 | ✅ 网关（每分钟请求数、每日 token）；一键停用开关 ❌ |
+| 按用户的限流和预算 | ✅ 每分钟请求数（内存 / Redis）、每日平台模型 token；一键停用开关 ❌ |
 | 指标、日志、链路追踪、告警 | ❌ |
-| 压测（200 个并发任务、1000 条事件流连接） | ❌ |
+| 压测（200 个并发任务、1000 条事件流连接） | ❌ 只做了功能上的多用户并发（10 个用户同时完成整个流程） |
 | 渗透测试 | ❌ |
-| 数据保留、导出、删除 | ⏳ 能删除会话和工作区；保留期和导出没做 |
+| 数据保留、导出、删除 | ⏳ 能删除会话、工作区和 Key；保留期和导出没做 |
 | 分批放量和回滚 | ❌ |
-
-### 已知局限
-
-- 控制面和网关都只能单副本（SQLite），重启期间服务中断；
-- 容量满时直接拒绝，没有排队；
-- 审计日志在沙箱里，Agent 能改，还不能当作可信审计；
-- 清单没有在真实的 Kubernetes 集群里跑过，Dockerfile 也没有在这里构建过（打包步骤在干净的虚拟环境里验证过）。
 
 详见 [server/README.md](../server/README.md) 的"局限"一节。

@@ -1,17 +1,17 @@
 # 沙箱镜像：每个会话一个容器，里面只跑 `nanocode --web`。
-# 运行时由 KubernetesLauncher 设置：非 root（10001）、只读根文件系统、gVisor、不挂载集群凭证；
-# 工作区和 NANOCODE_HOME 在持久卷 /data 上，平台策略只读挂载在 /etc/nanocode/policy.json。
+# 运行时由启动器（Docker / Kubernetes）设置：非 root（10001）、只读根文件系统、去掉全部 capabilities；
+# 工作区和 NANOCODE_HOME 在 /data 上，平台策略只读挂载在 /etc/nanocode/policy.json。
 # 构建（在仓库根目录）：docker build -f deploy/Dockerfile.sandbox -t nanocode-sandbox:latest .
 FROM python:3.12-slim
 
-# Agent 常用的命令行工具。按你的用户需要增减（编译器、Node.js 等），版本要固定并定期重建扫描漏洞
+# Agent 常用的命令行工具。按需要增减（编译器、Node.js 等），固定版本并定期重建、扫描漏洞
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates curl ripgrep \
  && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md /src/
-COPY nanocode /src/nanocode
-RUN pip install --no-cache-dir /src && rm -rf /src
+# nanocode 只用标准库，直接放进镜像，不需要 pip（构建时不用联网下载 Python 包）
+COPY nanocode /opt/nanocode/nanocode
+ENV PYTHONPATH=/opt/nanocode PYTHONDONTWRITEBYTECODE=1
 
 RUN groupadd -g 10001 agent && useradd -u 10001 -g agent -d /data/home -s /bin/bash agent
 USER 10001:10001

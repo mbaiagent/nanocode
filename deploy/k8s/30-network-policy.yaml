@@ -1,5 +1,5 @@
-# 网络是真正的防线（docs/12 第 4.1 节）：Agent 在沙箱里可以用 curl 绕过 web_fetch 的检查，
-# 所以出口必须在网络层控制。前提：集群的网络插件支持 NetworkPolicy（Calico、Cilium 等）。
+# 网络是真正的防线：Agent 在沙箱里可以用 curl 绕过 web_fetch 的检查，所以出口必须在网络层控制。
+# 前提：集群的网络插件支持 NetworkPolicy（Calico、Cilium 等）。
 
 # ---------------------------------------------------------------- 沙箱：默认全部拒绝
 apiVersion: networking.k8s.io/v1
@@ -30,8 +30,8 @@ spec:
       ports:
         - {protocol: TCP, port: 8765}
 ---
-# 出站：只允许 DNS 和模型网关。云元数据地址（169.254.169.254）、内网、其他沙箱都访问不到。
-# 需要装依赖时，加一条到你自己的包镜像代理（PyPI / npm 镜像）的规则，不要直接放开公网。
+# 出站：只允许 DNS 和模型网关。云元数据地址、内网、其他沙箱、公网都访问不到。
+# 需要装依赖时，加一条到你自己的包镜像代理的规则，不要直接放开公网。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -75,7 +75,7 @@ spec:
       ports:
         - {protocol: TCP, port: 8700}
 ---
-# ---------------------------------------------------------------- 网关：只接受沙箱（调模型）和控制面（查用量）
+# ---------------------------------------------------------------- 网关：只接受沙箱（调模型）和控制面（测试 Key）
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -95,3 +95,20 @@ spec:
             matchLabels: {app: ncs-control}
       ports:
         - {protocol: TCP, port: 8080}
+---
+# ---------------------------------------------------------------- 数据库和 Redis：只有控制面和网关能访问
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: state-ingress
+  namespace: nanocode-system
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: app, operator: In, values: [ncs-postgres, ncs-redis]}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - {key: app, operator: In, values: [ncs-control, ncs-gateway]}

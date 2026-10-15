@@ -1,22 +1,11 @@
-# 模型网关：唯一拿着真实模型 Key 的组件。一个副本（用量计数在 SQLite 里；多副本需要共享存储，见 server/README.md）。
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: ncs-gateway-data
-  namespace: nanocode-system
-spec:
-  accessModes: [ReadWriteOnce]
-  resources:
-    requests: {storage: 1Gi}
----
+# 模型网关：唯一使用真实模型 Key 的组件。状态在 PostgreSQL（会话、Key、用量）和 Redis（限流）里，可以多副本。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ncs-gateway
   namespace: nanocode-system
 spec:
-  replicas: 1
-  strategy: {type: Recreate}
+  replicas: 2
   selector:
     matchLabels: {app: ncs-gateway}
   template:
@@ -27,7 +16,6 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
-        fsGroup: 10001
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: gateway
@@ -35,18 +23,16 @@ spec:
           args: [gateway]
           ports: [{containerPort: 8080, name: http}]
           env:
+            - {name: NCS_AUTH, value: proxy}                # 网关不处理登录，只是让配置检查按生产要求来
             - {name: NCS_GATEWAY_HOST, value: "0.0.0.0"}
             - {name: NCS_GATEWAY_PORT, value: "8080"}
-            - {name: NCS_UPSTREAM_BASE_URL, value: "https://api.deepseek.com/v1"}
-            - {name: NCS_UPSTREAM_PROTOCOL, value: openai}
-            - {name: NCS_MODEL, value: deepseek-chat}
+            - {name: NCS_PLATFORM_BASE_URL, value: "https://api.deepseek.com/v1"}
+            - {name: NCS_PLATFORM_MODELS, value: "deepseek-chat"}
             - {name: NCS_DAILY_TOKENS, value: "2000000"}
             - {name: NCS_RPM, value: "30"}
             - {name: NCS_MAX_OUTPUT_TOKENS, value: "8192"}
-            - name: NCS_TOKEN_SECRET
-              valueFrom: {secretKeyRef: {name: ncs-secrets, key: NCS_TOKEN_SECRET}}
           envFrom:
-            - secretRef: {name: ncs-upstream}
+            - secretRef: {name: ncs-secrets}
           readinessProbe:
             httpGet: {path: /healthz, port: 8080}
           resources:
@@ -57,10 +43,10 @@ spec:
             readOnlyRootFilesystem: true
             capabilities: {drop: [ALL]}
           volumeMounts:
-            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /data}
       volumes:
-        - name: data
-          persistentVolumeClaim: {claimName: ncs-gateway-data}
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

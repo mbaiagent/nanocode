@@ -1,11 +1,15 @@
-"""nanocode 多用户部署的控制面和模型网关（docs/12 的方案 A：每个会话一个沙箱）。
+"""nanocode 多用户平台：控制面 + 模型网关（docs/12 的方案 A：每个会话一个沙箱）。
 
-和 nanocode 本体分开：nanocode 是单用户的 Agent，这里负责把它变成多人可用的服务。
-同样只用标准库，便于读懂和测试；生产部署的取舍见 server/README.md。
+分层（上层只依赖下层）：
 
-    control   控制面：登录（由前置的认证代理传入用户身份）、会话管理与授权、
-              沙箱的启动 / 回收、把浏览器请求转发到用户自己的沙箱
-    gateway   模型网关：真实的模型 API Key 只在这里；按用户限流、限额、计量
+    web/        HTTP：一个很小的路由框架，控制面 / 网关 / 反向代理三组路由
+    services/   业务：模型目录、会话生命周期、上游模型客户端
+    runtime/    沙箱启动器：本机进程 / Docker / Kubernetes
+    storage/    持久化（SQLite / PostgreSQL）和限流（内存 / Redis）
+    security/   签名令牌、API Key 加密、身份认证
+    config.py   配置
+
+只用标准库；PostgreSQL、Redis 是可选的，配了才需要对应的驱动。
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

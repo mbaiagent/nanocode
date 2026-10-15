@@ -1,5 +1,12 @@
-"""测试辅助：把 server/ 和仓库根目录加进 import 路径，并准备临时目录、假的上游服务器。"""
+"""测试辅助：import 路径、临时配置、可编程的假 HTTP 服务器、真实的平台实例。
 
+可选组件的测试由环境变量打开，没有就跳过：
+    NCS_TEST_DATABASE_URL=postgresql://...   在 PostgreSQL 上再跑一遍存储测试
+    NCS_TEST_REDIS_URL=redis://...           Redis 限流测试
+    NCS_TEST_DOCKER=1                        真的启动 Docker 沙箱（需要已构建 nanocode-sandbox 镜像）
+"""
+
+import http.client
 import json
 import os
 import sys
@@ -17,18 +24,22 @@ os.environ.setdefault("NANOCODE_HOME", tempfile.mkdtemp(prefix="ncs-test-home-")
 
 from nanocode_server.config import Config  # noqa: E402
 
-SECRET = "s" * 40
+SECRET = "s" * 48
+PG_URL = os.environ.get("NCS_TEST_DATABASE_URL", "")
+REDIS_URL = os.environ.get("NCS_TEST_REDIS_URL", "")
+DOCKER = os.environ.get("NCS_TEST_DOCKER") == "1"
 
 
 def make_config(**kw) -> Config:
-    cfg = Config(data_dir=tempfile.mkdtemp(prefix="ncs-test-"), token_secret=SECRET, port=0, gateway_port=0)
+    cfg = Config(data_dir=tempfile.mkdtemp(prefix="ncs-test-"), secret_key=SECRET, port=0, gateway_port=0,
+                 launcher="local")
     for k, v in kw.items():
         setattr(cfg, k, v)
     return cfg
 
 
 class FakeServer:
-    """一个可编程的假 HTTP 服务器：handler(method, path, headers, body) -> (状态, 响应头, 响应体 bytes 或 bytes 列表)。"""
+    """可编程的假 HTTP 服务器：handler(method, path, headers, body) -> (状态, 响应头, 响应体或分块列表)。"""
 
     def __init__(self, handler):
         self.requests = []
@@ -75,3 +86,74 @@ class FakeServer:
     def close(self):
         self.server.shutdown()
         self.server.server_close()
+
+
+class Client:
+    """以某个用户的身份访问控制面（开发模式登录，或代理模式的请求头）。"""
+
+    def __init__(self, port: int, user: str | None = None, proxy_secret: str = "", auth_header: str = "X-Auth-Request-Email"):
+        self.port = port
+        self.user = user
+        self.proxy_secret = proxy_secret
+        self.auth_header = auth_header
+        self.cookie = ""
+        if user and not proxy_secret:
+            status, data, _ = self.request("POST", "/api/login", {"user": user})
+            assert status == 200, data
+
+    def request(self, method, path, body=None, headers=None, raw=False):
+        h = {"Host": f"127.0.0.1:{self.port}"}
+        if body is not None:
+            h["content-type"] = "application/json"
+        if self.cookie:
+            h["cookie"] = self.cookie
+        if self.proxy_secret:
+            h["X-NCS-Proxy-Secret"] = self.proxy_secret
+            if self.user:
+                h[self.auth_header] = self.user
+        h.update(headers or {})
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=60)
+        conn.request(method, path, json.dumps(body) if body is not None else None, h)
+        r = conn.getresponse()
+        data = r.read()
+        headers_out = {k.lower(): v for k, v in r.getheaders()}     # 响应头名不区分大小写，统一成小写
+        conn.close()
+        if headers_out.get("set-cookie", "").startswith("ncs_login="):
+            self.cookie = headers_out["set-cookie"].split(";", 1)[0]
+        if raw:
+            return r.status, data, headers_out
+        try:
+            return r.status, json.loads(data), headers_out
+        except ValueError:
+            return r.status, data.decode("utf-8", "replace"), headers_out
+
+    def events_until(self, sid, stop_type, timeout=30, last_event_id=None, approve=True):
+        """读事件流直到出现 stop_type；遇到权限确认就经控制面提交"允许"。"""
+        h = {"Host": f"127.0.0.1:{self.port}"}
+        if self.cookie:
+            h["cookie"] = self.cookie
+        if self.proxy_secret:
+            h.update({"X-NCS-Proxy-Secret": self.proxy_secret, self.auth_header: self.user})
+        if last_event_id is not None:
+            h["Last-Event-ID"] = str(last_event_id)
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=timeout)
+        conn.request("GET", f"/s/{sid}/api/events", headers=h)
+        r = conn.getresponse()
+        assert r.status == 200, r.status
+        events = []
+        try:
+            while True:
+                line = r.readline()
+                if not line:
+                    break
+                if not line.startswith(b"data: "):
+                    continue
+                e = json.loads(line[6:])
+                events.append(e)
+                if e["type"] == "permission_request" and approve:
+                    self.request("POST", f"/s/{sid}/api/permission", {"id": e["id"], "decision": "yes"})
+                if e["type"] == stop_type:
+                    break
+        finally:
+            conn.close()
+        return events

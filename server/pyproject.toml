@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nanocode-server"
-version = "0.1.0"
+version = "0.2.0"
 description = "nanocode 多用户部署的控制面和模型网关（纯标准库）"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -17,4 +17,4 @@ nanocode-server = "nanocode_server.__main__:main"
 include = ["nanocode_server*"]
 
 [tool.setuptools.package-data]
-"nanocode_server" = ["static/*.html"]
+"nanocode_server" = ["static/*"]

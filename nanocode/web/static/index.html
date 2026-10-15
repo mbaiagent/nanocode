@@ -86,25 +86,35 @@ main.debug-hidden .col.debug { display: none }
 #queuebar.show { display: block }
 .msg .retry { margin-top: 6px }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important } }
+/* 嵌在多用户平台里（?embed=1）：品牌、会话切换、学习页链接由平台外壳提供，这里隐藏 */
+body.embed .hide-embed { display: none !important }
+body.embed header { padding: 8px 16px }
+/* 嵌入时用平台的配色和字体，看起来是同一个产品 */
+body.embed { --bg: #f4f5f7; --panel: #ffffff; --line: #e4e7ec; --fg: #101828; --muted: #667085; --model: #4f46e5;
+  --soft: #f8f9fb; --font-ui: "Inter", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif }
+@media (prefers-color-scheme: dark) { body.embed { --bg: #0c0f14; --panel: #141820; --line: #242a35; --fg: #eef1f6;
+  --muted: #8f99ab; --model: #7c74ff; --soft: #1a1f29 } }
+body.embed button.primary { border-radius: 7px }
 </style>
 </head>
 <body>
 <header>
-  <h1>nanocode</h1>
+  <h1 class="hide-embed">nanocode</h1>
   <span class="meta" id="meta">连接中…</span>
   <span class="spacer"></span>
-  <label class="meta" for="session">会话</label>
-  <select id="session" title="切换历史会话"></select>
-  <button id="newsession" type="button" title="开始新会话">＋新会话</button>
+  <label class="meta hide-embed" for="session">会话</label>
+  <select id="session" class="hide-embed" title="切换历史会话"></select>
+  <button id="newsession" class="hide-embed" type="button" title="开始新会话">＋新会话</button>
   <label class="meta" for="mode">权限模式</label>
   <select id="mode">
     <option value="default">default · 写操作要确认</option>
     <option value="accept_edits">accept_edits · 自动改文件</option>
     <option value="plan">plan · 只读规划</option>
+    <option value="review">review · 低风险自动、高风险确认</option>
     <option value="bypass">bypass · 全部放行</option>
   </select>
   <button id="debugtoggle" type="button" title="显示/隐藏右侧调试面板">调试面板</button>
-  <a href="learn" target="_blank">架构学习页 ↗</a>
+  <a href="learn" target="_blank" class="hide-embed">架构学习页 ↗</a>
 </header>
 <main id="main">
   <section class="col" aria-label="对话">
@@ -154,6 +164,7 @@ main.debug-hidden .col.debug { display: none }
 </main>
 <script>
 const $ = (s) => document.querySelector(s);
+if (new URLSearchParams(location.search).has("embed")) document.body.classList.add("embed");
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const chat = $("#chat");
 let lastSeq = 0, busy = false, currentText = {}, toolCards = {}, steps = {}, rawCount = 0;

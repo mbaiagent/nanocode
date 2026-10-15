@@ -1,156 +1,185 @@
-"""配置：全部来自环境变量（容器里最常用的方式），每一项都有说明和默认值。"""
+"""配置：全部来自 NCS_* 环境变量。
+
+可选组件按"配了就用、没配就用内置实现"的原则选择：
+
+    数据库      NCS_DATABASE_URL=postgresql://...  → PostgreSQL（需要 psycopg）；不配 → SQLite 文件
+    限流计数    NCS_REDIS_URL=redis://...          → Redis（需要 redis 包）；不配 → 进程内存
+    沙箱        NCS_LAUNCHER=auto                  → 在 K8s 里就用 K8s；本机有 Docker 且有沙箱镜像就用 Docker；
+                                                     否则本机子进程（没有隔离，只适合开发）
+
+配了却用不了（比如配了 PostgreSQL 地址但没装驱动）会直接报错，不会悄悄退回内置实现：
+那样一个以为跑在 PostgreSQL 上的集群，其实每个副本各写各的 SQLite。
+"""
 
 from __future__ import annotations
 
 import os
+import secrets
 from dataclasses import dataclass, field
 
 ALL_MODES = ["default", "accept_edits", "plan", "review", "bypass"]
+SAFE_MODES = [m for m in ALL_MODES if m != "bypass"]
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 
 def _env(name: str, default: str = "") -> str:
-    return os.environ.get(name, default)
+    return os.environ.get(name, default).strip()
 
 
 def _int(name: str, default: int) -> int:
-    raw = os.environ.get(name, "")
-    return int(raw) if raw.strip() else default
+    raw = _env(name)
+    return int(raw) if raw else default
 
 
 def _list(name: str, default: list[str]) -> list[str]:
-    raw = os.environ.get(name, "")
-    return [x.strip() for x in raw.split(",") if x.strip()] if raw.strip() else list(default)
+    raw = _env(name)
+    return [x.strip() for x in raw.split(",") if x.strip()] if raw else list(default)
+
+
+def _bool(name: str, default: bool = False) -> bool:
+    raw = _env(name).lower()
+    return default if not raw else raw in ("1", "true", "yes", "on")
 
 
 @dataclass
 class Config:
-    # ------------------------------------------------------------ 通用
-    data_dir: str = "./ncs-data"          # NCS_DATA_DIR：数据库、本地沙箱的工作区
-    token_secret: str = ""                # NCS_TOKEN_SECRET：签发给沙箱的网关令牌用它签名（控制面和网关共用）
+    # ------------------------------------------------------------ 基础
+    data_dir: str = "./ncs-data"
+    secret_key: str = ""                    # 主密钥：签名令牌、加密用户的 API Key 都由它派生，至少 32 个字符
+    database_url: str = ""                  # 空 = data_dir 下的 SQLite
+    redis_url: str = ""                     # 空 = 进程内存限流
 
     # ------------------------------------------------------------ 控制面
-    host: str = "127.0.0.1"               # NCS_HOST
-    port: int = 8700                      # NCS_PORT
-    auth_header: str = "X-Auth-Request-Email"   # NCS_AUTH_HEADER：认证代理（如 oauth2-proxy）放用户身份的请求头
-    proxy_secret: str = ""                # NCS_PROXY_SECRET：认证代理必须带上 X-NCS-Proxy-Secret，防止绕过代理伪造身份
-    dev_user: str = ""                    # NCS_DEV_USER：仅本机开发——来自本机的请求一律当成这个用户
-    launcher: str = "local"               # NCS_LAUNCHER：local（开发，本机子进程，没有隔离）/ k8s（生产）
-    max_sandboxes: int = 200              # NCS_MAX_SANDBOXES：同时运行的沙箱上限（总容量）
-    max_sessions_per_user: int = 3        # NCS_MAX_SESSIONS_PER_USER：每人同时运行的会话上限
-    idle_timeout: int = 1800              # NCS_IDLE_TIMEOUT：空闲多少秒（没有请求、Agent 不在工作）回收沙箱
-    gateway_url: str = "http://127.0.0.1:8701/v1"   # NCS_GATEWAY_URL：沙箱访问模型网关的地址
-    gateway_admin_url: str = ""           # NCS_GATEWAY_ADMIN_URL：控制面查询用量时访问网关的地址（默认同上）
-    model: str = "deepseek-chat"          # NCS_MODEL：沙箱使用的模型（网关也会强制这个模型）
-    sandbox_provider: str = "custom"      # NCS_SANDBOX_PROVIDER：沙箱里的 provider；测试和离线开发可设为 mock
-    sandbox_modes: list[str] = field(default_factory=lambda: [m for m in ALL_MODES if m != "bypass"])
-                                          # NCS_SANDBOX_MODES：沙箱里允许的权限模式；k8s 强隔离时可以加上 bypass
-    sandbox_mode: str = "default"         # NCS_SANDBOX_MODE：沙箱启动时的权限模式
-    token_ttl: int = 12 * 3600            # NCS_TOKEN_TTL：网关令牌有效期，也是沙箱的最长存活时间
+    host: str = "127.0.0.1"
+    port: int = 8700
+    public_url: str = ""                    # 对外地址（用于 Cookie 的 Secure 标记），如 https://nanocode.example.com
+    auth: str = "dev"                       # dev：登录页输入任意用户名（只限本机）；proxy：信任认证代理
+    auth_header: str = "X-Auth-Request-Email"
+    proxy_secret: str = ""
+    max_sandboxes: int = 200
+    max_sessions_per_user: int = 3
+    idle_timeout: int = 1800
+    token_ttl: int = 12 * 3600              # 网关令牌有效期 = 沙箱最长存活时间
+    login_ttl: int = 7 * 24 * 3600          # 开发模式登录 Cookie 的有效期
 
-    # ------------------------------------------------------------ Kubernetes 启动器
-    k8s_api: str = "https://kubernetes.default.svc"   # NCS_K8S_API
-    k8s_namespace: str = "nanocode-sandboxes"          # NCS_K8S_NAMESPACE
-    k8s_image: str = "nanocode-sandbox:latest"         # NCS_K8S_IMAGE
-    k8s_runtime_class: str = "gvisor"                  # NCS_K8S_RUNTIME_CLASS：强隔离运行时，留空 = 不用（不推荐）
-    k8s_storage_class: str = ""                        # NCS_K8S_STORAGE_CLASS：工作区持久卷的存储类，留空用集群默认
-    k8s_workspace_size: str = "10Gi"                   # NCS_K8S_WORKSPACE_SIZE
-    k8s_cpu: str = "1"                                 # NCS_K8S_CPU：每个沙箱的 CPU 上限
-    k8s_memory: str = "2Gi"                            # NCS_K8S_MEMORY：每个沙箱的内存上限
-    k8s_policy_configmap: str = "ncs-sandbox-policy"   # NCS_K8S_POLICY_CONFIGMAP：沙箱策略文件所在的 ConfigMap
+    # ------------------------------------------------------------ 沙箱
+    launcher: str = "auto"                  # auto / local / docker / k8s
+    sandbox_modes: list[str] = field(default_factory=lambda: list(SAFE_MODES))
+    sandbox_mode: str = "default"
+    sandbox_image: str = "nanocode-sandbox:latest"   # Docker 和 K8s 启动器用的沙箱镜像
+    docker_runtime: str = ""                # 例如 runsc（gVisor）；空 = Docker 默认运行时
+    docker_network: str = "ncs-sandboxes"
+    sandbox_cpu: str = "1"
+    sandbox_memory: str = "2Gi"
+    k8s_api: str = "https://kubernetes.default.svc"
+    k8s_namespace: str = "nanocode-sandboxes"
+    k8s_runtime_class: str = "gvisor"
+    k8s_storage_class: str = ""
+    k8s_workspace_size: str = "10Gi"
 
     # ------------------------------------------------------------ 模型网关
-    gateway_host: str = "127.0.0.1"       # NCS_GATEWAY_HOST
-    gateway_port: int = 8701              # NCS_GATEWAY_PORT
-    upstream_base_url: str = ""           # NCS_UPSTREAM_BASE_URL：真实的模型 API，如 https://api.deepseek.com/v1
-    upstream_api_key: str = ""            # NCS_UPSTREAM_API_KEY：真实的 Key，只在网关进程里
-    upstream_protocol: str = "openai"     # NCS_UPSTREAM_PROTOCOL：openai / anthropic
-    daily_tokens: int = 2_000_000         # NCS_DAILY_TOKENS：每人每天的 token 上限（输入 + 输出），0 = 不限
-    requests_per_minute: int = 30         # NCS_RPM：每人每分钟的请求上限，0 = 不限
-    max_output_tokens: int = 8192         # NCS_MAX_OUTPUT_TOKENS：单次请求的输出上限，超过的请求会被压到这个值
+    gateway_host: str = "127.0.0.1"
+    gateway_port: int = 8701
+    gateway_url: str = ""                   # 沙箱访问网关的地址；空 = http://<gateway_host>:<gateway_port>
+    platform_base_url: str = ""             # 平台提供的模型（平台付费）：上游地址
+    platform_api_key: str = ""
+    platform_protocol: str = "openai"
+    platform_models: list[str] = field(default_factory=list)
+    platform_label: str = "平台模型"
+    enable_mock_model: bool = True          # 提供不需要 Key 的演示模型
+    allow_private_upstreams: bool = False   # 允许用户把自己的 Key 指向内网 / 本机地址（如本机 Ollama）。多用户部署要关
+    daily_tokens: int = 2_000_000           # 每人每天平台模型的 token 上限；用户自己的 Key 不受限
+    requests_per_minute: int = 30
+    max_output_tokens: int = 8192
 
     @classmethod
     def from_env(cls) -> "Config":
-        c = cls(
-            data_dir=_env("NCS_DATA_DIR", cls.data_dir),
-            token_secret=_env("NCS_TOKEN_SECRET"),
-            host=_env("NCS_HOST", cls.host),
-            port=_int("NCS_PORT", cls.port),
-            auth_header=_env("NCS_AUTH_HEADER", cls.auth_header),
+        d = cls()
+        return cls(
+            data_dir=_env("NCS_DATA_DIR", d.data_dir),
+            secret_key=_env("NCS_SECRET_KEY"),
+            database_url=_env("NCS_DATABASE_URL"),
+            redis_url=_env("NCS_REDIS_URL"),
+            host=_env("NCS_HOST", d.host),
+            port=_int("NCS_PORT", d.port),
+            public_url=_env("NCS_PUBLIC_URL"),
+            auth=_env("NCS_AUTH", d.auth),
+            auth_header=_env("NCS_AUTH_HEADER", d.auth_header),
             proxy_secret=_env("NCS_PROXY_SECRET"),
-            dev_user=_env("NCS_DEV_USER"),
-            launcher=_env("NCS_LAUNCHER", cls.launcher),
-            max_sandboxes=_int("NCS_MAX_SANDBOXES", cls.max_sandboxes),
-            max_sessions_per_user=_int("NCS_MAX_SESSIONS_PER_USER", cls.max_sessions_per_user),
-            idle_timeout=_int("NCS_IDLE_TIMEOUT", cls.idle_timeout),
-            gateway_url=_env("NCS_GATEWAY_URL", cls.gateway_url),
-            gateway_admin_url=_env("NCS_GATEWAY_ADMIN_URL"),
-            model=_env("NCS_MODEL", cls.model),
-            sandbox_provider=_env("NCS_SANDBOX_PROVIDER", cls.sandbox_provider),
-            sandbox_modes=_list("NCS_SANDBOX_MODES", [m for m in ALL_MODES if m != "bypass"]),
-            sandbox_mode=_env("NCS_SANDBOX_MODE", cls.sandbox_mode),
-            token_ttl=_int("NCS_TOKEN_TTL", cls.token_ttl),
-            k8s_api=_env("NCS_K8S_API", cls.k8s_api),
-            k8s_namespace=_env("NCS_K8S_NAMESPACE", cls.k8s_namespace),
-            k8s_image=_env("NCS_K8S_IMAGE", cls.k8s_image),
-            k8s_runtime_class=_env("NCS_K8S_RUNTIME_CLASS", cls.k8s_runtime_class),
+            max_sandboxes=_int("NCS_MAX_SANDBOXES", d.max_sandboxes),
+            max_sessions_per_user=_int("NCS_MAX_SESSIONS_PER_USER", d.max_sessions_per_user),
+            idle_timeout=_int("NCS_IDLE_TIMEOUT", d.idle_timeout),
+            token_ttl=_int("NCS_TOKEN_TTL", d.token_ttl),
+            login_ttl=_int("NCS_LOGIN_TTL", d.login_ttl),
+            launcher=_env("NCS_LAUNCHER", d.launcher),
+            sandbox_modes=_list("NCS_SANDBOX_MODES", SAFE_MODES),
+            sandbox_mode=_env("NCS_SANDBOX_MODE", d.sandbox_mode),
+            sandbox_image=_env("NCS_SANDBOX_IMAGE", d.sandbox_image),
+            docker_runtime=_env("NCS_DOCKER_RUNTIME"),
+            docker_network=_env("NCS_DOCKER_NETWORK", d.docker_network),
+            sandbox_cpu=_env("NCS_SANDBOX_CPU", d.sandbox_cpu),
+            sandbox_memory=_env("NCS_SANDBOX_MEMORY", d.sandbox_memory),
+            k8s_api=_env("NCS_K8S_API", d.k8s_api),
+            k8s_namespace=_env("NCS_K8S_NAMESPACE", d.k8s_namespace),
+            k8s_runtime_class=_env("NCS_K8S_RUNTIME_CLASS", d.k8s_runtime_class),
             k8s_storage_class=_env("NCS_K8S_STORAGE_CLASS"),
-            k8s_workspace_size=_env("NCS_K8S_WORKSPACE_SIZE", cls.k8s_workspace_size),
-            k8s_cpu=_env("NCS_K8S_CPU", cls.k8s_cpu),
-            k8s_memory=_env("NCS_K8S_MEMORY", cls.k8s_memory),
-            k8s_policy_configmap=_env("NCS_K8S_POLICY_CONFIGMAP", cls.k8s_policy_configmap),
-            gateway_host=_env("NCS_GATEWAY_HOST", cls.gateway_host),
-            gateway_port=_int("NCS_GATEWAY_PORT", cls.gateway_port),
-            upstream_base_url=_env("NCS_UPSTREAM_BASE_URL"),
-            upstream_api_key=_env("NCS_UPSTREAM_API_KEY"),
-            upstream_protocol=_env("NCS_UPSTREAM_PROTOCOL", cls.upstream_protocol),
-            daily_tokens=_int("NCS_DAILY_TOKENS", cls.daily_tokens),
-            requests_per_minute=_int("NCS_RPM", cls.requests_per_minute),
-            max_output_tokens=_int("NCS_MAX_OUTPUT_TOKENS", cls.max_output_tokens),
+            k8s_workspace_size=_env("NCS_K8S_WORKSPACE_SIZE", d.k8s_workspace_size),
+            gateway_host=_env("NCS_GATEWAY_HOST", d.gateway_host),
+            gateway_port=_int("NCS_GATEWAY_PORT", d.gateway_port),
+            gateway_url=_env("NCS_GATEWAY_URL"),
+            platform_base_url=_env("NCS_PLATFORM_BASE_URL"),
+            platform_api_key=_env("NCS_PLATFORM_API_KEY"),
+            platform_protocol=_env("NCS_PLATFORM_PROTOCOL", d.platform_protocol),
+            platform_models=_list("NCS_PLATFORM_MODELS", []),
+            platform_label=_env("NCS_PLATFORM_LABEL", d.platform_label),
+            enable_mock_model=_bool("NCS_ENABLE_MOCK_MODEL", True),
+            allow_private_upstreams=_bool("NCS_ALLOW_PRIVATE_UPSTREAMS", False),
+            daily_tokens=_int("NCS_DAILY_TOKENS", d.daily_tokens),
+            requests_per_minute=_int("NCS_RPM", d.requests_per_minute),
+            max_output_tokens=_int("NCS_MAX_OUTPUT_TOKENS", d.max_output_tokens),
         )
-        return c
 
-    def check_control(self) -> None:
-        """控制面启动前的安全检查：配置错了宁可起不来，也不要带着漏洞运行。"""
-        if len(self.token_secret) < 32:
-            raise ValueError("NCS_TOKEN_SECRET 至少 32 个字符（网关令牌靠它签名）")
-        if not self.proxy_secret and not self.dev_user:
-            raise ValueError("必须设置 NCS_PROXY_SECRET（生产：认证代理带上它）或 NCS_DEV_USER（仅本机开发）。"
-                             "否则任何人都能伪造身份请求头")
-        if self.dev_user and self.host not in ("127.0.0.1", "localhost", "::1"):
-            raise ValueError("NCS_DEV_USER 只能在只监听本机（NCS_HOST=127.0.0.1）时使用")
+    # ------------------------------------------------------------ 派生值
+
+    @property
+    def sandbox_gateway_url(self) -> str:
+        return (self.gateway_url or f"http://{self.gateway_host}:{self.gateway_port}").rstrip("/")
+
+    @property
+    def has_platform_models(self) -> bool:
+        return bool(self.platform_base_url and self.platform_api_key and self.platform_models)
+
+    def ensure_secret(self) -> None:
+        """没配主密钥时：开发模式生成一个并保存在数据目录里（重启后用户的 API Key 还能解密）；生产模式报错。"""
+        if self.secret_key:
+            return
+        if self.auth != "dev":
+            raise ValueError("生产模式必须设置 NCS_SECRET_KEY（至少 32 个字符）")
+        path = os.path.join(self.data_dir, "secret.key")
+        os.makedirs(self.data_dir, exist_ok=True)
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as f:
+                self.secret_key = f.read().strip()
+            return
+        self.secret_key = secrets.token_urlsafe(48)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(self.secret_key)
+
+    def validate(self) -> None:
+        """启动前的安全检查：配错了宁可起不来，也不要带着漏洞运行。"""
+        if len(self.secret_key) < 32:
+            raise ValueError("NCS_SECRET_KEY 至少 32 个字符")
+        if self.auth not in ("dev", "proxy"):
+            raise ValueError("NCS_AUTH 只能是 dev 或 proxy")
+        if self.auth == "proxy" and len(self.proxy_secret) < 16:
+            raise ValueError("proxy 认证必须设置 NCS_PROXY_SECRET（至少 16 个字符），否则谁都能伪造身份请求头")
+        if self.auth == "dev" and self.host not in LOOPBACK:
+            raise ValueError("dev 认证（输入任意用户名登录）只能在只监听本机时使用，对外服务请用 NCS_AUTH=proxy")
         if self.sandbox_mode not in self.sandbox_modes:
             raise ValueError(f"NCS_SANDBOX_MODE={self.sandbox_mode} 不在 NCS_SANDBOX_MODES 里")
-        if self.launcher == "local" and "bypass" in self.sandbox_modes:
-            raise ValueError("local 启动器没有任何隔离，不能允许 bypass 模式")
-
-    def check_gateway(self) -> None:
-        if len(self.token_secret) < 32:
-            raise ValueError("NCS_TOKEN_SECRET 至少 32 个字符")
-        if not self.upstream_base_url or not self.upstream_api_key:
-            raise ValueError("网关需要 NCS_UPSTREAM_BASE_URL 和 NCS_UPSTREAM_API_KEY")
-        if self.upstream_protocol not in ("openai", "anthropic"):
-            raise ValueError("NCS_UPSTREAM_PROTOCOL 只能是 openai 或 anthropic")
-
-    def sandbox_policy(self, audit_log: str) -> dict:
-        """写进每个沙箱的平台策略（nanocode/policy.py）。k8s 部署时同一份内容放进 ConfigMap。
-
-        - 模型去向锁死在网关：沙箱里的 Agent 改配置、改启动参数都绕不过去；
-        - 用户和项目配置里能执行命令（hooks、mcpServers、verify）、放宽权限（permissions.allow）、
-          改请求去向（headers、rag 的 embedding 地址）的键一律删掉。
-        """
-        policy = {
-            "provider": self.sandbox_provider,
-            "mode": self.sandbox_mode,
-            "allowed_modes": list(self.sandbox_modes),
-            "forbid": ["hooks", "mcpServers", "verify", "permissions.allow", "headers", "rag"],
-            "audit_log": audit_log,
-        }
-        if self.sandbox_provider != "mock":
-            base = self.gateway_url.rstrip("/")
-            if self.upstream_protocol == "anthropic":      # Anthropic 客户端自己拼 /v1/messages
-                base = base[:-3] if base.endswith("/v1") else base
-            policy.update(protocol=self.upstream_protocol, base_url=base, model=self.model)
-        return policy
+        if self.platform_protocol not in ("openai", "anthropic"):
+            raise ValueError("NCS_PLATFORM_PROTOCOL 只能是 openai 或 anthropic")
 
 
-__all__ = ["Config", "ALL_MODES"]
+__all__ = ["Config", "ALL_MODES", "SAFE_MODES", "LOOPBACK"]
