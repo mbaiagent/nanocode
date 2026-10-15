@@ -118,6 +118,16 @@ python3 -m unittest discover -s server/tests
 
 覆盖：令牌、加密、认证；SQLite 和 PostgreSQL 上同一套存储测试（含多线程抢占启动）；内存和 Redis 限流；模型目录和 SSRF 检查；网关（按会话选 Key、计量、额度、限流、错误透传、HTTP/1.1 分块编码）；K8s 启动器（假的 API 服务器）、Docker 启动器（真的启动容器）；平台端到端（登录、多用户隔离、换模型后对话保留并经网关调用、停止和恢复、容量、回收、代理认证）；部署清单和代码的一致性。
 
+## 压测
+
+```bash
+python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙箱，每档同时开会话
+```
+
+每档报告登录、添加 Key、建会话、发消息、等结束各步的 p50 / p95 / 最大值，以及沙箱同时运行时的内存。结果和分析见
+[verification/results/perf-loadtest.md](../verification/results/perf-loadtest.md)。
+在 100 个用户同时开会话的测试中全部成功；建会话的延迟随并发线性增长（约每 1 个沙箱 0.24 秒），是现在最明显的瓶颈。
+
 ## 生产部署（Kubernetes）
 
 清单在 [`deploy/k8s/`](../deploy/k8s/)，镜像在 [`deploy/`](../deploy/)：
