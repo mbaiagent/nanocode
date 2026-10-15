@@ -94,6 +94,7 @@ class Session:
         if opts.trust:
             trust_fn = lambda cwd, items: True  # noqa: E731
         self.settings, notice = load_settings(self.cwd, trust_fn)
+        self.trust_notice = notice
         if notice:
             log(notice)
         s = self.settings = policy_mod.apply_policy(self.settings, self.policy, _deep_merge)
@@ -121,7 +122,7 @@ class Session:
             self.bus.subscribe(self._trace)
 
         tools = default_tools()
-        self.mcp_clients, mcp_tools = connect_servers(s.get("mcpServers", {}), self.cwd, log=log)
+        self.mcp_clients, mcp_tools, self.mcp_status = connect_servers(s.get("mcpServers", {}), self.cwd, log=log)
         self.registry = ToolRegistry(tools + mcp_tools)
 
         perms = s.get("permissions", {})
@@ -185,6 +186,45 @@ class Session:
             "skills": list(self.skills), "commands": list(self.commands),
         }
 
+    def extensions(self) -> dict:
+        """装了哪些扩展、各自状态如何：/mcp、/skills 命令和 Web 界面的"扩展"面板都用它。"""
+        return {
+            "mcp": [{**vars(st), "tools": [f"mcp__{st.name}__{t}" for t in st.tools]} for st in self.mcp_status],
+            "skills": [{"name": k, "description": v["description"], "source": v.get("source", ""), "dir": v["dir"]}
+                       for k, v in self.skills.items()],
+            "commands": [{"name": k, "description": v["description"], "source": v.get("source", "")}
+                         for k, v in self.commands.items()],
+            "notice": self.trust_notice,
+        }
+
+    def _mcp_report(self) -> str:
+        ext = self.extensions()
+        if not ext["mcp"]:
+            lines = ["没有配置 MCP 服务器。在 ~/.nanocode/settings.json 或项目 .nanocode/settings.json 的 "
+                     "mcpServers 里添加，见 docs/07-mcp.md。"]
+        else:
+            lines = []
+            for m in ext["mcp"]:
+                head = f"{'✓' if m['ok'] else '✗'} {m['name']}  {m['command']} {' '.join(m['args'])}".rstrip()
+                lines.append(head)
+                if m["ok"]:
+                    lines.append(f"    {m['server'] or '（未报告名字）'}，{len(m['tools'])} 个工具："
+                                 + ", ".join(m["tools"]))
+                else:
+                    lines += ["    " + x for x in m["error"].splitlines()]
+        if ext["notice"]:
+            lines.append(ext["notice"])
+        return "\n".join(lines)
+
+    def _skills_report(self) -> str:
+        ext = self.extensions()
+        lines = [f"技能（{len(ext['skills'])}）：Agent 需要时用 skill 工具加载全文"]
+        lines += [f"  {s['name']:<18} [{s['source']}] {s['description']}" for s in ext["skills"]] or ["  （无）"]
+        lines.append(f"自定义命令（{len(ext['commands'])}）：")
+        lines += [f"  /{c['name']:<17} [{c['source']}] {c['description']}" for c in ext["commands"]] or ["  （无）"]
+        lines.append("位置：~/.nanocode/skills/<名字>/SKILL.md（user）、<项目>/.nanocode/skills/<名字>/SKILL.md（project）")
+        return "\n".join(lines)
+
     # ------------------------------------------------------------------ 保存 / 恢复
 
     def save(self) -> None:
@@ -231,7 +271,9 @@ class Session:
             for m in messages:
                 if m.get("role") == "user":
                     c = m.get("content")
-                    title = (c if isinstance(c, str) else str(c))[:30]
+                    if isinstance(c, list):     # 内容块列表：取文字块，不要把整个列表 str() 出来
+                        c = " ".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text")
+                    title = str(c or "").strip()[:30]
                     break
             out.append({"id": name[:-5], "messages": len(messages),
                         "mtime": os.path.getmtime(path), "title": title or "（空会话）"})
@@ -326,6 +368,8 @@ class Session:
                      "  /init              让 Agent 分析项目并生成 NANOCODE.md",
                      "  /resume            恢复上一次会话",
                      "  /providers         列出内置的厂商预设",
+                     "  /mcp               查看 MCP 服务器的连接状态和提供的工具",
+                     "  /skills            查看已安装的技能和自定义命令",
                      "  # 内容             把一句话追加到项目 NANOCODE.md（记忆）"]
             if self.commands:
                 lines.append("自定义命令：")
@@ -366,6 +410,10 @@ class Session:
                         f"然后在项目根目录创建 {MEMORY_FILE}，内容要简洁实用，供以后的 AI 助手快速了解这个项目。")
         if name == "resume":
             return self.resume_latest(), None
+        if name == "mcp":
+            return self._mcp_report(), None
+        if name == "skills":
+            return self._skills_report(), None
         if name == "providers":
             return "\n".join(f"  {k:<12} {v['protocol']:<10} {v['base_url']}" for k, v in PRESETS.items()), None
         if name in self.commands:

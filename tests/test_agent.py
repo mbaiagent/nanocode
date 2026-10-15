@@ -1,9 +1,12 @@
 """Agent 循环测试：用脚本化的假模型，精确验证循环的每一个分支。"""
 
+import json
 import os
 import sys
+import tempfile
 import time
 import unittest
+from unittest import mock
 
 from helpers import ScriptedProvider, Workspace, call, make_agent
 
@@ -207,7 +210,7 @@ class MCPTest(unittest.TestCase):
         ws = Workspace()
         try:
             cfg = {"demo": {"command": sys.executable, "args": [os.path.abspath(os.path.join(EXAMPLES, "mcp_server_demo.py"))]}}
-            clients, tools = connect_servers(cfg, ws.dir, log=lambda m: None)
+            clients, tools, _ = connect_servers(cfg, ws.dir, log=lambda m: None)
             try:
                 names = {t.name: t for t in tools}
                 self.assertEqual(set(names), {"mcp__demo__word_count", "mcp__demo__save_note"})
@@ -219,6 +222,96 @@ class MCPTest(unittest.TestCase):
             finally:
                 for c in clients:
                     c.close()
+        finally:
+            ws.cleanup()
+
+
+class MCPStatusTest(unittest.TestCase):
+    """装了哪些 MCP 服务器、哪个没连上、为什么：/mcp 和 Web 的"扩展"面板都靠这份记录。"""
+
+    def test_success_and_failure_are_both_recorded(self):
+        ws = Workspace()
+        try:
+            ws.write("broken.py", "import sys\nsys.stderr.write('缺少依赖 foo\\n')\nsys.exit(3)\n")
+            cfg = {"demo": {"command": sys.executable, "args": [os.path.abspath(os.path.join(EXAMPLES, "mcp_server_demo.py"))]},
+                   "broken": {"command": sys.executable, "args": ["broken.py"], "timeout": 5},
+                   "missing": {"command": "no-such-command-xyz"}}
+            logs = []
+            clients, tools, statuses = connect_servers(cfg, ws.dir, log=logs.append)
+            for c in clients:
+                c.close()
+            by = {st.name: st for st in statuses}
+            self.assertEqual(list(by), ["demo", "broken", "missing"])          # 失败的也在，顺序和配置一致
+            self.assertTrue(by["demo"].ok)
+            self.assertEqual(by["demo"].tools, ["word_count", "save_note"])
+            self.assertIn("demo", by["demo"].server)
+            self.assertFalse(by["broken"].ok)
+            self.assertIn("缺少依赖 foo", by["broken"].error)                   # 服务器 stderr 的最后几行
+            self.assertFalse(by["missing"].ok)
+            self.assertIn("FileNotFoundError", by["missing"].error)
+            self.assertEqual(len(clients), 1)
+        finally:
+            ws.cleanup()
+
+    def test_commands_and_extensions(self):
+        ws = Workspace()
+        home = tempfile.mkdtemp()
+        try:
+            ws.write(".nanocode/skills/pdf/SKILL.md", "---\nname: pdf\ndescription: 处理 PDF\n---\n正文")
+            ws.write(".nanocode/commands/review.md", "---\ndescription: 代码审查\n---\n请审查 $ARGUMENTS")
+            os.makedirs(os.path.join(home, "skills", "notes"))
+            with open(os.path.join(home, "skills", "notes", "SKILL.md"), "w", encoding="utf-8") as f:
+                f.write("---\nname: notes\ndescription: 记笔记\n---\n正文")
+            demo = os.path.abspath(os.path.join(EXAMPLES, "mcp_server_demo.py"))
+            ws.write(".nanocode/settings.json", json.dumps({"mcpServers": {
+                "demo": {"command": sys.executable, "args": [demo]}, "bad": {"command": "no-such-command-xyz"}}}))
+            with mock.patch.dict(os.environ, {"NANOCODE_HOME": home}):
+                s = Session(Options(provider="mock", cwd=ws.dir, mock_delay=0, trust=True), log=lambda m: None)
+            try:
+                ext = s.extensions()
+                self.assertEqual([(m["name"], m["ok"]) for m in ext["mcp"]], [("demo", True), ("bad", False)])
+                self.assertIn("mcp__demo__word_count", ext["mcp"][0]["tools"])
+                self.assertEqual({k["name"]: k["source"] for k in ext["skills"]}, {"notes": "user", "pdf": "project"})
+                self.assertEqual(ext["commands"][0]["name"], "review")
+                out = s.handle_command("/mcp")[0]
+                self.assertIn("✓ demo", out)
+                self.assertIn("✗ bad", out)
+                self.assertIn("FileNotFoundError", out)
+                out = s.handle_command("/skills")[0]
+                self.assertIn("pdf", out)
+                self.assertIn("[user]", out)
+                self.assertIn("/review", out)
+            finally:
+                s.close()
+        finally:
+            ws.cleanup()
+
+    def test_session_title_from_content_blocks(self):
+        """用户消息是内容块列表时（如带了工具结果的续写），会话标题取文字，而不是列表的 repr。"""
+        ws = Workspace()
+        home = tempfile.mkdtemp()
+        try:
+            with mock.patch.dict(os.environ, {"NANOCODE_HOME": home}):
+                s = Session(Options(provider="mock", cwd=ws.dir, mock_delay=0), log=lambda m: None)
+                try:
+                    s.agent.messages = [{"role": "user", "content": [{"type": "text", "text": "统计字数"}]}]
+                    s.save()
+                    self.assertEqual(s.list_sessions()[0]["title"], "统计字数")
+                finally:
+                    s.close()
+        finally:
+            ws.cleanup()
+
+    def test_untrusted_project_servers_are_not_started(self):
+        ws = Workspace()
+        try:
+            ws.write(".nanocode/settings.json", json.dumps({"mcpServers": {"x": {"command": "no-such-command-xyz"}}}))
+            s = Session(Options(provider="mock", cwd=ws.dir, mock_delay=0), log=lambda m: None)
+            try:
+                self.assertEqual(s.extensions()["mcp"], [])
+                self.assertIn("没有配置 MCP 服务器", s.handle_command("/mcp")[0])
+            finally:
+                s.close()
         finally:
             ws.cleanup()
 

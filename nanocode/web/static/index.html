@@ -50,6 +50,9 @@ main { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1
 .tool summary .arg { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 }
 .tool .st { font-size: 11px }
 .tool.err summary .name { color: var(--danger) }
+.ext { margin-bottom: 8px } .ext b.ok { color: var(--tool) } .ext b.bad, .ext pre.err { color: var(--danger) }
+.ext ul { margin: 6px 0 0; padding-left: 20px; font-size: 12.5px }
+#ext h3 { font-size: 13px; margin: 14px 0 8px; color: var(--muted) }
 .tool pre { margin: 0; padding: 8px 10px; border-top: 1px solid var(--line); background: var(--soft); max-height: 260px; overflow: auto; font: 12px/1.5 var(--font-mono); white-space: pre-wrap; word-break: break-all }
 .perm { border: 1px solid var(--env); border-radius: 8px; padding: 10px; background: var(--soft) }
 .perm code { display: block; margin: 6px 0 8px; font: 12px var(--font-mono); white-space: pre-wrap; word-break: break-all }
@@ -135,6 +138,7 @@ body.embed button.primary { border-radius: 7px }
       <button role="tab" data-tab="system">系统提示词</button>
       <button role="tab" data-tab="tools">工具定义</button>
       <button role="tab" data-tab="todos">待办</button>
+      <button role="tab" data-tab="ext">扩展</button>
       <button role="tab" data-tab="raw">事件流</button>
     </div>
     <div class="pane" id="pane-timeline">
@@ -156,6 +160,10 @@ body.embed button.primary { border-radius: 7px }
       <div id="tools"></div>
     </div>
     <div class="pane" id="pane-todos" hidden><div id="todos"></div></div>
+    <div class="pane" id="pane-ext" hidden>
+      <p class="hint">已安装的扩展：MCP 服务器（外部进程，提供 mcp__服务器__工具）、技能（按需加载的说明书）、自定义斜杠命令。CLI 里对应 /mcp 和 /skills。</p>
+      <div id="ext"></div>
+    </div>
     <div class="pane" id="pane-raw" hidden>
       <p class="hint">原始事件（不含流式文字片段）。CLI、Web、trace 文件都只是这些事件的订阅者。</p>
       <div id="raw"></div>
@@ -370,10 +378,28 @@ async function refreshContext() {
     : `<div class="empty">messages 是空的</div>`;
 }
 
+async function refreshExtensions() {
+  const x = await getJSON("api/extensions");
+  const src = (s) => `<span class="pill">${s === "user" ? "用户级" : "项目级"}</span>`;
+  const mcp = x.mcp.length ? x.mcp.map((m) => `<details class="step ext" ${m.ok ? "" : "open"}>
+      <summary><b class="${m.ok ? "ok" : "bad"}">${m.ok ? "✓" : "✗"} ${esc(m.name)}</b>
+        <span class="hint">${m.ok ? esc(m.server || "") + ` · ${m.tools.length} 个工具` : "连接失败"}</span></summary>
+      <pre class="code">${esc([m.command, ...m.args].join(" "))}</pre>
+      ${m.ok ? `<ul>${m.tools.map((t) => `<li><code>${esc(t)}</code></li>`).join("")}</ul>` : `<pre class="code err">${esc(m.error)}</pre>`}
+    </details>`).join("") : `<div class="empty">没有配置 MCP 服务器。在 settings.json 的 mcpServers 里添加。</div>`;
+  const skills = x.skills.length ? x.skills.map((s) => `<div class="step ext"><b>${esc(s.name)}</b> ${src(s.source)}<div class="hint">${esc(s.description)}</div></div>`).join("")
+    : `<div class="empty">没有技能。放到 .nanocode/skills/&lt;名字&gt;/SKILL.md。</div>`;
+  const cmds = x.commands.length ? x.commands.map((c) => `<div class="step ext"><b>/${esc(c.name)}</b> ${src(c.source)}<div class="hint">${esc(c.description)}</div></div>`).join("")
+    : `<div class="empty">没有自定义命令。放到 .nanocode/commands/&lt;名字&gt;.md。</div>`;
+  $("#ext").innerHTML = `<h3>MCP 服务器（${x.mcp.length}）</h3>${mcp}<h3>技能（${x.skills.length}）</h3>${skills}`
+    + `<h3>自定义命令（${x.commands.length}）</h3>${cmds}` + (x.notice ? `<p class="hint">${esc(x.notice)}</p>` : "");
+}
+
 document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => {
   document.querySelectorAll(".tabs button").forEach((x) => x.setAttribute("aria-selected", x === b));
   document.querySelectorAll(".pane").forEach((p) => p.hidden = p.id !== "pane-" + b.dataset.tab);
   if (["context", "system", "tools"].includes(b.dataset.tab)) refreshContext();
+  if (b.dataset.tab === "ext") refreshExtensions();
 });
 $("#form").onsubmit = async (ev) => {
   ev.preventDefault();

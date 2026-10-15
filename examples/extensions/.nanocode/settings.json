@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "demo": {"command": "python3", "args": ["../mcp_server_demo.py"]},
+    "fs": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem@2026.8.31", "."], "timeout": 120},
+    "memory": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-memory@2026.8.31"], "timeout": 120},
+    "fetch": {"command": "uvx", "args": ["mcp-server-fetch@2026.8.18"], "timeout": 120}
+  }
+}

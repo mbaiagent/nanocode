@@ -1,20 +1,28 @@
 """平台端到端：真的启动控制面、模型网关和 nanocode 沙箱（本机启动器），以多个用户的身份访问。"""
 
+import json
+import os
+import sys
 import time
 import unittest
+from unittest import mock
 
 import support  # noqa: F401
 
+from nanocode_server.config import Config
 from nanocode_server.demo import FakeModel, check_isolation, simulate
 from nanocode_server.platform import Platform
 from support import Client, make_config
+
+DEMO_MCP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "examples", "mcp_server_demo.py")
 
 
 class PlatformTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.model = FakeModel()
-        cls.cfg = make_config(allow_private_upstreams=True, max_sessions_per_user=2, max_sandboxes=20)
+        cls.cfg = make_config(allow_private_upstreams=True, max_sessions_per_user=2, max_sandboxes=20,
+                              sandbox_mcp_servers={"demo": {"command": sys.executable, "args": [os.path.abspath(DEMO_MCP)]}})
         cls.platform = Platform(cls.cfg, log=lambda m: None)
         cls.platform.start()
         cls.port = cls.platform.control_port
@@ -85,6 +93,8 @@ class PlatformTest(unittest.TestCase):
         last = events[-1]["seq"]
         c.request("POST", f"/s/{sid}/api/chat", {"message": "/help"})
         self.assertTrue(all(e["seq"] > last for e in c.events_until(sid, "command", last_event_id=last)))
+        ext = c.request("GET", f"/s/{sid}/api/extensions")[1]         # 管理员配的 MCP 服务器在沙箱里连上了
+        self.assertEqual([(m["name"], m["ok"]) for m in ext["mcp"]], [("demo", True)])
         listed = c.request("GET", "/api/sessions")[1]["sessions"][0]
         self.assertNotIn("endpoint", listed)
         self.assertNotIn("web_token", listed)
@@ -180,6 +190,26 @@ class PlatformTest(unittest.TestCase):
         finally:
             for r in results.values():
                 r["browser"].request("POST", f"/api/sessions/{r['session']}/delete", {})
+
+
+class SandboxMcpConfigTest(unittest.TestCase):
+    def test_from_env_inline_or_file(self):
+        servers = {"demo": {"command": "python3", "args": ["x.py"]}}
+        with mock.patch.dict(os.environ, {"NCS_SANDBOX_MCP_SERVERS": json.dumps(servers)}):
+            self.assertEqual(Config.from_env().sandbox_mcp_servers, servers)
+        path = os.path.join(make_config().data_dir, "mcp.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(servers, f)
+        with mock.patch.dict(os.environ, {"NCS_SANDBOX_MCP_SERVERS": path}):
+            self.assertEqual(Config.from_env().sandbox_mcp_servers, servers)
+        with mock.patch.dict(os.environ, {"NCS_SANDBOX_MCP_SERVERS": "{bad"}):
+            with self.assertRaises(ValueError):
+                Config.from_env()
+
+    def test_validate_shape(self):
+        with self.assertRaises(ValueError):
+            make_config(sandbox_mcp_servers={"x": {"args": []}}).validate()
+        make_config(sandbox_mcp_servers={"x": {"command": "python3"}}).validate()
 
 
 class ProxyAuthTest(unittest.TestCase):

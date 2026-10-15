@@ -145,6 +145,7 @@ python3 -m unittest discover -s server/tests
 | `NCS_LAUNCHER` | `auto` / `local` / `docker` / `k8s` | `auto` |
 | `NCS_SANDBOX_IMAGE` | Docker 和 K8s 用的沙箱镜像 | `nanocode-sandbox:latest` |
 | `NCS_SANDBOX_MODES` / `NCS_SANDBOX_MODE` | 沙箱里允许的权限模式 / 启动模式；本机启动器不允许 `bypass` | 除 bypass 外全部 / `default` |
+| `NCS_SANDBOX_MCP_SERVERS` | 给每个沙箱配的 MCP 服务器，JSON 对象（格式同 settings.json 的 `mcpServers`）或 JSON 文件路径。用户和项目自己配的 MCP 服务器一律不生效（能执行命令）；命令要在沙箱镜像里存在，Docker / K8s 沙箱没有外网 | 空 |
 | `NCS_SANDBOX_CPU` / `NCS_SANDBOX_MEMORY` | 每个沙箱的资源上限 | `1` / `2Gi` |
 | `NCS_DOCKER_RUNTIME` / `NCS_DOCKER_NETWORK` | Docker 运行时（如 `runsc`）/ 沙箱网络名 | — / `ncs-sandboxes` |
 | `NCS_K8S_*` | 命名空间、运行时类、存储类、工作区大小、API 地址 | 见 `config.py` |

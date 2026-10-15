@@ -33,6 +33,9 @@ class SessionError(Exception):
 def build_policy(cfg: Config, option: ModelOption, gateway_url: str) -> dict:
     """一个会话的平台策略：模型去向锁死在网关（或本地的演示模型），危险配置全部删掉。"""
     policy = {"mode": cfg.sandbox_mode, "allowed_modes": list(cfg.sandbox_modes), "forbid": FORBIDDEN_SETTINGS}
+    if cfg.sandbox_mcp_servers:
+        # forbid 先删掉用户和项目配的 mcpServers，再合并这里的：沙箱里只跑管理员认可的 MCP 服务器
+        policy["mcpServers"] = cfg.sandbox_mcp_servers
     if option.ref == MOCK_REF:
         return {**policy, "provider": "mock", "model": option.model}
     base_url = gateway_url + ("/v1" if option.protocol == "openai" else "")    # Anthropic 客户端自己拼 /v1/messages

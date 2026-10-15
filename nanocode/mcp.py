@@ -23,11 +23,13 @@ MCP 是一个开放协议，让"工具提供方"和"Agent"解耦：任何人写�
 
 from __future__ import annotations
 
+import collections
 import json
 import os
 import queue
 import subprocess
 import threading
+from dataclasses import dataclass, field
 
 from .tools.base import Tool, ToolError
 
@@ -47,9 +49,12 @@ class MCPClient:
         self._lock = threading.Lock()
         self._responses: dict[int, queue.Queue] = {}
         self.proc = subprocess.Popen([command, *(args or [])], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.DEVNULL, text=True, cwd=cwd, bufsize=1,
+                                     stderr=subprocess.PIPE, text=True, cwd=cwd, bufsize=1,
                                      env={**os.environ, **(env or {})})
+        # 服务器的错误输出只保留最后几行：启动失败时拿来告诉用户原因（缺依赖、参数不对……）
+        self.stderr_tail: collections.deque = collections.deque(maxlen=20)
         threading.Thread(target=self._read_loop, daemon=True).start()
+        threading.Thread(target=self._read_stderr, daemon=True).start()
         self.server_info: dict = {}
 
     def _read_loop(self) -> None:
@@ -73,6 +78,11 @@ class MCPClient:
             raise MCPError(f"MCP 服务器 {self.name} 已退出")
         self.proc.stdin.write(json.dumps(msg, ensure_ascii=False) + "\n")
         self.proc.stdin.flush()
+
+    def _read_stderr(self) -> None:
+        for line in self.proc.stderr:
+            if line.strip():
+                self.stderr_tail.append(line.rstrip())
 
     def request(self, method: str, params: dict | None = None) -> dict:
         with self._lock:
@@ -123,8 +133,9 @@ class MCPClient:
         except Exception:  # noqa: BLE001
             self.proc.kill()
         finally:
-            if self.proc.stdout:
-                self.proc.stdout.close()
+            for stream in (self.proc.stdout, self.proc.stderr):
+                if stream:
+                    stream.close()
 
 
 class MCPTool(Tool):
@@ -152,16 +163,41 @@ class MCPTool(Tool):
         return text
 
 
-def connect_servers(config: dict, cwd: str, log=print) -> tuple[list[MCPClient], list[Tool]]:
-    clients, tools = [], []
+@dataclass
+class ServerStatus:
+    """一个 MCP 服务器的连接结果，用于 /mcp 命令和 Web 界面的"扩展"面板。"""
+    name: str
+    command: str
+    args: list[str] = field(default_factory=list)
+    ok: bool = False
+    error: str = ""
+    server: str = ""                 # 服务器自报的名字和版本
+    tools: list[str] = field(default_factory=list)
+
+
+def connect_servers(config: dict, cwd: str, log=print) -> tuple[list[MCPClient], list[Tool], list[ServerStatus]]:
+    """连接配置里的所有 MCP 服务器。一个失败不影响别的；每个服务器的结果都记下来，事后能查。"""
+    clients, tools, statuses = [], [], []
     for name, spec in (config or {}).items():
+        st = ServerStatus(name, str(spec.get("command", "")), [str(a) for a in spec.get("args") or []])
+        statuses.append(st)
+        client = None
         try:
-            client = MCPClient(name, spec["command"], spec.get("args"), spec.get("env"), cwd=cwd)
+            client = MCPClient(name, spec["command"], spec.get("args"), spec.get("env"), cwd=cwd,
+                               timeout=float(spec.get("timeout", 60)))
             client.initialize()
             specs = client.list_tools()
-            clients.append(client)
-            tools.extend(MCPTool(client, s) for s in specs)
-            log(f"MCP 服务器 {name} 已连接，提供 {len(specs)} 个工具")
         except Exception as e:  # noqa: BLE001
-            log(f"MCP 服务器 {name} 连接失败：{e}")
-    return clients, tools
+            detail = f"\n{chr(10).join(list(client.stderr_tail)[-5:])}" if client and client.stderr_tail else ""
+            st.error = f"{type(e).__name__}: {e}{detail}"
+            if client:
+                client.close()
+            log(f"MCP 服务器 {name} 连接失败：{st.error}")
+            continue
+        clients.append(client)
+        tools.extend(MCPTool(client, s) for s in specs)
+        info = client.server_info
+        st.ok, st.tools = True, [s["name"] for s in specs]
+        st.server = " ".join(x for x in (info.get("name", ""), info.get("version", "")) if x)
+        log(f"MCP 服务器 {name} 已连接，提供 {len(specs)} 个工具")
+    return clients, tools, statuses

@@ -98,7 +98,7 @@ def _ext_dirs(cwd: str, sub: str) -> list[str]:
 def discover_skills(cwd: str) -> dict[str, dict]:
     """技能：.nanocode/skills/<名字>/SKILL.md，frontmatter 里写 name 和 description。"""
     skills = {}
-    for base in _ext_dirs(cwd, "skills"):
+    for source, base in zip(("user", "project"), _ext_dirs(cwd, "skills")):
         if not os.path.isdir(base):
             continue
         for name in sorted(os.listdir(base)):
@@ -108,14 +108,15 @@ def discover_skills(cwd: str) -> dict[str, dict]:
                     meta, body = _parse_frontmatter(fh.read())
                 skill_name = meta.get("name", name)
                 skills[skill_name] = {"name": skill_name, "description": meta.get("description", ""),
-                                      "body": body, "dir": os.path.dirname(f)}
+                                      "body": body, "dir": os.path.dirname(f),
+                                      "source": source}
     return skills
 
 
 def discover_commands(cwd: str) -> dict[str, dict]:
     """自定义斜杠命令：.nanocode/commands/<名字>.md，内容是提示词模板，$ARGUMENTS 会被替换。"""
     commands = {}
-    for base in _ext_dirs(cwd, "commands"):
+    for source, base in zip(("user", "project"), _ext_dirs(cwd, "commands")):
         if not os.path.isdir(base):
             continue
         for fname in sorted(os.listdir(base)):
@@ -123,7 +124,7 @@ def discover_commands(cwd: str) -> dict[str, dict]:
                 with open(os.path.join(base, fname), encoding="utf-8") as fh:
                     meta, body = _parse_frontmatter(fh.read())
                 commands[fname[:-3]] = {"description": meta.get("description", body.strip().splitlines()[0][:60] if body.strip() else ""),
-                                        "template": body}
+                                        "template": body, "source": source}
     return commands
 
 
