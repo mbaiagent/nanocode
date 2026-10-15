@@ -14,7 +14,7 @@
 | V08 | 真实模型：修 bug 完整流程（工具调用、权限、hooks、MCP） | PARTIAL | bug修对4/4通过；allow规则被`cd&&`前缀绕过致bash全拒（候选issue） | results/V08.md |
 | V09 | 真实模型：Anthropic 协议（可选） | PARTIAL | 直连 OpenRouter 崩溃（#18 未修）；经本地翻译桥走 Gemini 基础对话+工具调用全通 | results/V09.md |
 | V10 | 真实模型：search_docs 与子 Agent | PARTIAL | 检索/索引/子Agent/file数12=12全对；出处引了转引非一手 | results/V10.md |
-| V11 | RAG 向量 / 混合检索评测 | PARTIAL | 基线完成（bm25 R@3 91%）；无 embedding Key | results/V11.md |
+| V11 | RAG 向量 / 混合检索评测 | PASS | 补做（2026-10-15，OpenRouter qwen3-embedding-8b）：vector R@1 77% / MRR 0.84，bm25 R@1 36%；hybrid R@3 95%；22 题样本小 | results/V11.md |
 | V12 | Agent 任务评测（13 个任务） | PASS | 第三轮 DeepSeek V4 Flash、无 shim、`--repeat 3`：37/39；T10 1/3（漏 mutant_4，已分析为模型能力限制）。前两轮 11/13 | results/V12.md |
 | V13 | 真实模型：验证闭环（`--verify`、终审、子任务验收、经验候选） | PASS | 5/5 检查点真实模型通过（verify 打回修好、终审 diff、子任务验收+越界拦截、经验候选） | results/V13.md |
 
