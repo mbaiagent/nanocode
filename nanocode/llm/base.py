@@ -92,6 +92,24 @@ def quota_exhausted_message(headers, detail: str, now: float | None = None) -> s
     return msg + f"\n服务端返回：{detail[:300]}"
 
 
+_daily_calls = None
+
+
+def take_daily_llm_call() -> None:
+    """本地每日模型调用上限（环境变量 NANOCODE_WEB_DAILY_LLM_CALLS，默认 0 = 不限，issue #7）。
+
+    在真正发 HTTP 请求前计数，一条 prompt 内部跑了 60 步也会在上限处截断。
+    超限抛 QuotaExhausted：复用"配额用尽不再重试"的路径，Web 面板也会显示友好提示。
+    """
+    global _daily_calls
+    from ..web.limits import DailyCounter, env_int   # 延迟导入，避免 llm 依赖 web 的导入顺序
+    if _daily_calls is None:
+        _daily_calls = DailyCounter(env_int("NANOCODE_WEB_DAILY_LLM_CALLS", 0))
+    if not _daily_calls.take():
+        raise QuotaExhausted(f"本地每日模型调用上限已到（NANOCODE_WEB_DAILY_LLM_CALLS={_daily_calls.limit}），"
+                             "明天再来或调大这个值。", status=429)
+
+
 class Provider(ABC):
     name = "base"
 
@@ -119,6 +137,7 @@ class Provider(ABC):
         """
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         all_headers = {"content-type": "application/json", **headers, **self.extra_headers}
+        take_daily_llm_call()   # 重试不重复计数
         attempt = 0
         while True:
             req = urllib.request.Request(url, data=data, headers=all_headers, method="POST")

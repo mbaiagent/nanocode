@@ -14,7 +14,10 @@
     POST /api/ticket        换一张 30 秒有效、只能用一次的 SSE 票据
     POST /api/chat          {"message": "..."} 发送消息（也支持 /命令 和 # 记忆）
     POST /api/permission    {"id": "...", "decision": "yes|always|no"}
-    POST /api/cancel        中断当前任务
+    POST /api/cancel        中断当前任务，并清空排队中的消息
+
+/api/chat 有限流（issue #7，见 limits.py）：超限返回 429 + Retry-After 头，
+    {"ok": false, "error": "...", "code": "rate_limited|queue_full|daily_budget", "retry_after": 秒}
 
 令牌默认每次启动随机生成；多用户部署时由控制面通过环境变量 NANOCODE_WEB_TOKEN 注入，
 控制面在转发请求时带上它（见 docs/12 和 server/）。
@@ -38,6 +41,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from ..session import Session
+from .limits import DailyCounter, Limits, RateLimited
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 
@@ -172,6 +176,7 @@ class WebApp:
         self.allowed_hosts: set[str] = set(LOCAL_HOSTS)
         self.allowed_origins: set[str] = set()
         self.queue: list[str] = []      # 忙时排队的消息，按先进先出执行
+        self.limits = Limits()          # 限流与每日预算（issue #7）
         session.permissions.ask_fn = self.ask
 
     def issue_ticket(self) -> str | None:
@@ -246,7 +251,11 @@ class WebApp:
         self.session.bus.emit("permission_answer", id=rid, decision=slot["answer"])
         return slot["answer"]
 
-    def chat(self, message: str) -> dict:
+    def chat(self, message: str, client: str = "local") -> dict:
+        """处理一条消息。超限时抛 RateLimited，由 Handler 转成 429。
+
+        只有真正要跑模型的消息才扣额度：# 记忆和不产生 prompt 的 /命令 不扣。
+        """
         s = self.session
         with self.lock:
             message = message.strip()
@@ -258,7 +267,15 @@ class WebApp:
                 s.bus.emit("command", input=message, output=output)
                 if not prompt:
                     return {"ok": True, "output": output}
+            wait = self.limits.bucket.take(client)
+            if wait:
+                w = max(1, int(wait + 0.999))
+                raise RateLimited("rate_limited", f"发送太频繁，请 {w} 秒后再试", w)
             if s.agent.busy:
+                # 不设上限的话，连点 100 次就会排进 100 轮完整的 Agent 循环（issue #7）
+                if self.limits.max_queue and len(self.queue) >= self.limits.max_queue:
+                    raise RateLimited("queue_full",
+                                      f"排队已满（{self.limits.max_queue} 条），等当前任务做完或先中断", 5)
                 # 忙时不再拒绝：收下排队，当前任务做完自动执行。立即发 user 事件，
                 # 让前端马上显示这条消息（带排队标记），实际执行时 agent.run 会再发一次，
                 # 前端按文本去重。
@@ -266,6 +283,9 @@ class WebApp:
                 s.bus.emit("user", agent="main", text=message)
                 s.bus.emit("queued", position=len(self.queue))
                 return {"ok": True, "queued": True, "position": len(self.queue)}
+            if not self.limits.daily_runs.take():
+                raise RateLimited("daily_budget", "今天的调用预算已用完，明天再来（或调大 NANOCODE_WEB_DAILY_RUNS）",
+                                  DailyCounter.seconds_to_midnight())
             s.agent.busy = True  # 先占住，避免两个请求同时启动
         threading.Thread(target=self._run, args=(prompt,), daemon=True).start()
         return {"ok": True}
@@ -282,6 +302,14 @@ class WebApp:
                     self.session.agent.busy = False
                     self.session.bus.emit("idle")
                     return
+                if not self.limits.daily_runs.take():   # 排队的消息也要扣每日预算，否则能绕过去
+                    dropped = len(self.queue)
+                    self.queue.clear()
+                    self.session.agent.busy = False
+                    self.session.bus.emit("error", agent="main", retryable=False,
+                                          message=f"今天的调用预算已用完，已丢弃排队中的 {dropped} 条消息")
+                    self.session.bus.emit("idle")
+                    return
                 prompt = self.queue.pop(0)
                 self.session.bus.emit("dequeue", remaining=len(self.queue))
             # busy 保持 True，直接进入下一轮
@@ -292,10 +320,12 @@ def make_handler(app: WebApp):
         def log_message(self, *args):  # 安静一点
             pass
 
-        def _json(self, data, status=200):
+        def _json(self, data, status=200, headers=()):
             body = json.dumps(data, ensure_ascii=False, default=str).encode("utf-8")
             self.send_response(status)
             self.send_header("content-type", "application/json; charset=utf-8")
+            for k, v in headers:
+                self.send_header(k, v)
             self.send_header("content-length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -338,6 +368,19 @@ def make_handler(app: WebApp):
 
         def _reject(self, status: int, reason: str) -> None:
             self._json({"ok": False, "error": reason}, status)
+
+        def _limited(self, e: RateLimited) -> None:
+            headers = [("Retry-After", str(e.retry_after))] if e.retry_after else []
+            self._json({"ok": False, "error": e.message, "code": e.code, "retry_after": e.retry_after},
+                       429, headers)
+
+        def _client_key(self) -> str:
+            """限流按客户端区分。X-Forwarded-For 谁都能伪造，只在 NANOCODE_TRUST_PROXY=1（确实挂了反代）时才信。"""
+            if app.limits.trust_proxy:
+                xff = (self.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+                if xff:
+                    return xff
+            return self.client_address[0]
 
         def _guard(self, path: str, method: str) -> bool:
             """所有请求先过这道检查，返回 False 表示已经拒绝。
@@ -413,7 +456,10 @@ def make_handler(app: WebApp):
             if data is None:
                 return
             if path == "/api/chat":
-                return self._json(app.chat(str(data.get("message", ""))))
+                try:
+                    return self._json(app.chat(str(data.get("message", "")), self._client_key()))
+                except RateLimited as e:
+                    return self._limited(e)
             if path == "/api/permission":
                 slot = app.pending.get(data.get("id", ""))
                 if not slot:
@@ -422,6 +468,12 @@ def make_handler(app: WebApp):
                 slot["event"].set()
                 return self._json({"ok": True})
             if path == "/api/cancel":
+                # "停止"连排队的一起停，否则队列里的会接着烧额度
+                with app.lock:
+                    dropped = len(app.queue)
+                    app.queue.clear()
+                if dropped:
+                    s.bus.emit("dequeue", remaining=0)
                 app.session.agent.cancel.set()
                 return self._json({"ok": True})
             if path == "/api/ticket":
@@ -527,6 +579,10 @@ def serve(session: Session, host: str = "127.0.0.1", port: int = 8765,
     port = server.server_address[1]
     if host in ("0.0.0.0", "::"):
         print("警告：服务监听在所有网卡上，局域网内的人只要拿到页面就能操作 Agent。除非你清楚后果，请用默认的 127.0.0.1。")
+    if host not in LOCAL_HOSTS and not os.environ.get("NANOCODE_WEB_TOKEN"):
+        print("警告：监听的不是本机地址，又没设 NANOCODE_WEB_TOKEN。随机令牌嵌在页面里，谁能打开页面谁就能用，"
+              "对外暴露时务必在前面挂登录（反向代理的 basic auth / oauth2-proxy 等）。")
+    print(app.limits.describe())
     print(f"nanocode Web 界面：http://{host}:{port}   （学习页：http://{host}:{port}/learn）")
     if public_hosts or public_origins:
         print(f"已信任公网 Host：{', '.join(normalize_host(h) for h in public_hosts) or '（无）'}；"

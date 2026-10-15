@@ -200,7 +200,14 @@ function argSummary(name, input) {
   if (name === "todo_write") return (input.todos || []).length + " 项";
   return JSON.stringify(input);
 }
-function setBusy(b) { busy = b; $("#send").disabled = false; $("#stop").hidden = !b; updateQueuebar(); }
+// 被 /api/chat 限流（429）后，retry_after 秒内禁用发送按钮。setBusy 不能把它提前解开。
+let cooldownUntil = 0, cooldownTimer = null;
+function startCooldown(sec) {
+  cooldownUntil = Date.now() + sec * 1000; $("#send").disabled = true;
+  clearTimeout(cooldownTimer);
+  cooldownTimer = setTimeout(() => { cooldownUntil = 0; $("#send").disabled = false; }, sec * 1000);
+}
+function setBusy(b) { busy = b; $("#send").disabled = Date.now() < cooldownUntil; $("#stop").hidden = !b; updateQueuebar(); }
 function updateQueuebar() {
   const bar = $("#queuebar");
   if (queueCount > 0) { bar.classList.add("show"); bar.textContent = `⏳ 排队中 ${queueCount} 条，当前任务完成后自动执行`; }
@@ -404,9 +411,13 @@ document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => {
 $("#form").onsubmit = async (ev) => {
   ev.preventDefault();
   const text = $("#input").value.trim();
-  if (!text) return;
+  if (!text || Date.now() < cooldownUntil) return;
   $("#input").value = "";
   const r = await post("api/chat", { message: text });
+  if (!r.ok && r.code) {   // 429 限流：把没发出去的消息放回输入框，冷却后再发
+    $("#input").value = text;
+    if (r.retry_after) startCooldown(r.retry_after);
+  }
   if (!r.ok) add("error", esc(r.error));
   else if (r.queued) add("note", `⏳ 已排队（第 ${r.position} 位），当前任务完成后自动执行`);
   else if (r.output) add("note", esc(r.output));

@@ -27,6 +27,7 @@
 ## 亮点
 
 - **纯 Python 标准库**，零依赖，核心代码约 5500 行（含大量中文注释），每个文件开头都有讲解
+- **380+ 个单元测试**，覆盖循环的每个分支、两种协议的流式解析、检索管线、安全回归、评测框架自检，以及一个让文档和代码保持一致的测试
 - **可接入任何一家模型**：Claude、GPT、DeepSeek、通义千问、Kimi、智谱 GLM、硅基流动、OpenRouter、本地 Ollama，或任何 OpenAI / Anthropic 兼容的中转服务
 - **实现了 Claude Code 的核心机制**：Agent 循环、流式输出、文件/命令/搜索/读网页工具、权限模式与规则、Hooks、项目记忆、上下文压缩、待办清单、子 Agent、Skills、自定义斜杠命令、MCP、会话保存
 - **检查 → 纠正 → 终审的闭环**：自动验证（改完先跑检查，不过就回头修）、子 Agent 验收（系统核对，不信自述）、终审模式（无害步骤自动放行、高风险永远确认、结束时汇总 diff）、经验沉淀（被打回的原因经你确认后写入项目记忆），见 [第 11 章](docs/11-verification-loop.md)
@@ -245,6 +246,11 @@ nanocode --api-key sk-xxx                     # 直接给 API Key（更推荐用
 | `NANOCODE_PUBLIC_HOST` `NANOCODE_PUBLIC_ORIGIN` | 放在反向代理后面时信任的对外地址，见下方「安全」 |
 | `NANOCODE_POLICY` | 平台策略文件（多用户部署时由平台只读挂载）：锁定模型去向、限制可选的权限模式、删除用户和项目配置里的指定键、打开审计日志；优先级高于一切配置和命令行参数，配置了却读不出来就拒绝启动。见 `policy.py` 和[第 12 章](docs/12-distributed-deployment.md#九实现状态) |
 | `NANOCODE_WEB_TOKEN` | Web 界面的 API 令牌，不设则每次启动随机生成；多用户部署时由控制面注入（至少 16 个字符） |
+| `NANOCODE_WEB_RATE_PER_MIN` `NANOCODE_WEB_RATE_BURST` | `nanocode --web` 的 `/api/chat` 按客户端 IP 限流（令牌桶）：每分钟补充 10 次、最多连发 5 次（默认）。`#` 记忆和不调用模型的 `/命令` 不计入；超限返回 429 + `Retry-After`。设为 `0` 关闭 |
+| `NANOCODE_WEB_MAX_QUEUE` | Agent 忙时最多排队几条消息，默认 3，满了返回 429（`code: queue_full`）。点"停止"会同时清空队列。设为 `0` 不限 |
+| `NANOCODE_WEB_DAILY_RUNS` | 每个自然日最多启动多少轮 Agent（含排队后执行的），默认 200，用完返回 429（`code: daily_budget`）。设为 `0` 不限 |
+| `NANOCODE_WEB_DAILY_LLM_CALLS` | 每个自然日最多调用多少次模型 API（Provider 层计数，一轮 Agent 可能调用很多次），默认 `0` 不限；到上限按"配额用尽"处理，不再重试 |
+| `NANOCODE_TRUST_PROXY` | 设为 `1` 时按 `X-Forwarded-For` 最左侧地址区分客户端。只在确实挂了反向代理时开（否则可被伪造）；挂了反代却不开，所有人会共用代理 IP 的一个限流桶 |
 
 ## 目录结构
 
@@ -281,7 +287,7 @@ nanocode/
 ├── events.py          事件总线 + trace + 审计日志
 ├── session.py         组装各部件、斜杠命令、会话保存（每一步自动保存）
 ├── cli.py             终端界面
-└── web/               Web 界面：server.py（HTTP 服务 + SSE + 安全校验）、static/（调试面板 + 架构学习页）
+└── web/               Web 界面：server.py（HTTP 服务 + SSE + 安全校验）、limits.py（/api/chat 限流与每日预算）、static/（调试面板 + 架构学习页）
 docs/                  分章节的架构讲解（建议按顺序读）
 examples/              MCP 服务器示例、扩展示例（extensions/：4 个 MCP 服务器 + 3 个技能 + 1 个命令）、RAG 评测（rag_eval/）
 evals/agent_tasks/     Agent 任务评测：13 个任务、隐藏测试、参考答案、运行器
