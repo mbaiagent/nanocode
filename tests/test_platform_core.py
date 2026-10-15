@@ -219,6 +219,13 @@ class EventResumeTest(unittest.TestCase):
         conn.close()
         return ids, events
 
+    def test_extensions_endpoint(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("GET", "/api/extensions", headers={"Host": f"127.0.0.1:{self.port}", "x-nanocode-token": self.app.token})
+        data = json.loads(conn.getresponse().read())
+        conn.close()
+        self.assertEqual(set(data), {"mcp", "skills", "commands", "notice"})
+
     def test_events_carry_ids(self):
         ids, events = self.read_events("/api/events", {}, 5)
         self.assertEqual(ids, [e["seq"] for e in events])

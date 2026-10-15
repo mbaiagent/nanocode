@@ -116,6 +116,8 @@ nanocode --api-key sk-xxx                     # 直接给 API Key（更推荐用
 | `/init` | 让 Agent 分析项目并生成 `NANOCODE.md` |
 | `/resume` | 恢复上一次会话 |
 | `/providers` | 列出内置的厂商预设 |
+| `/mcp` | 查看 MCP 服务器的连接状态（成功的列出工具，失败的给出原因和服务器的错误输出），见第 07 章 |
+| `/skills` | 查看已安装的技能和自定义命令，以及它们来自用户目录还是项目目录 |
 | `# 一句话` | 把一句话追加到项目 `NANOCODE.md`（记忆） |
 | `/你的命令` | `.nanocode/commands/*.md` 里自定义的命令，见第 06 章 |
 
@@ -185,7 +187,7 @@ nanocode/
 ├── cli.py             终端界面
 └── web/               Web 界面：server.py（HTTP 服务 + SSE + 安全校验）、static/（调试面板 + 架构学习页）
 docs/                  分章节的架构讲解（建议按顺序读）
-examples/              MCP 服务器示例、hooks/skills/commands 配置示例、RAG 评测（rag_eval/）
+examples/              MCP 服务器示例、扩展示例（extensions/：4 个 MCP 服务器 + 3 个技能 + 1 个命令）、RAG 评测（rag_eval/）
 evals/agent_tasks/     Agent 任务评测：13 个任务、隐藏测试、参考答案、运行器
 verification/          真实环境验证清单与结果（连真实模型、浏览器实操）
 server/                多用户部署的控制面和模型网关（独立的包，见 server/README.md 和第 12 章）
@@ -212,6 +214,8 @@ tests/                 单元测试
 | [11 验证循环](docs/11-verification-loop.md) | 检查 → 纠正 → 终审：自动验证、子 Agent 验收、终审模式、经验沉淀，以及怎么衡量它们有没有用 |
 | [12 分布式部署](docs/12-distributed-deployment.md) | 给 1000+ 用户使用还差什么：执行隔离、多租户、状态外置、LLM 网关、分阶段路线图和上线检查清单 |
 | [13 模型视角](docs/13-model-perspective.md) | Agent 的行为从哪里来：模型实际看到什么、训练怎样塑造 Agent 能力、长上下文为什么容易出错、随机性与评测、失败模式的模型层原因、动手实验 |
+
+找工作用：[把这个项目写进简历](docs/resume.md) —— 按岗位挑重点、能写的数字和出处、标准版 / 精简版 / 英文版写法、面试常被追问的问题、诚实的边界。
 
 延伸阅读：[Agent 平台设计文档集](docs/platform/README.md) —— 把编程 Agent 发展成企业级、通用 Agent 平台，支撑千级、千万级、十亿级用户的愿景、架构、详细设计、路线图和架构决策记录。
 

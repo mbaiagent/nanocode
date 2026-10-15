@@ -46,7 +46,12 @@ MCP 基于 JSON-RPC 2.0。最简单的传输方式是 **stdio**：Agent 把服�
 
 - 启动子进程，开一个**后台线程**持续读 stdout，按 `id` 把响应放进对应请求的队列；
 - `request()` 发送请求，在自己的队列上等待（带超时）；
-- 不是合法 JSON 的行直接忽略（有些服务器会往 stdout 打日志）。
+- 不是合法 JSON 的行直接忽略（有些服务器会往 stdout 打日志）；
+- stderr 也开一个线程读，只保留最后 20 行：服务器起不来（缺依赖、参数错）时，这几行就是原因。
+
+`connect_servers` 逐个连接，一个失败不影响其他，并给每个服务器记一条 `ServerStatus`（成功与否、错误原因、服务器自报的名字版本、工具列表）。
+`/mcp` 命令和 Web 界面的「扩展」面板（`GET /api/extensions`）都读这份记录——装了什么、哪个没连上、为什么，不用翻启动日志。
+每个服务器可以单独设 `"timeout"`（秒，默认 60）：`npx -y` / `uvx` 第一次启动要下载包，可能比较慢。
 
 为什么需要后台线程？因为服务器可能在响应之间插入通知，也可能乱序返回。按 id 分发是 JSON-RPC 客户端的标准做法。
 
@@ -74,6 +79,8 @@ MCP 基于 JSON-RPC 2.0。最简单的传输方式是 **stdio**：Agent 把服�
 2. 启动 nanocode，会看到"MCP 服务器 demo 已连接，提供 2 个工具"。
 3. 在 Web 面板「工具定义」里能看到 `mcp__demo__word_count` 和 `mcp__demo__save_note`。
 4. 对真实模型说"统计一下 README.md 有多少字"，观察它会不会用 MCP 工具。
+
+5. 想看真实生态的服务器，进 `examples/extensions/` 启动：那里配好了官方的 filesystem、memory（Node.js）和 fetch（uv）服务器，外加几个技能，用 `/mcp` 和 `/skills` 查看。
 
 `examples/mcp_server_demo.py` 只有 80 行，是理解服务器端的最好材料。读完它，试着写一个你自己的服务器，比如查询本地 SQLite 数据库。
 

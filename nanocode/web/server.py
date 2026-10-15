@@ -391,6 +391,8 @@ def make_handler(app: WebApp):
                                    "tools": s.registry.schemas(), "permissions": {
                                        "mode": s.permissions.mode, "allow": s.permissions.allow + s.permissions.session_allow,
                                        "deny": s.permissions.deny}})
+            if path == "/api/extensions":
+                return self._json(s.extensions())
             if path == "/api/events":
                 return self._sse()
             if path == "/api/sessions":

@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 from dataclasses import dataclass, field
@@ -34,6 +35,20 @@ def _int(name: str, default: int) -> int:
 def _list(name: str, default: list[str]) -> list[str]:
     raw = _env(name)
     return [x.strip() for x in raw.split(",") if x.strip()] if raw else list(default)
+
+
+def _json_dict(name: str) -> dict:
+    """JSON 对象：直接写在环境变量里，或者写一个文件路径（适合挂载 ConfigMap / Secret）。"""
+    raw = _env(name)
+    if not raw:
+        return {}
+    try:
+        if raw.startswith("{"):
+            return json.loads(raw)
+        with open(raw, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError) as e:
+        raise ValueError(f"{name} 不是合法的 JSON 对象或 JSON 文件：{e}") from None
 
 
 def _bool(name: str, default: bool = False) -> bool:
@@ -71,6 +86,7 @@ class Config:
     docker_network: str = "ncs-sandboxes"
     sandbox_cpu: str = "1"
     sandbox_memory: str = "2Gi"
+    sandbox_mcp_servers: dict = field(default_factory=dict)   # 平台给每个沙箱配的 MCP 服务器（用户和项目自己配的一律不生效）
     k8s_api: str = "https://kubernetes.default.svc"
     k8s_namespace: str = "nanocode-sandboxes"
     k8s_runtime_class: str = "gvisor"
@@ -119,6 +135,7 @@ class Config:
             docker_network=_env("NCS_DOCKER_NETWORK", d.docker_network),
             sandbox_cpu=_env("NCS_SANDBOX_CPU", d.sandbox_cpu),
             sandbox_memory=_env("NCS_SANDBOX_MEMORY", d.sandbox_memory),
+            sandbox_mcp_servers=_json_dict("NCS_SANDBOX_MCP_SERVERS"),
             k8s_api=_env("NCS_K8S_API", d.k8s_api),
             k8s_namespace=_env("NCS_K8S_NAMESPACE", d.k8s_namespace),
             k8s_runtime_class=_env("NCS_K8S_RUNTIME_CLASS", d.k8s_runtime_class),
@@ -178,6 +195,10 @@ class Config:
             raise ValueError("dev 认证（输入任意用户名登录）只能在只监听本机时使用，对外服务请用 NCS_AUTH=proxy")
         if self.sandbox_mode not in self.sandbox_modes:
             raise ValueError(f"NCS_SANDBOX_MODE={self.sandbox_mode} 不在 NCS_SANDBOX_MODES 里")
+        servers = self.sandbox_mcp_servers
+        if not isinstance(servers, dict) or not all(
+                isinstance(v, dict) and isinstance(v.get("command"), str) and v["command"] for v in servers.values()):
+            raise ValueError('NCS_SANDBOX_MCP_SERVERS 格式：{"名字": {"command": "...", "args": [...]}, ...}')
         if self.platform_protocol not in ("openai", "anthropic"):
             raise ValueError("NCS_PLATFORM_PROTOCOL 只能是 openai 或 anthropic")
 
