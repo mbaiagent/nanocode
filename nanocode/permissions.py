@@ -56,13 +56,18 @@ class PermissionManager:
     deny: list[str] = field(default_factory=list)
     ask_fn: Optional[AskFn] = None
     session_allow: list[str] = field(default_factory=list)
+    allowed_modes: tuple = ()     # 平台策略限定的可选模式（见 policy.py）；空 = 不限制
 
     def __post_init__(self):
         self.cwd = os.path.realpath(self.cwd)
+        if self.allowed_modes and self.mode not in self.allowed_modes:
+            raise ValueError(f"权限模式 {self.mode} 不在平台允许的范围内：{', '.join(self.allowed_modes)}")
 
     def set_mode(self, mode: str) -> None:
         if mode not in MODES:
             raise ValueError(f"未知模式 {mode}，可选：{', '.join(MODES)}")
+        if self.allowed_modes and mode not in self.allowed_modes:
+            raise ValueError(f"平台策略不允许切换到 {mode}，可选：{', '.join(self.allowed_modes)}")
         self.mode = mode
 
     # ------------------------------------------------------------------ 决策

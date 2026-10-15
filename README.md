@@ -10,7 +10,7 @@
 - **自带 Mock 模型**：不需要 API Key，就能把整套流程跑起来、看清楚
 - **内置小而完整的 RAG**：切块、中文 BM25、可选向量检索、RRF 混合、增量索引，外加一个评测脚本对比 grep 与检索
 - **Agent 任务评测**：13 个编程任务、隐藏测试判定，统计成功率、步数和 token，用来比较模型和改动
-- **250+ 个单元测试**，覆盖循环的每个分支、两种协议的流式解析、检索管线、安全回归、评测框架自检，以及一个让文档和代码保持一致的测试
+- **350+ 个单元测试**，覆盖循环的每个分支、两种协议的流式解析、检索管线、安全回归、评测框架自检，以及一个让文档和代码保持一致的测试
 
 > nanocode 是依据 Claude Code 的公开文档和可观察行为，从零写的教学实现，不包含也不来自 Claude Code 的源代码。它追求的是"把原理讲清楚"，不是"功能一样多"。
 
@@ -145,6 +145,8 @@ nanocode --api-key sk-xxx                     # 直接给 API Key（更推荐用
 | `NANOCODE_HOME` | 用户级目录（个人配置、记忆、信任记录、会话记录），默认 `~/.nanocode` |
 | `NANOCODE_PERMISSION_TIMEOUT` | Web 界面里权限询问等多久没人回答就按拒绝处理，默认 600 秒 |
 | `NANOCODE_PUBLIC_HOST` `NANOCODE_PUBLIC_ORIGIN` | 放在反向代理后面时信任的对外地址，见下方「安全」 |
+| `NANOCODE_POLICY` | 平台策略文件（多用户部署时由平台只读挂载）：锁定模型去向、限制可选的权限模式、删除用户和项目配置里的指定键、打开审计日志；优先级高于一切配置和命令行参数，配置了却读不出来就拒绝启动。见 `policy.py` 和[第 12 章](docs/12-distributed-deployment.md#九实现状态) |
+| `NANOCODE_WEB_TOKEN` | Web 界面的 API 令牌，不设则每次启动随机生成；多用户部署时由控制面注入（至少 16 个字符） |
 
 ## 目录结构
 
@@ -169,6 +171,7 @@ nanocode/
 ├── rag.py             RAG：切块、BM25、向量、混合检索、增量索引
 ├── permissions.py     权限模式与规则（路径统一用真实路径判断，bash 复合命令按段匹配）
 ├── trust.py           工作区信任：陌生项目的配置不经同意不生效
+├── policy.py          平台策略：多用户部署时平台下发、用户和项目都改不了的配置
 ├── hooks.py           生命周期钩子
 ├── verify.py          自动验证：改完先跑检查命令，不通过就回头修
 ├── subcheck.py        子 Agent 验收：修改范围、文件快照、系统生成的验收报告
@@ -177,14 +180,16 @@ nanocode/
 ├── lessons.py         经验沉淀：从失败的检查输出生成候选约束
 ├── context.py         系统提示词、项目记忆、技能/命令发现、上下文压缩
 ├── mcp.py             MCP 客户端（stdio）
-├── events.py          事件总线 + trace
-├── session.py         组装各部件、斜杠命令、会话保存
+├── events.py          事件总线 + trace + 审计日志
+├── session.py         组装各部件、斜杠命令、会话保存（每一步自动保存）
 ├── cli.py             终端界面
 └── web/               Web 界面：server.py（HTTP 服务 + SSE + 安全校验）、static/（调试面板 + 架构学习页）
 docs/                  分章节的架构讲解（建议按顺序读）
 examples/              MCP 服务器示例、hooks/skills/commands 配置示例、RAG 评测（rag_eval/）
 evals/agent_tasks/     Agent 任务评测：13 个任务、隐藏测试、参考答案、运行器
 verification/          真实环境验证清单与结果（连真实模型、浏览器实操）
+server/                多用户部署的控制面和模型网关（独立的包，见 server/README.md 和第 12 章）
+deploy/                沙箱和控制面的镜像、Kubernetes 清单（gVisor、网络出口白名单）
 tests/                 单元测试
 ```
 
@@ -214,6 +219,7 @@ tests/                 单元测试
 
 ```bash
 python3 -m unittest discover -s tests                     # 单元测试
+python3 -m unittest discover -s server/tests              # 多用户部署：控制面和模型网关（见 server/README.md）
 python3 evals/agent_tasks/run.py --reference              # 评测框架自检（参考答案应 13/13）
 python3 evals/agent_tasks/run.py --provider deepseek --model deepseek-chat --repeat 3   # 用真实模型评测
 ```

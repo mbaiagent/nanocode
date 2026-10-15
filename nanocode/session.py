@@ -17,7 +17,8 @@ from dataclasses import dataclass, field
 from . import __version__
 from .agent import Agent
 from .context import MEMORY_FILE, build_system_prompt, context_tokens, discover_commands, discover_skills, home_dir
-from .events import EventBus, TraceWriter
+from .events import AuditWriter, EventBus, TraceWriter
+from . import policy as policy_mod
 from . import verify as verify_mod
 from .hooks import HookRunner
 from .llm import PRESETS, make_provider
@@ -87,12 +88,15 @@ class Options:
 class Session:
     def __init__(self, opts: Options, log=print, trust_fn: TrustFn | None = None):
         self.cwd = os.path.realpath(opts.cwd)
+        # 平台策略（多用户部署时由平台下发，见 policy.py）：优先级最高，盖过命令行参数和所有配置文件
+        self.policy = policy_mod.load_policy()
+        opts = policy_mod.lock_options(opts, self.policy)
         if opts.trust:
             trust_fn = lambda cwd, items: True  # noqa: E731
         self.settings, notice = load_settings(self.cwd, trust_fn)
         if notice:
             log(notice)
-        s = self.settings
+        s = self.settings = policy_mod.apply_policy(self.settings, self.policy, _deep_merge)
         provider_name = opts.provider or os.environ.get("NANOCODE_PROVIDER") or s.get("provider") or "mock"
         self.provider = make_provider(
             provider_name,
@@ -107,6 +111,9 @@ class Session:
         self.bus = EventBus()
         self.session_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         self.data_dir = project_data_dir(self.cwd)
+        if self.policy.get("audit_log"):
+            self._audit = AuditWriter(self.policy["audit_log"], session=lambda: self.session_id)
+            self.bus.subscribe(self._audit)
         if opts.trace:
             os.makedirs(os.path.join(self.data_dir, "traces"), exist_ok=True)
             self.trace_path = os.path.join(self.data_dir, "traces", f"{self.session_id}.jsonl")
@@ -118,8 +125,14 @@ class Session:
         self.registry = ToolRegistry(tools + mcp_tools)
 
         perms = s.get("permissions", {})
-        self.permissions = PermissionManager(self.cwd, mode=opts.mode or s.get("mode", "default"),
-                                             allow=list(perms.get("allow", [])), deny=list(perms.get("deny", [])))
+        mode = opts.mode or s.get("mode", "default")
+        allowed_modes = self.policy.get("allowed_modes") or ()
+        if allowed_modes and mode not in allowed_modes:
+            log(f"权限模式 {mode} 不在平台允许的范围内，改用 {allowed_modes[0]}")
+            mode = allowed_modes[0]
+        self.permissions = PermissionManager(self.cwd, mode=mode,
+                                             allow=list(perms.get("allow", [])), deny=list(perms.get("deny", [])),
+                                             allowed_modes=tuple(allowed_modes))
         self.hooks = HookRunner(s.get("hooks"), self.cwd)
         try:
             verify_cfg = verify_mod.parse_config(s.get("verify"), opts.verify)
@@ -140,6 +153,17 @@ class Session:
         self.pending_memory: list[dict] = []
         self._declined_memory: set[str] = set()
         self.bus.subscribe(self._on_lesson)
+        self.bus.subscribe(self._autosave)
+
+    def _autosave(self, e: dict) -> None:
+        """主 Agent 每一步调用模型前保存一次会话。
+
+        只在整轮结束时保存的话，一个 30 步的任务做到第 29 步时进程被杀（沙箱回收、节点故障），整轮全丢。
+        选在"调用模型前"保存，是因为这时上一步的工具结果已经写进消息，对话是完整的；
+        如果在工具执行到一半时保存，会存下一个没有结果的 tool_use，恢复后模型接口会拒绝。
+        """
+        if e["type"] == "llm_request" and e.get("agent") == "main":
+            self.save()
 
     # ------------------------------------------------------------------ 运行
 
@@ -278,6 +302,8 @@ class Session:
             c.close()
         if getattr(self, "_trace", None):
             self._trace.close()
+        if getattr(self, "_audit", None):
+            self._audit.close()
 
     # ------------------------------------------------------------------ 斜杠命令
 

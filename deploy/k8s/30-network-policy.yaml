@@ -1,0 +1,97 @@
+# 网络是真正的防线（docs/12 第 4.1 节）：Agent 在沙箱里可以用 curl 绕过 web_fetch 的检查，
+# 所以出口必须在网络层控制。前提：集群的网络插件支持 NetworkPolicy（Calico、Cilium 等）。
+
+# ---------------------------------------------------------------- 沙箱：默认全部拒绝
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-default-deny
+  namespace: nanocode-sandboxes
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# 入站：只有控制面能访问沙箱的 8765 端口
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-ingress-from-control-plane
+  namespace: nanocode-sandboxes
+spec:
+  podSelector:
+    matchLabels: {app: nanocode-sandbox}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: nanocode-system}
+          podSelector:
+            matchLabels: {app: ncs-control}
+      ports:
+        - {protocol: TCP, port: 8765}
+---
+# 出站：只允许 DNS 和模型网关。云元数据地址（169.254.169.254）、内网、其他沙箱都访问不到。
+# 需要装依赖时，加一条到你自己的包镜像代理（PyPI / npm 镜像）的规则，不要直接放开公网。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-egress-allowlist
+  namespace: nanocode-sandboxes
+spec:
+  podSelector:
+    matchLabels: {app: nanocode-sandbox}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: nanocode-system}
+          podSelector:
+            matchLabels: {app: ncs-gateway}
+      ports:
+        - {protocol: TCP, port: 8080}
+---
+# ---------------------------------------------------------------- 控制面：只接受认证代理的请求
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: control-plane-ingress
+  namespace: nanocode-system
+spec:
+  podSelector:
+    matchLabels: {app: ncs-control}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app: oauth2-proxy}
+      ports:
+        - {protocol: TCP, port: 8700}
+---
+# ---------------------------------------------------------------- 网关：只接受沙箱（调模型）和控制面（查用量）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-ingress
+  namespace: nanocode-system
+spec:
+  podSelector:
+    matchLabels: {app: ncs-gateway}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: nanocode-sandboxes}
+          podSelector:
+            matchLabels: {app: nanocode-sandbox}
+        - podSelector:
+            matchLabels: {app: ncs-control}
+      ports:
+        - {protocol: TCP, port: 8080}

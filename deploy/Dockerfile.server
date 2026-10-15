@@ -1,0 +1,14 @@
+# 控制面和模型网关共用一个镜像，用参数区分：`control` 或 `gateway`。
+# 构建（在仓库根目录）：docker build -f deploy/Dockerfile.server -t nanocode-server:latest .
+FROM python:3.12-slim
+
+COPY pyproject.toml README.md /src/nanocode/
+COPY nanocode /src/nanocode/nanocode
+COPY server /src/server
+RUN pip install --no-cache-dir /src/nanocode /src/server && rm -rf /src
+
+RUN groupadd -g 10001 ncs && useradd -u 10001 -g ncs -M -s /usr/sbin/nologin ncs
+USER 10001:10001
+ENV NCS_DATA_DIR=/data
+ENTRYPOINT ["python", "-m", "nanocode_server"]
+CMD ["control"]

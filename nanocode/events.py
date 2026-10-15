@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from collections import deque
@@ -85,3 +86,48 @@ class TraceWriter:
 
     def close(self) -> None:
         self._f.close()
+
+
+class AuditWriter:
+    """审计日志：只记录"谁让 Agent 做了什么、结果如何"，不记录模型输出的全文。
+
+    多用户部署时由平台策略的 "audit_log" 打开（见 policy.py）。和 trace 的区别：
+      - trace 记录全部事件，用于调试，内容很大；
+      - 审计只记录用户输入、工具调用、权限决策、命令、错误和每轮用量，长字段截断，适合长期保存、
+        交给日志系统收集（例如沙箱里写到一个由平台收集的文件）。
+    每行带上会话 id，日志系统可以按会话汇总。
+    """
+
+    TYPES = {"user", "tool_call", "permission", "permission_request", "permission_answer", "tool_result",
+             "command", "error", "turn_end", "session_switched"}
+    MAX_FIELD = 2000
+
+    def __init__(self, path: str, session: Callable[[], str] = lambda: ""):
+        self.path = path
+        self.session = session
+        self._lock = threading.Lock()
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        self._f = open(path, "a", encoding="utf-8")
+
+    def __call__(self, event: dict) -> None:
+        if event["type"] not in self.TYPES or self._f.closed:
+            return
+        record = {"session": self.session(), **{k: self._short(v) for k, v in event.items()}}
+        line = json.dumps(record, ensure_ascii=False, default=str)
+        with self._lock:
+            self._f.write(line + "\n")
+            self._f.flush()
+
+    def _short(self, value):
+        if isinstance(value, str) and len(value) > self.MAX_FIELD:
+            return value[:self.MAX_FIELD] + f"…（截断，原长 {len(value)}）"
+        if isinstance(value, (dict, list)):
+            text = json.dumps(value, ensure_ascii=False, default=str)
+            return value if len(text) <= self.MAX_FIELD else text[:self.MAX_FIELD] + f"…（截断，原长 {len(text)}）"
+        return value
+
+    def close(self) -> None:
+        with self._lock:
+            self._f.close()

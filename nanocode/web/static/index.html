@@ -104,7 +104,7 @@ main.debug-hidden .col.debug { display: none }
     <option value="bypass">bypass · 全部放行</option>
   </select>
   <button id="debugtoggle" type="button" title="显示/隐藏右侧调试面板">调试面板</button>
-  <a href="/learn" target="_blank">架构学习页 ↗</a>
+  <a href="learn" target="_blank">架构学习页 ↗</a>
 </header>
 <main id="main">
   <section class="col" aria-label="对话">
@@ -247,7 +247,7 @@ function onEvent(e) {
       const d = add("perm", `<b>允许 ${esc(e.name)} 吗？</b><code>${esc(e.target || JSON.stringify(e.input))}</code>
         <div class="row"><button data-d="yes" class="primary">允许</button><button data-d="always">总是允许</button><button data-d="no">拒绝</button></div>`);
       d.id = "perm-" + e.id;
-      d.querySelectorAll("button").forEach((b) => b.onclick = () => post("/api/permission", { id: e.id, decision: b.dataset.d }));
+      d.querySelectorAll("button").forEach((b) => b.onclick = () => post("api/permission", { id: e.id, decision: b.dataset.d }));
       break;
     }
     case "permission_answer": {
@@ -283,7 +283,7 @@ function onEvent(e) {
       if (e.retryable && e.prompt) {
         const btn = document.createElement("button");
         btn.className = "retry"; btn.textContent = "↻ 重试";
-        btn.onclick = () => { post("/api/chat", { message: e.prompt }); btn.disabled = true; btn.textContent = "已重发…"; };
+        btn.onclick = () => { post("api/chat", { message: e.prompt }); btn.disabled = true; btn.textContent = "已重发…"; };
         d.append(btn);
       }
       break;
@@ -341,7 +341,7 @@ async function post(url, body) {
 // 之后的刷新（turn_end / command 触发）不能这样做：turn_end 事件发出时服务端 busy 还没来得及清掉，
 // 用服务端状态覆盖会让界面卡在"忙碌"。
 async function refreshState(sync = false) {
-  const s = await getJSON("/api/state");
+  const s = await getJSON("api/state");
   $("#meta").textContent = `${s.provider}/${s.model} · ${s.cwd}`;
   $("#mode").value = s.mode;
   if (sync) { setBusy(!!s.busy); queueCount = s.queue || 0; updateQueuebar(); }
@@ -349,10 +349,10 @@ async function refreshState(sync = false) {
   renderTodos(s.todos);
 }
 async function refreshContext() {
-  const c = await getJSON("/api/context");
+  const c = await getJSON("api/context");
   $("#system").textContent = c.system;
   $("#tools").innerHTML = c.tools.map((t) => `<details class="step"><summary><b style="color:var(--tool)">${esc(t.name)}</b> — ${esc(t.description.slice(0, 60))}…</summary><pre class="code">${esc(JSON.stringify(t, null, 2))}</pre></details>`).join("");
-  const s = await getJSON("/api/state");
+  const s = await getJSON("api/state");
   const pct = Math.min(100, s.context_tokens / s.context_window * 100);
   $("#ctxmeter").innerHTML = `<div class="hint">约 ${s.context_tokens} / ${s.context_window} tokens（${pct.toFixed(1)}%），${c.messages.length} 条消息。超过 80% 会自动压缩。</div><div class="meter"><i style="width:${pct}%"></i></div>`;
   $("#messages").innerHTML = c.messages.length ? c.messages.map((m, i) => `<div class="jmsg ${m.role}"><div class="role">[${i}] ${m.role}</div><pre class="code">${esc(JSON.stringify(m.content, null, 2))}</pre></div>`).join("")
@@ -369,19 +369,19 @@ $("#form").onsubmit = async (ev) => {
   const text = $("#input").value.trim();
   if (!text) return;
   $("#input").value = "";
-  const r = await post("/api/chat", { message: text });
+  const r = await post("api/chat", { message: text });
   if (!r.ok) add("error", esc(r.error));
   else if (r.queued) add("note", `⏳ 已排队（第 ${r.position} 位），当前任务完成后自动执行`);
   else if (r.output) add("note", esc(r.output));
 };
 $("#input").onkeydown = (ev) => { if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) $("#form").requestSubmit(); };
-$("#stop").onclick = () => post("/api/cancel");
+$("#stop").onclick = () => post("api/cancel");
 $("#refresh").onclick = refreshContext;
-$("#mode").onchange = () => post("/api/chat", { message: "/mode " + $("#mode").value });
+$("#mode").onchange = () => post("api/chat", { message: "/mode " + $("#mode").value });
 
 // 会话列表：下拉切换历史会话，＋开新会话。切换后整页重载，SSE 重放历史事件恢复界面。
 async function refreshSessions() {
-  const r = await getJSON("/api/sessions");
+  const r = await getJSON("api/sessions");
   const sel = $("#session");
   sel.innerHTML = "";
   for (const s of r.sessions || []) {
@@ -395,12 +395,12 @@ async function refreshSessions() {
   }
 }
 $("#session").onchange = async () => {
-  const r = await post("/api/session", { action: "load", id: $("#session").value });
+  const r = await post("api/session", { action: "load", id: $("#session").value });
   if (r.ok) location.reload();
   else { add("error", esc(r.error)); refreshSessions(); }
 };
 $("#newsession").onclick = async () => {
-  const r = await post("/api/session", { action: "new" });
+  const r = await post("api/session", { action: "new" });
   if (r.ok) location.reload();
   else add("error", esc(r.error));
 };
@@ -416,13 +416,14 @@ syncDbgBtn();
 
 // 事件流：EventSource 发不出请求头，所以先用令牌（请求头）换一张一次性票据，再把票据放进 URL。
 // 票据用一次就作废，所以连接断开后不能依赖 EventSource 自带的重连（它会重发同一个 URL），要自己重连。
-// 重连后服务端会重放历史事件，onEvent 用 seq 去重。
+// 重连时带上已收到的最后一个序号（after），服务端只补发之后的事件；onEvent 仍用 seq 去重兜底。
+// 接口都用相对路径（api/...），这样页面放在控制面的 /s/<会话>/ 前缀下也能用。
 let es = null;
 async function connectEvents() {
   try {
-    const t = await post("/api/ticket");
+    const t = await post("api/ticket");
     if (!t.ticket) throw new Error(t.error || "no ticket");
-    es = new EventSource("/api/events?ticket=" + encodeURIComponent(t.ticket));
+    es = new EventSource("api/events?ticket=" + encodeURIComponent(t.ticket) + "&after=" + lastSeq);
     es.onmessage = (m) => onEvent(JSON.parse(m.data));
     es.onerror = () => { es.close(); setTimeout(connectEvents, 1500); };
   } catch (err) {

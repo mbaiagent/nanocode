@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nanocode 会话</title>
+<style>
+:root {
+  --bg: #eef1f4; --panel: #ffffff; --line: #d5dbe2; --fg: #15202b; --muted: #5d6b79;
+  --accent: #2747d6; --ok: #0b7f70; --warn: #a75f0a; --danger: #c0352b; --soft: #f5f7fa;
+  --font-ui: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0e141a; --panel: #151d25; --line: #283541; --fg: #e2e8ee; --muted: #8d9cab;
+  --accent: #8299ff; --ok: #3cc4ae; --warn: #e6a04a; --danger: #ff7a6e; --soft: #1b252f; color-scheme: dark } }
+* { box-sizing: border-box }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.6 var(--font-ui) }
+header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--line) }
+header h1 { margin: 0; font-size: 16px }
+.muted { color: var(--muted); font-size: 12.5px }
+main { max-width: 860px; margin: 0 auto; padding: 16px }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px }
+form { display: flex; gap: 8px; flex-wrap: wrap }
+input { flex: 1; min-width: 0; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px }
+button, a.btn { font: inherit; color: inherit; background: var(--soft); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; text-decoration: none; white-space: nowrap }
+button.primary, a.primary { background: var(--accent); border-color: var(--accent); color: #fff }
+button:disabled { opacity: .6; cursor: default }
+button:focus-visible, a.btn:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+.row { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line) }
+.row:first-child { border-top: none }
+.row .title { flex: 1; min-width: 160px; overflow-wrap: anywhere }
+.status { font: 12px var(--font-mono) }
+.status.running { color: var(--ok) } .status.starting { color: var(--warn) } .status.failed { color: var(--danger) }
+.err { color: var(--danger); white-space: pre-wrap; margin-top: 8px }
+.meter { height: 6px; background: var(--soft); border: 1px solid var(--line); border-radius: 99px; overflow: hidden; margin-top: 6px }
+.meter i { display: block; height: 100%; background: var(--accent) }
+.empty { color: var(--muted); text-align: center; padding: 18px 0 }
+</style>
+</head>
+<body>
+<header>
+  <h1>nanocode</h1>
+  <span class="muted" id="who">…</span>
+</header>
+<main>
+  <section class="card" aria-label="今日用量">
+    <div id="usage" class="muted">正在读取用量…</div>
+  </section>
+  <section class="card" aria-label="新建会话">
+    <form id="create">
+      <input id="title" placeholder="给新会话起个名字（可选）" maxlength="100" aria-label="会话名称">
+      <button class="primary" type="submit" id="createbtn">新建会话</button>
+    </form>
+    <div class="err" id="err" role="alert"></div>
+  </section>
+  <section class="card" aria-label="我的会话">
+    <div id="list"><div class="empty">加载中…</div></div>
+  </section>
+  <p class="muted">每个会话运行在独立的沙箱里。一段时间不用会自动停止以节省资源，工作区会保留，再次打开时自动恢复。</p>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const STATUS = { running: "运行中", starting: "启动中", stopped: "已停止", failed: "启动失败" };
+
+async function api(method, url, body) {
+  const r = await fetch(url, { method, headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+  return r.json();
+}
+async function loadMe() {
+  const r = await api("GET", "api/me");
+  $("#who").textContent = r.user || "";
+  const u = r.usage;
+  if (!u) { $("#usage").textContent = "暂时拿不到用量信息"; return; }
+  const limit = u.daily_limit || 0;
+  const pct = limit ? Math.min(100, u.total_tokens / limit * 100) : 0;
+  $("#usage").innerHTML = `今天（UTC）已用 ${u.total_tokens.toLocaleString()} tokens，${u.requests} 次模型调用` +
+    (limit ? `，上限 ${limit.toLocaleString()}<div class="meter"><i style="width:${pct}%"></i></div>` : "");
+}
+async function loadList() {
+  const r = await api("GET", "api/sessions");
+  const list = r.sessions || [];
+  $("#list").innerHTML = list.length ? list.map((s) => `
+    <div class="row">
+      <div class="title"><b>${esc(s.title)}</b><div class="muted">${new Date(s.created * 1000).toLocaleString()}</div>
+        ${s.error ? `<div class="err">${esc(s.error)}</div>` : ""}</div>
+      <span class="status ${s.status}">${STATUS[s.status] || s.status}</span>
+      <a class="btn primary" href="${esc(s.url)}">打开</a>
+      ${s.status === "running" ? `<button data-act="stop" data-id="${s.id}">停止</button>` : ""}
+      <button data-act="delete" data-id="${s.id}">删除</button>
+    </div>`).join("") : `<div class="empty">还没有会话，新建一个开始吧。</div>`;
+  document.querySelectorAll("[data-act]").forEach((b) => b.onclick = async () => {
+    if (b.dataset.act === "delete" && !confirm("删除会话会同时删除它的工作区文件，确定吗？")) return;
+    b.disabled = true;
+    const r = await api("POST", `api/sessions/${b.dataset.id}/${b.dataset.act}`, {});
+    if (!r.ok) $("#err").textContent = r.error;
+    loadList();
+  });
+}
+$("#create").onsubmit = async (ev) => {
+  ev.preventDefault();
+  $("#err").textContent = "";
+  const btn = $("#createbtn");
+  btn.disabled = true; btn.textContent = "正在启动沙箱…";
+  try {
+    const r = await api("POST", "api/sessions", { title: $("#title").value.trim() });
+    if (r.ok) location.href = r.session.url;
+    else { $("#err").textContent = r.error; loadList(); }
+  } finally { btn.disabled = false; btn.textContent = "新建会话"; }
+};
+loadMe(); loadList();
+</script>
+</body>
+</html>

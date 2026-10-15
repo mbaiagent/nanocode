@@ -1,0 +1,73 @@
+# 模型网关：唯一拿着真实模型 Key 的组件。一个副本（用量计数在 SQLite 里；多副本需要共享存储，见 server/README.md）。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ncs-gateway-data
+  namespace: nanocode-system
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 1Gi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ncs-gateway
+  namespace: nanocode-system
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: ncs-gateway}
+  template:
+    metadata:
+      labels: {app: ncs-gateway}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: gateway
+          image: nanocode-server:latest
+          args: [gateway]
+          ports: [{containerPort: 8080, name: http}]
+          env:
+            - {name: NCS_GATEWAY_HOST, value: "0.0.0.0"}
+            - {name: NCS_GATEWAY_PORT, value: "8080"}
+            - {name: NCS_UPSTREAM_BASE_URL, value: "https://api.deepseek.com/v1"}
+            - {name: NCS_UPSTREAM_PROTOCOL, value: openai}
+            - {name: NCS_MODEL, value: deepseek-chat}
+            - {name: NCS_DAILY_TOKENS, value: "2000000"}
+            - {name: NCS_RPM, value: "30"}
+            - {name: NCS_MAX_OUTPUT_TOKENS, value: "8192"}
+            - name: NCS_TOKEN_SECRET
+              valueFrom: {secretKeyRef: {name: ncs-secrets, key: NCS_TOKEN_SECRET}}
+          envFrom:
+            - secretRef: {name: ncs-upstream}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+          resources:
+            requests: {cpu: 250m, memory: 256Mi}
+            limits: {cpu: "2", memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: ncs-gateway-data}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ncs-gateway
+  namespace: nanocode-system
+spec:
+  selector: {app: ncs-gateway}
+  ports:
+    - {name: http, port: 8080, targetPort: 8080}
