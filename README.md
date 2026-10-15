@@ -245,6 +245,11 @@ nanocode --api-key sk-xxx                     # 直接给 API Key（更推荐用
 | `NANOCODE_PUBLIC_HOST` `NANOCODE_PUBLIC_ORIGIN` | 放在反向代理后面时信任的对外地址，见下方「安全」 |
 | `NANOCODE_POLICY` | 平台策略文件（多用户部署时由平台只读挂载）：锁定模型去向、限制可选的权限模式、删除用户和项目配置里的指定键、打开审计日志；优先级高于一切配置和命令行参数，配置了却读不出来就拒绝启动。见 `policy.py` 和[第 12 章](docs/12-distributed-deployment.md#九实现状态) |
 | `NANOCODE_WEB_TOKEN` | Web 界面的 API 令牌，不设则每次启动随机生成；多用户部署时由控制面注入（至少 16 个字符） |
+| `NANOCODE_WEB_RATE_PER_MIN` `NANOCODE_WEB_RATE_BURST` | `nanocode --web` 的 `/api/chat` 按客户端 IP 限流（令牌桶）：每分钟补充 10 次、最多连发 5 次（默认）。`#` 记忆和不调用模型的 `/命令` 不计入；超限返回 429 + `Retry-After`。设为 `0` 关闭 |
+| `NANOCODE_WEB_MAX_QUEUE` | Agent 忙时最多排队几条消息，默认 3，满了返回 429（`code: queue_full`）。点"停止"会同时清空队列。设为 `0` 不限 |
+| `NANOCODE_WEB_DAILY_RUNS` | 每个自然日最多启动多少轮 Agent（含排队后执行的），默认 200，用完返回 429（`code: daily_budget`）。设为 `0` 不限 |
+| `NANOCODE_WEB_DAILY_LLM_CALLS` | 每个自然日最多调用多少次模型 API（Provider 层计数，一轮 Agent 可能调用很多次），默认 `0` 不限；到上限按"配额用尽"处理，不再重试 |
+| `NANOCODE_TRUST_PROXY` | 设为 `1` 时按 `X-Forwarded-For` 最左侧地址区分客户端。只在确实挂了反向代理时开（否则可被伪造）；挂了反代却不开，所有人会共用代理 IP 的一个限流桶 |
 
 ## 目录结构
 
@@ -281,7 +286,7 @@ nanocode/
 ├── events.py          事件总线 + trace + 审计日志
 ├── session.py         组装各部件、斜杠命令、会话保存（每一步自动保存）
 ├── cli.py             终端界面
-└── web/               Web 界面：server.py（HTTP 服务 + SSE + 安全校验）、static/（调试面板 + 架构学习页）
+└── web/               Web 界面：server.py（HTTP 服务 + SSE + 安全校验）、limits.py（/api/chat 限流与每日预算）、static/（调试面板 + 架构学习页）
 docs/                  分章节的架构讲解（建议按顺序读）
 examples/              MCP 服务器示例、扩展示例（extensions/：4 个 MCP 服务器 + 3 个技能 + 1 个命令）、RAG 评测（rag_eval/）
 evals/agent_tasks/     Agent 任务评测：13 个任务、隐藏测试、参考答案、运行器
