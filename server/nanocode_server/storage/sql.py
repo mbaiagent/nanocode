@@ -117,7 +117,12 @@ class PostgresDatabase(Database):
         with self._lock:
             if self._created < self._size:
                 self._created += 1
-                return self._connect()
+                try:
+                    return self._connect()
+                except BaseException:
+                    # 释放预留的池容量；否则连接失败会永久占住一个槽位。
+                    self._created -= 1
+                    raise
         return self._pool.get(timeout=30)
 
     def _release(self, conn) -> None:

@@ -46,6 +46,8 @@ LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 MAX_BODY = 1024 * 1024          # POST 请求体上限（字节）
 TICKET_TTL = 30                 # SSE 一次性票据的有效期（秒）
 MAX_TICKETS = 64                # 同时存在的未使用票据上限，防止被刷爆内存
+SSE_QUEUE_SIZE = 256            # 每个 SSE 客户端最多缓存的事件数；慢客户端满队列后断开重连
+SSE_WRITE_TIMEOUT = 30          # 写入阻塞超过此时间就断开慢客户端
 
 
 def normalize_host(value: str) -> str:
@@ -164,6 +166,8 @@ class WebApp:
         self._sse_lock = threading.Lock()
         # 事件流空闲时每隔这么多秒发一次心跳；服务端也是靠写心跳才发现浏览器已断开的
         self.sse_ping_interval = 15
+        self.sse_queue_size = SSE_QUEUE_SIZE
+        self.sse_write_timeout = SSE_WRITE_TIMEOUT
         self._tickets: dict[str, float] = {}   # 一次性 SSE 票据 → 过期时间
         self.allowed_hosts: set[str] = set(LOCAL_HOSTS)
         self.allowed_origins: set[str] = set()
@@ -447,13 +451,26 @@ def make_handler(app: WebApp):
             self.send_error(404)
 
         def _sse(self):
+            self.connection.settimeout(app.sse_write_timeout)
             self.send_response(200)
             self.send_header("content-type", "text/event-stream; charset=utf-8")
             self.send_header("cache-control", "no-cache")
             self.end_headers()
             after = resume_after(self.headers, urlparse(self.path).query)
-            q: queue.Queue = queue.Queue()
-            unsubscribe = app.session.bus.subscribe(q.put)
+            q: queue.Queue = queue.Queue(maxsize=app.sse_queue_size)
+            overflow = threading.Event()
+
+            def enqueue_event(event):
+                if overflow.is_set():
+                    return
+                try:
+                    q.put_nowait(event)
+                except queue.Full:
+                    # 不让 Agent 的事件发布线程被慢客户端拖住。断开后浏览器会带
+                    # Last-Event-ID 重连，历史事件可补发，text_delta 最终由 llm_response 补全。
+                    overflow.set()
+
+            unsubscribe = app.session.bus.subscribe(enqueue_event)
             with app._sse_lock:
                 app.sse_clients += 1
             try:
@@ -463,12 +480,18 @@ def make_handler(app: WebApp):
                     self._send_event(e)
                     sent = max(sent, e["seq"])
                 while True:
+                    if overflow.is_set():
+                        raise ConnectionResetError("SSE 客户端事件队列已满")
                     try:
-                        e = q.get(timeout=app.sse_ping_interval)
+                        e = q.get(timeout=min(app.sse_ping_interval, 1))
                     except queue.Empty:
+                        if overflow.is_set():
+                            raise ConnectionResetError("SSE 客户端事件队列已满")
                         self.wfile.write(b": ping\n\n")
                         self.wfile.flush()
                         continue
+                    if overflow.is_set():
+                        raise ConnectionResetError("SSE 客户端事件队列已满")
                     if e["seq"] <= sent:      # 订阅之后、补发历史之前产生的事件，已经补发过了
                         continue
                     self._send_event(e)
