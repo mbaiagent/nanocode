@@ -9,11 +9,15 @@
     GET  /learn             交互式架构学习页
     GET  /api/state         会话概况
     GET  /api/context       完整上下文：system、messages、tools（就是下一次要发给模型的东西）
-    GET  /api/events        SSE 事件流（连接时先补发历史事件）。浏览器用 ?ticket= 一次性票据
+    GET  /api/events        SSE 事件流（连接时先补发历史事件）。浏览器用 ?ticket= 一次性票据；
+                            断线重连时用 Last-Event-ID 请求头或 ?after=序号，只补发之后的事件
     POST /api/ticket        换一张 30 秒有效、只能用一次的 SSE 票据
     POST /api/chat          {"message": "..."} 发送消息（也支持 /命令 和 # 记忆）
     POST /api/permission    {"id": "...", "decision": "yes|always|no"}
     POST /api/cancel        中断当前任务
+
+令牌默认每次启动随机生成；多用户部署时由控制面通过环境变量 NANOCODE_WEB_TOKEN 注入，
+控制面在转发请求时带上它（见 docs/12 和 server/）。
 
 安全：所有请求校验 Host / Origin，/api/* 需要令牌（页面加载时注入，只认请求头），
 POST 只接受 JSON 且请求体不超过 1MB。
@@ -123,12 +127,34 @@ def friendly_error(e: Exception) -> str:
     return raw
 
 
+MIN_TOKEN_LEN = 16
+
+
+def web_token() -> str:
+    """API 令牌：环境变量 NANOCODE_WEB_TOKEN 给了就用它（控制面注入），否则随机生成。太短的不接受。"""
+    token = os.environ.get("NANOCODE_WEB_TOKEN", "")
+    if not token:
+        return secrets.token_urlsafe(24)
+    if len(token) < MIN_TOKEN_LEN:
+        raise ValueError(f"NANOCODE_WEB_TOKEN 太短（至少 {MIN_TOKEN_LEN} 个字符）")
+    return token
+
+
+def resume_after(headers, query: str) -> int:
+    """断线重连时浏览器已经收到的最后一个事件序号：标准的 Last-Event-ID 请求头优先，其次 ?after=。"""
+    raw = headers.get("last-event-id") or (parse_qs(query).get("after") or [""])[0]
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
+
+
 class WebApp:
     def __init__(self, session: Session, permission_timeout: float | None = None, disconnect_grace: float = 30):
         self.session = session
         self.pending: dict[str, dict] = {}
         self.lock = threading.Lock()
-        self.token = secrets.token_urlsafe(24)
+        self.token = web_token()
         if permission_timeout is None:
             permission_timeout = float(os.environ.get("NANOCODE_PERMISSION_TIMEOUT") or 600)
         self.permission_timeout = permission_timeout
@@ -423,19 +449,25 @@ def make_handler(app: WebApp):
             self.send_header("content-type", "text/event-stream; charset=utf-8")
             self.send_header("cache-control", "no-cache")
             self.end_headers()
+            after = resume_after(self.headers, urlparse(self.path).query)
             q: queue.Queue = queue.Queue()
             unsubscribe = app.session.bus.subscribe(q.put)
             with app._sse_lock:
                 app.sse_clients += 1
             try:
-                for e in list(app.session.bus.history):  # 补发历史，刷新页面不丢状态
+                sent = after
+                # 补发历史，刷新页面不丢状态；重连时只补发浏览器还没收到的
+                for e in [e for e in list(app.session.bus.history) if e["seq"] > after]:
                     self._send_event(e)
+                    sent = max(sent, e["seq"])
                 while True:
                     try:
                         e = q.get(timeout=app.sse_ping_interval)
                     except queue.Empty:
                         self.wfile.write(b": ping\n\n")
                         self.wfile.flush()
+                        continue
+                    if e["seq"] <= sent:      # 订阅之后、补发历史之前产生的事件，已经补发过了
                         continue
                     self._send_event(e)
             except (BrokenPipeError, ConnectionResetError, OSError):
@@ -447,7 +479,8 @@ def make_handler(app: WebApp):
 
         def _send_event(self, e):
             data = json.dumps(e, ensure_ascii=False, default=str)
-            self.wfile.write(f"data: {data}\n\n".encode("utf-8"))
+            # id 行让浏览器（和控制面的转发）记住最后收到的序号，重连时作为 Last-Event-ID 带回来
+            self.wfile.write(f"id: {e['seq']}\ndata: {data}\n\n".encode("utf-8"))
             self.wfile.flush()
 
     return Handler

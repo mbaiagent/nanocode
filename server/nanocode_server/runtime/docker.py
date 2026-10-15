@@ -1,0 +1,219 @@
+"""Docker：每个会话一个容器。单机上比本机子进程安全得多，适合一台服务器给一个团队用。
+
+每个容器：非 root、只读根文件系统、去掉全部 Linux capabilities、禁止提权、限制 CPU / 内存 / 进程数；
+工作区和 NANOCODE_HOME 在宿主机的 <数据目录>/sandboxes/<会话>/data 下（挂到 /data），
+平台策略只读挂到 /etc/nanocode/。可以用 gVisor（NCS_DOCKER_RUNTIME=runsc）进一步隔离。
+
+网络：沙箱放在一个专用的内部网络（internal bridge）里——容器之间不通，也出不了外网，
+只能访问宿主机在这个网络上的地址，模型网关就监听在那里。这相当于 K8s 里 NetworkPolicy 的效果。
+
+通过 Docker Engine API（/var/run/docker.sock）操作，只用标准库。
+"""
+
+from __future__ import annotations
+
+import http.client
+import json
+import os
+import shutil
+import socket
+import time
+from urllib.parse import quote
+
+from .base import SANDBOX_PORT, Launcher, LaunchError, SandboxSpec, wait_ready
+
+DOCKER_SOCKET = "/var/run/docker.sock"
+UID = 10001
+
+
+class _UnixConnection(http.client.HTTPConnection):
+    def __init__(self, path: str, timeout: float = 60):
+        super().__init__("localhost", timeout=timeout)
+        self.socket_path = path
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self.socket_path)
+
+
+class DockerClient:
+    def __init__(self, socket_path: str = DOCKER_SOCKET):
+        self.socket_path = socket_path
+
+    def request(self, method: str, path: str, body: dict | None = None, timeout: float = 60) -> tuple[int, dict]:
+        conn = _UnixConnection(self.socket_path, timeout)
+        try:
+            headers = {"content-type": "application/json"} if body is not None else {}
+            conn.request(method, "/v1.41" + path, body=json.dumps(body) if body is not None else None, headers=headers)
+            r = conn.getresponse()
+            raw = r.read()
+        except OSError as e:
+            raise LaunchError(f"连不上 Docker（{self.socket_path}）：{e}") from None
+        finally:
+            conn.close()
+        try:
+            return r.status, json.loads(raw) if raw else {}
+        except ValueError:
+            return r.status, {"message": raw[:300].decode("utf-8", "replace")}
+
+    def available(self) -> bool:
+        if not os.path.exists(self.socket_path):
+            return False
+        try:
+            return self.request("GET", "/_ping", timeout=3)[0] == 200
+        except LaunchError:
+            return False
+
+    def has_image(self, image: str) -> bool:
+        return self.request("GET", f"/images/{quote(image, safe='')}/json")[0] == 200
+
+
+def _bytes(size: str) -> int:
+    units = {"Ki": 2**10, "Mi": 2**20, "Gi": 2**30}
+    for u, mult in units.items():
+        if size.endswith(u):
+            return int(float(size[:-2]) * mult)
+    return int(size)
+
+
+class DockerLauncher(Launcher):
+    name = "docker"
+    isolated = True
+
+    def __init__(self, data_dir: str, image: str, network: str = "ncs-sandboxes", runtime: str = "",
+                 cpu: str = "1", memory: str = "2Gi", client: DockerClient | None = None, ready_timeout: float = 60):
+        self.root = os.path.join(os.path.abspath(data_dir), "sandboxes")
+        self.image = image
+        self.network = network
+        self.runtime = runtime
+        self.cpu = cpu
+        self.memory = memory
+        self.docker = client or DockerClient()
+        self.ready_timeout = ready_timeout
+        self._gateway_ip = self._ensure_network()
+
+    # ------------------------------------------------------------------ 网络
+
+    def _ensure_network(self) -> str:
+        status, net = self.docker.request("GET", f"/networks/{self.network}")
+        if status == 404:
+            status, _ = self.docker.request("POST", "/networks/create", {
+                "Name": self.network, "Driver": "bridge", "Internal": True,      # 出不了外网，容器之间也不通
+                "Options": {"com.docker.network.bridge.enable_icc": "false"}})
+            if status not in (200, 201):
+                raise LaunchError(f"创建沙箱网络失败：HTTP {status}")
+            status, net = self.docker.request("GET", f"/networks/{self.network}")
+        configs = (net.get("IPAM") or {}).get("Config") or []
+        gateway = next((c.get("Gateway") for c in configs if c.get("Gateway")), "")
+        if not gateway:
+            raise LaunchError(f"沙箱网络 {self.network} 没有网关地址")
+        return gateway
+
+    def gateway_bind_host(self) -> str:
+        return self._gateway_ip
+
+    def gateway_url_for_sandbox(self, port: int) -> str:
+        return f"http://{self._gateway_ip}:{port}"
+
+    # ------------------------------------------------------------------ 容器
+
+    @staticmethod
+    def container_name(sid: str) -> str:
+        return f"ncs-sbx-{sid}"
+
+    def _dirs(self, sid: str) -> tuple[str, str, str]:
+        base = os.path.join(self.root, sid)
+        return base, os.path.join(base, "data"), os.path.join(base, "policy")
+
+    def container_config(self, spec: SandboxSpec, data_dir: str, policy_dir: str) -> dict:
+        env = spec.env("/data/home", "/etc/nanocode/policy.json")
+        host = {
+            "Binds": [f"{data_dir}:/data", f"{policy_dir}:/etc/nanocode:ro"],
+            "NetworkMode": self.network,
+            "ReadonlyRootfs": True,
+            "Tmpfs": {"/tmp": "rw,size=512m"},
+            "CapDrop": ["ALL"],
+            "SecurityOpt": ["no-new-privileges"],
+            "Memory": _bytes(self.memory),
+            "NanoCpus": int(float(self.cpu) * 1e9),
+            "PidsLimit": 512,
+        }
+        if self.runtime:
+            host["Runtime"] = self.runtime
+        return {
+            "Image": self.image,
+            "Cmd": spec.args("0.0.0.0", SANDBOX_PORT, "/data/workspace"),
+            "Env": [f"{k}={v}" for k, v in env.items()],
+            "User": f"{UID}:{UID}",
+            "WorkingDir": "/data/workspace",
+            "ExposedPorts": {f"{SANDBOX_PORT}/tcp": {}},
+            "Labels": {"app": "nanocode-sandbox", "ncs.session": spec.session_id},
+            "HostConfig": host,
+        }
+
+    def start(self, spec: SandboxSpec) -> str:
+        sid = spec.session_id
+        self.stop(sid)
+        base, data_dir, policy_dir = self._dirs(sid)
+        for d in (os.path.join(data_dir, "workspace"), os.path.join(data_dir, "home"), policy_dir):
+            os.makedirs(d, exist_ok=True)
+        with open(os.path.join(policy_dir, "policy.json"), "w", encoding="utf-8") as f:
+            json.dump({**spec.policy, "audit_log": "/data/home/audit.jsonl"}, f, ensure_ascii=False, indent=1)
+        if os.geteuid() == 0:          # 容器里以 10001 运行，工作区要归它所有
+            for root, dirs, files in os.walk(data_dir):
+                for p in [root, *(os.path.join(root, n) for n in dirs + files)]:
+                    os.chown(p, UID, UID)
+        name = self.container_name(sid)
+        status, body = self.docker.request("POST", f"/containers/create?name={name}",
+                                           self.container_config(spec, data_dir, policy_dir))
+        if status not in (200, 201):
+            raise LaunchError(f"创建沙箱容器失败：HTTP {status} {body.get('message', '')}")
+        status, body = self.docker.request("POST", f"/containers/{name}/start")
+        if status not in (200, 204):
+            self.stop(sid)
+            raise LaunchError(f"启动沙箱容器失败：HTTP {status} {body.get('message', '')}")
+        try:
+            endpoint = f"http://{self._container_ip(name)}:{SANDBOX_PORT}"
+            wait_ready(endpoint, spec.web_token, self.ready_timeout, alive=lambda: self.is_alive(sid))
+        except LaunchError:              # 包括拿不到地址：都要把容器清理掉
+            logs = self._logs(name)
+            self.stop(sid)
+            raise LaunchError(f"沙箱容器没有就绪。日志：{logs}") from None
+        return endpoint
+
+    def _container_ip(self, name: str) -> str:
+        """控制面直接访问容器在沙箱网络里的地址：内部网络不能发布端口，也就不用在宿主机上开端口。"""
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            _, info = self.docker.request("GET", f"/containers/{name}/json")
+            net = ((info.get("NetworkSettings") or {}).get("Networks") or {}).get(self.network) or {}
+            if net.get("IPAddress"):
+                return net["IPAddress"]
+            time.sleep(0.2)
+        raise LaunchError("拿不到沙箱容器的地址")
+
+    def _logs(self, name: str) -> str:
+        conn = _UnixConnection(self.docker.socket_path, 10)
+        try:
+            conn.request("GET", f"/v1.41/containers/{name}/logs?stdout=1&stderr=1&tail=20")
+            raw = conn.getresponse().read()
+        except OSError:
+            return ""
+        finally:
+            conn.close()
+        return raw.decode("utf-8", "replace")[-800:]
+
+    def stop(self, session_id: str) -> None:
+        self.docker.request("DELETE", f"/containers/{self.container_name(session_id)}?force=true")
+
+    def delete(self, session_id: str) -> None:
+        self.stop(session_id)
+        shutil.rmtree(self._dirs(session_id)[0], ignore_errors=True)
+
+    def is_alive(self, session_id: str) -> bool:
+        status, info = self.docker.request("GET", f"/containers/{self.container_name(session_id)}/json")
+        return status == 200 and bool((info.get("State") or {}).get("Running"))
+
+
+__all__ = ["DockerLauncher", "DockerClient"]

@@ -1,0 +1,103 @@
+# 示例：入口 → oauth2-proxy（对接企业 SSO / OIDC，反向代理模式）→ 控制面。
+# oauth2-proxy 登录成功后把用户邮箱放进 X-Forwarded-Email，并注入共享密钥 X-NCS-Proxy-Secret。
+# 字段名以你使用的 oauth2-proxy 版本文档为准（这里用的是 alpha 配置的 injectRequestHeaders）。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oauth2-proxy-alpha
+  namespace: nanocode-system
+data:
+  alpha.yaml: |
+    upstreamConfig:
+      upstreams:
+        - id: ncs-control
+          path: /
+          uri: http://ncs-control.nanocode-system.svc:8700
+          flushInterval: 100ms          # 事件流（SSE）不能被缓冲
+          timeout: 3600s
+    injectRequestHeaders:
+      - name: X-Forwarded-Email
+        values: [{claimSource: {claim: email}}]
+      - name: X-NCS-Proxy-Secret
+        values: [{secretSource: {fromEnv: NCS_PROXY_SECRET}}]
+    providers:
+      - id: sso
+        provider: oidc
+        clientID: nanocode
+        clientSecretFile: /etc/oauth2-proxy/client-secret
+        oidcConfig:
+          issuerURL: https://sso.example.com/realms/company
+          emailClaim: email
+          audienceClaims: [aud]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oauth2-proxy
+  namespace: nanocode-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: oauth2-proxy}
+  template:
+    metadata:
+      labels: {app: oauth2-proxy}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: oauth2-proxy
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+          args:
+            - --alpha-config=/etc/oauth2-proxy-alpha/alpha.yaml
+            - --http-address=0.0.0.0:4180
+            - --email-domain=example.com
+            - --cookie-secure=true
+            - --reverse-proxy=true
+          env:
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom: {secretKeyRef: {name: oauth2-proxy, key: cookie-secret}}
+            - name: NCS_PROXY_SECRET
+              valueFrom: {secretKeyRef: {name: ncs-secrets, key: NCS_PROXY_SECRET}}
+          ports: [{containerPort: 4180, name: http}]
+          volumeMounts:
+            - {name: alpha, mountPath: /etc/oauth2-proxy-alpha}
+            - {name: client, mountPath: /etc/oauth2-proxy}
+      volumes:
+        - name: alpha
+          configMap: {name: oauth2-proxy-alpha}
+        - name: client
+          secret: {secretName: oauth2-proxy, items: [{key: client-secret, path: client-secret}]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oauth2-proxy
+  namespace: nanocode-system
+spec:
+  selector: {app: oauth2-proxy}
+  ports:
+    - {name: http, port: 4180, targetPort: 4180}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nanocode
+  namespace: nanocode-system
+  annotations:
+    # 事件流是长连接：关闭缓冲，放宽读超时
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "2m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [nanocode.example.com]
+      secretName: nanocode-tls
+  rules:
+    - host: nanocode.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: oauth2-proxy, port: {number: 4180}}

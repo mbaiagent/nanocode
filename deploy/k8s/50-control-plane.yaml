@@ -1,0 +1,105 @@
+# 控制面：状态都在 PostgreSQL 里，可以多副本；同一个会话被两个副本同时访问时，
+# 只有在数据库里抢到启动权的那个去启动沙箱（storage/sql.py 的 claim_start）。
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ncs-control
+  namespace: nanocode-system
+---
+# 只给控制面在沙箱命名空间里管理 Pod、持久卷和每个会话的策略 ConfigMap 的权限
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ncs-sandbox-manager
+  namespace: nanocode-sandboxes
+rules:
+  - apiGroups: [""]
+    resources: [pods, persistentvolumeclaims, configmaps]
+    verbs: [get, list, create, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ncs-sandbox-manager
+  namespace: nanocode-sandboxes
+subjects:
+  - kind: ServiceAccount
+    name: ncs-control
+    namespace: nanocode-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ncs-sandbox-manager
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ncs-control
+  namespace: nanocode-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: ncs-control}
+  template:
+    metadata:
+      labels: {app: ncs-control}
+    spec:
+      serviceAccountName: ncs-control
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: control
+          image: nanocode-server:latest
+          args: [control]
+          ports: [{containerPort: 8700, name: http}]
+          env:
+            - {name: NCS_HOST, value: "0.0.0.0"}
+            - {name: NCS_PORT, value: "8700"}
+            - {name: NCS_AUTH, value: proxy}
+            - {name: NCS_AUTH_HEADER, value: X-Forwarded-Email}     # oauth2-proxy 反向代理模式传给上游的身份头
+            - {name: NCS_PUBLIC_URL, value: "https://nanocode.example.com"}
+            - {name: NCS_LAUNCHER, value: k8s}
+            - {name: NCS_K8S_NAMESPACE, value: nanocode-sandboxes}
+            - {name: NCS_SANDBOX_IMAGE, value: "nanocode-sandbox:latest"}
+            - {name: NCS_K8S_RUNTIME_CLASS, value: gvisor}
+            - {name: NCS_SANDBOX_CPU, value: "1"}
+            - {name: NCS_SANDBOX_MEMORY, value: 2Gi}
+            - {name: NCS_K8S_WORKSPACE_SIZE, value: 10Gi}
+            - {name: NCS_SANDBOX_MODES, value: "default,accept_edits,plan,review,bypass"}   # gVisor 强隔离下可以放开 bypass
+            - {name: NCS_SANDBOX_MODE, value: review}
+            - {name: NCS_MAX_SANDBOXES, value: "200"}
+            - {name: NCS_MAX_SESSIONS_PER_USER, value: "3"}
+            - {name: NCS_IDLE_TIMEOUT, value: "1800"}
+            - {name: NCS_GATEWAY_URL, value: "http://ncs-gateway.nanocode-system.svc:8080"}
+            # 平台提供的模型（可选，平台付费）：和网关的配置保持一致
+            - {name: NCS_PLATFORM_BASE_URL, value: "https://api.deepseek.com/v1"}
+            - {name: NCS_PLATFORM_MODELS, value: "deepseek-chat"}
+            - {name: NCS_ENABLE_MOCK_MODEL, value: "false"}
+          envFrom:
+            - secretRef: {name: ncs-secrets}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8700}
+          resources:
+            requests: {cpu: 250m, memory: 256Mi}
+            limits: {cpu: "2", memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: tmp, mountPath: /data}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ncs-control
+  namespace: nanocode-system
+spec:
+  selector: {app: ncs-control}
+  ports:
+    - {name: http, port: 8700, targetPort: 8700}

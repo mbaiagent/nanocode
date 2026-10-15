@@ -276,3 +276,51 @@ nanocode 核心坚持只用标准库，这是学习项目的特点，应该保�
 - [ ] 分批放量计划、回滚流程已演练
 
 相关章节：沙箱和权限的局限见[第 04 章](04-permissions-and-hooks.md)，生产级缺失的功能见[第 08 章](08-claude-code-mapping.md)，`review` 模式和自动验证见[第 11 章](11-verification-loop.md)。
+
+---
+
+## 九、实现状态
+
+方案 A 已经实现成可以运行的平台：nanocode 本体的改动在 `nanocode/` 里，控制面和模型网关是独立的包 [`server/`](../server/README.md)，镜像和 Kubernetes 清单在 [`deploy/`](../deploy/)。一台电脑上就能跑：
+
+```bash
+PYTHONPATH=server:. python3 -m nanocode_server               # 打开 http://127.0.0.1:8700，登录页输入任意用户名
+PYTHONPATH=server:. python3 -m nanocode_server demo --users 10   # 模拟 10 个用户同时使用，检查互相隔离
+```
+
+可选组件有就用、没有也能跑：数据库 SQLite / PostgreSQL，限流 内存 / Redis，沙箱 本机进程 / Docker / Kubernetes。页面上可以添加自己的 API Key、为每个会话切换模型；Key 加密保存，只在模型网关里使用，不会进入沙箱。
+
+### 对照第六节的代码改动清单
+
+| 计划 | 状态 | 实现 |
+|---|---|---|
+| 每一步增量保存 | ✅ | `session.py` `_autosave`：主 Agent 每次调用模型前保存 |
+| 存储后端接口（写数据库） | ⏳ | 平台数据（会话、Key、用量）在 SQLite / PostgreSQL；每个会话的对话记录仍是 JSON 文件，放在会话自己的工作区卷上 |
+| 平台策略层、由策略决定信任、限制权限模式 | ✅ | `policy.py`、`permissions.py` `allowed_modes`；每个会话的策略由控制面生成，换模型时重写 |
+| 事件导出 | ⏳ | 有审计订阅者（`events.py` `AuditWriter`），但写在沙箱里；导出到日志管道还没做 |
+| `Last-Event-ID` 续传、令牌由控制面注入 | ✅ | `web/server.py` |
+| 网关额度错误的清晰提示 | ✅ | 网关的每日限额响应带 "daily quota"，nanocode 识别为配额用完、不重试 |
+| `nanocode-server`：登录、会话、路由、事件流转发、沙箱调度、配额 | ✅ | `server/`：开发登录 / 认证代理、按用户授权、容量和每人上限、反向代理、空闲回收、多副本安全的启动抢占；模型网关的按会话选 Key、限流、额度、计量 |
+| 模型与 Key 管理（第 12 章之后新增） | ✅ | 用户添加自己的 Key（加密保存、防 SSRF），每个会话可切换模型 |
+| 计费、管理后台 | ❌ | 只有用量计量和用户自己的用量显示 |
+| 部署配置 | ✅（K8s 未在真实集群验证） | `deploy/`：两个 Dockerfile（已构建验证）；K8s 清单含 gVisor、默认拒绝的 NetworkPolicy、最小权限 RBAC、PostgreSQL / Redis 示例、oauth2-proxy 示例 |
+
+### 对照第八节的上线前检查清单
+
+| 检查项 | 状态 |
+|---|---|
+| 每个会话运行在强隔离沙箱里，有资源限制 | ✅ Docker（实测）、K8s Pod 清单（gVisor，需在集群验证） |
+| 沙箱默认禁止出站，只放行白名单 | ✅ Docker 内部网络（实测出不了外网和元数据地址，只能访问网关）；K8s NetworkPolicy（需在集群验证） |
+| 沙箱里没有真实的模型 Key | ✅ 只有网关令牌 |
+| 登录、会话授权、跨租户访问测试 | ✅ 端到端测试 + 多用户模拟 |
+| `provider`、`base_url`、`headers` 只能由平台设置 | ✅ 平台策略 + 网关按会话强制模型 |
+| 每一步持久化 | ✅ |
+| 事件流断线续传 | ✅ |
+| 按用户的限流和预算 | ✅ 每分钟请求数（内存 / Redis）、每日平台模型 token；一键停用开关 ❌ |
+| 指标、日志、链路追踪、告警 | ❌ |
+| 压测（200 个并发任务、1000 条事件流连接） | ❌ 只做了功能上的多用户并发（10 个用户同时完成整个流程） |
+| 渗透测试 | ❌ |
+| 数据保留、导出、删除 | ⏳ 能删除会话、工作区和 Key；保留期和导出没做 |
+| 分批放量和回滚 | ❌ |
+
+详见 [server/README.md](../server/README.md) 的"局限"一节。

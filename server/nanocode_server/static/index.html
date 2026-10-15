@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nanocode</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Cdefs%3E%3ClinearGradient id=%27g%27 x1=%270%27 y1=%270%27 x2=%271%27 y2=%271%27%3E%3Cstop offset=%270%27 stop-color=%27%236366f1%27/%3E%3Cstop offset=%271%27 stop-color=%27%23ec4899%27/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width=%2732%27 height=%2732%27 rx=%278%27 fill=%27url(%23g)%27/%3E%3Ctext x=%2716%27 y=%2722%27 font-family=%27monospace%27 font-weight=%27700%27 font-size=%2718%27 fill=%27white%27 text-anchor=%27middle%27%3En%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></symbol>
+  <symbol id="i-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v6h-6"/></symbol>
+</svg>
+
+<div class="app" id="app">
+  <!-- ============================================================ 侧栏 -->
+  <aside class="sidebar" aria-label="会话">
+    <div class="sidebar-head">
+      <div class="brand"><span class="brand-mark">n</span>nanocode</div>
+      <button class="btn primary block" id="new-session"><svg><use href="#i-plus"/></svg>新建会话</button>
+    </div>
+    <nav class="sessions" id="sessions" aria-label="我的会话"></nav>
+    <div class="sidebar-foot">
+      <div id="usage"></div>
+      <div class="user-row">
+        <span class="avatar" id="avatar">?</span>
+        <div class="who"><div class="name" id="user-name">…</div><div class="role" id="user-role"></div></div>
+        <button class="btn ghost icon-btn" id="open-settings" title="模型与密钥" aria-label="模型与密钥"><svg><use href="#i-gear"/></svg></button>
+        <button class="btn ghost icon-btn" id="logout" title="退出登录" aria-label="退出登录"><svg><use href="#i-logout"/></svg></button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============================================================ 主区域 -->
+  <section class="main">
+    <header class="topbar">
+      <button class="btn ghost icon-btn menu-btn" id="menu" aria-label="打开会话列表"><svg><use href="#i-menu"/></svg></button>
+      <div class="title" id="title" title="点击改名" tabindex="0" hidden></div>
+      <span class="badge" id="status" hidden><span class="dot"></span><span></span></span>
+      <div class="spacer"></div>
+      <div class="model-picker" id="model-picker" hidden>
+        <label class="sr-only" for="model">模型</label>
+        <select id="model"></select>
+        <svg class="icon"><use href="#i-chevron"/></svg>
+      </div>
+      <button class="btn icon-btn hide-narrow" id="reload" title="重新加载对话" aria-label="重新加载对话" hidden><svg><use href="#i-refresh"/></svg></button>
+      <button class="btn icon-btn" id="stop" title="停止沙箱（保留工作区）" aria-label="停止沙箱" hidden><svg><use href="#i-stop"/></svg></button>
+      <button class="btn icon-btn danger" id="delete" title="删除会话" aria-label="删除会话" hidden><svg><use href="#i-trash"/></svg></button>
+    </header>
+    <div class="workspace" id="workspace">
+      <div class="welcome" id="welcome">
+        <div class="welcome-card">
+          <h2 id="hello">你好</h2>
+          <p class="lead">每个会话都运行在自己的沙箱里：独立的工作区、独立的模型配置，和其他人互不影响。</p>
+          <div class="panel">
+            <form id="quick-create">
+              <div class="field">
+                <label for="quick-title">会话名称</label>
+                <input class="input" id="quick-title" placeholder="例如：修复登录页的 bug" maxlength="100">
+              </div>
+              <div class="field">
+                <label for="quick-model">模型</label>
+                <select class="input" id="quick-model"></select>
+                <span class="hint" id="quick-model-hint"></span>
+              </div>
+              <button class="btn primary lg block" type="submit">开始</button>
+            </form>
+            <ol class="tips">
+              <li><span class="num">1</span><span>在 <a href="#" data-open-settings>模型与密钥</a> 里添加你自己的 API Key，就能使用对应厂商的模型。Key 加密保存，只在模型网关里使用，不会进入沙箱。</span></li>
+              <li><span class="num">2</span><span>会话随时可以切换模型，对话会保留。</span></li>
+              <li><span class="num">3</span><span>一段时间不用会自动停止沙箱以节省资源，再次打开时自动恢复。</span></li>
+            </ol>
+          </div>
+          <div class="facts" id="facts"></div>
+        </div>
+      </div>
+      <iframe id="frame" title="会话" hidden></iframe>
+      <div class="overlay" id="overlay" hidden><div class="overlay-box"><div class="spinner"></div><span id="overlay-text">正在启动沙箱…</span></div></div>
+    </div>
+  </section>
+</div>
+
+<!-- ============================================================ 新建会话 -->
+<dialog id="new-dialog" class="narrow">
+  <form method="dialog" id="new-form">
+    <div class="dialog-head"><h3>新建会话</h3><button class="btn ghost icon-btn" value="cancel" aria-label="关闭"><svg><use href="#i-x"/></svg></button></div>
+    <div class="dialog-body">
+      <div class="field"><label for="new-title">会话名称</label><input class="input" id="new-title" placeholder="例如：整理周报" maxlength="100"></div>
+      <div class="field"><label for="new-model">模型</label><select class="input" id="new-model"></select></div>
+    </div>
+    <div class="dialog-foot"><button class="btn" value="cancel">取消</button><button class="btn primary" value="ok" id="new-ok">创建</button></div>
+  </form>
+</dialog>
+
+<!-- ============================================================ 设置：模型与密钥 -->
+<dialog id="settings">
+  <div class="dialog-head"><svg class="icon"><use href="#i-key"/></svg><h3>模型与密钥</h3>
+    <button class="btn ghost icon-btn" id="settings-close" aria-label="关闭"><svg><use href="#i-x"/></svg></button></div>
+  <div class="dialog-body">
+    <p class="section-title">我的 API Key</p>
+    <div id="creds"></div>
+    <div class="divider"></div>
+    <p class="section-title">添加一个 Key</p>
+    <form id="cred-form" autocomplete="off">
+      <div class="row">
+        <div class="field grow"><label for="c-provider">厂商</label><select class="input" id="c-provider"></select></div>
+        <div class="field grow"><label for="c-label">显示名称（可选）</label><input class="input" id="c-label" maxlength="40" placeholder="例如：我的 DeepSeek"></div>
+      </div>
+      <div id="custom-fields" hidden>
+        <div class="row">
+          <div class="field grow"><label for="c-base">接口地址</label><input class="input mono" id="c-base" placeholder="https://api.example.com/v1"></div>
+          <div class="field" style="width:150px"><label for="c-protocol">协议</label>
+            <select class="input" id="c-protocol"><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic</option></select></div>
+        </div>
+      </div>
+      <div class="field"><label for="c-key">API Key</label><input class="input mono" id="c-key" type="password" placeholder="sk-..." autocomplete="new-password"></div>
+      <div class="field"><label for="c-models">模型</label><input class="input mono" id="c-models" placeholder="多个用逗号分隔，例如 deepseek-chat, deepseek-reasoner">
+        <span class="hint">模型名以厂商文档为准。</span></div>
+      <div class="test-result" id="c-test-result" role="status"></div>
+      <div class="row" style="justify-content:flex-end">
+        <button class="btn" type="button" id="c-test">测试连接</button>
+        <button class="btn primary" type="submit" id="c-save">保存</button>
+      </div>
+    </form>
+  </div>
+</dialog>
+
+<!-- ============================================================ 确认 -->
+<dialog id="confirm" class="narrow">
+  <form method="dialog">
+    <div class="dialog-head"><h3 id="confirm-title">确认</h3></div>
+    <div class="dialog-body" id="confirm-text"></div>
+    <div class="dialog-foot"><button class="btn" value="cancel">取消</button><button class="btn primary" value="ok" id="confirm-ok">确定</button></div>
+  </form>
+</dialog>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

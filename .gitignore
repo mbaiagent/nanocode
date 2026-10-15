@@ -5,3 +5,4 @@ __pycache__/
 nanocode_demo/
 notes.txt
 evals/polyglot/tasks/
+build/

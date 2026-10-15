@@ -144,7 +144,8 @@ class WebHardeningTest(unittest.TestCase):
         with open(os.path.join(STATIC, "index.html"), encoding="utf-8") as f:
             html = f.read()
         self.assertNotIn("?token=", html)
-        self.assertIn('"/api/events?ticket="', html)
+        self.assertIn('"api/events?ticket="', html)     # 相对路径：页面挂在控制面的 /s/<会话>/ 前缀下也能用
+        self.assertNotIn('"/api/', html)
         self.assertIn("es.onerror", html)   # 票据一次性，断线后必须自己重连
 
 
