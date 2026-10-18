@@ -165,7 +165,7 @@ class ReviewSummaryTest(unittest.TestCase):
         self.ws.write("b.txt", "old\n")
         replies = [[call("read_file", path="a.py"), call("read_file", path="b.txt")],
                    [call("write_file", path="a.py", content="x = 1\ny = 3\n"), call("write_file", path="new.py", content="print(1)\n")],
-                   [call("bash", command="sed -i s/old/new/ b.txt")], say()]
+                   [call("bash", command="perl -i -pe 's/old/new/' b.txt")], say()]
         _, _, ev = self.agent(replies)
         (r,) = reviews(ev)
         files = {f["path"]: f for f in r["files"]}
@@ -176,7 +176,7 @@ class ReviewSummaryTest(unittest.TestCase):
         self.assertEqual((files["new.py"]["status"], files["new.py"]["added"]), ("新增", 1))
         self.assertIsNone(files["b.txt"]["diff"])
         self.assertIn("经 bash 改动", files["b.txt"]["note"])
-        self.assertEqual(self.asked, ["sed -i s/old/new/ b.txt"])      # 只有 sed 被问了，编辑和读都没有
+        self.assertEqual(self.asked, ["perl -i -pe 's/old/new/' b.txt"])      # 只有 sed 被问了，编辑和读都没有
 
     def test_no_changes_no_review(self):
         _, _, ev = self.agent([[call("read_file", path="a.py")], say("只是看看")])

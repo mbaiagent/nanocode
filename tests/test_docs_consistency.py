@@ -144,7 +144,7 @@ class NumbersMatchTest(unittest.TestCase):
         self.assertLess(abs(claim - lines) / lines, 0.1, f"README 写了约 {claim} 行，实际 {lines} 行")
 
     def test_unit_test_count_claim_is_not_inflated(self):
-        claim = int(re.search(r"(\d+)\+ 个单元测试", README).group(1))
+        claim = int(re.search(r"核心 (\d+)\+ 个", README).group(1))
         actual = unittest.defaultTestLoader.discover(os.path.join(ROOT, "tests")).countTestCases()
         self.assertLessEqual(claim, actual, f"README 写了 {claim}+ 个单元测试，实际只有 {actual} 个")
         self.assertGreater(claim, actual * 0.7, f"README 写的 {claim}+ 太保守了（实际 {actual} 个），请更新")

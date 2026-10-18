@@ -66,7 +66,10 @@ class Agent:
         self.permissions = permissions
         self.hooks = hooks
         self.bus = bus
-        self.cwd = cwd
+        # 与 ToolContext.__post_init__ / resolve_path / PermissionManager 保持同一套（realpath）基准。
+        # 否则在 macOS（/var → /private/var）等带符号链接的工作目录下，os.path.relpath 会算成
+        # ../../../../private/...，导致子任务越界误判、review 把同一文件列成两条。
+        self.cwd = os.path.realpath(cwd)
         self.system_prompt = system_prompt
         self.name = name
         self.depth = depth
