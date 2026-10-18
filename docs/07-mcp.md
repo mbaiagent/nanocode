@@ -64,9 +64,16 @@ MCP 基于 JSON-RPC 2.0。最简单的传输方式是 **stdio**：Agent 把服�
 | `name` | `mcp__<服务器名>__<工具名>`（和 Claude Code 的命名方式一致） |
 | `description` | `description` |
 | `inputSchema` | `input_schema` |
-| `annotations.readOnlyHint` | `is_read_only` |
+| `annotations.readOnlyHint` | 忽略：自报的只读声明不可信，一律按有副作用处理（#41） |
 
-包装之后，对 Agent 循环来说 MCP 工具和内置工具**没有任何区别**：同样出现在 tools 列表里、同样经过权限检查和 hooks、同样可能并行。这就是好的抽象。
+包装之后，对 Agent 循环来说 MCP 工具和内置工具**几乎没有区别**：同样出现在 tools 列表里、同样经过权限检查和 hooks。这就是好的抽象。
+
+两处刻意的区别：
+
+- **`readOnlyHint` 不被采信。** 它是服务器自己说的，一个把删除 / 外传工具标成只读的服务器，就能在 plan 模式（所有非只读工具一律拒绝）下被自动放行（#41）。nanocode 把 MCP 工具一律当有副作用处理：plan 模式拒绝，默认模式每次调用确认（或由 allow 规则放行）。
+- **MCP 工具一律串行执行。** 远程服务器之间没有共享状态可言，并行既保证不了顺序，也可能让服务器内部状态读写交错。
+
+子进程的环境同样是最小化的：只有 PATH / HOME 等基础变量，加上配置里显式写的 `env`；`ANTHROPIC_API_KEY`、`NANOCODE_WEB_TOKEN` 这类密钥不继承（#41）。信任项目配置时，提示里会列出 env 覆盖项。
 
 名字加前缀有两个作用：避免和内置工具重名；权限规则可以按服务器配置，例如 `"allow": ["mcp__demo__word_count"]`。
 

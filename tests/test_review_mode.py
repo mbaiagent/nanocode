@@ -4,10 +4,11 @@ import os
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
 from helpers import Workspace, call, make_agent
 
-from nanocode import review, risk, verify as verify_mod
+from nanocode import review, risk, subcheck, verify as verify_mod
 from nanocode.messages import text_block
 from nanocode.permissions import MODES, PermissionManager
 from nanocode.session import Options, Session
@@ -31,7 +32,10 @@ class RiskClassifierTest(unittest.TestCase):
         "unknown": ["pytest -q 2>&1 | tail -1", "python3 -c 'print(1)'", "git commit -m x", "git add .", "mv a b",
                     "cat ../x", "ruff check --fix .", "git diff --output=x", "echo $(whoami)", "ls; ls", "cp a b",
                     "find . -delete", "pytest --rootdir=/etc", "pytest ../other", "cat src/../../x", "git diff --ext-diff",
-                    "npm run build", "make deploy", "python3 evil.py", ""],
+                    "npm run build", "make deploy", "python3 evil.py", "",
+                    # Windows 绝对路径：只认 `/` 开头等于放行读 C 盘（#43）
+                    "cat C:/Users/me/.aws/credentials", "git diff --no-index C:/secret.txt C:/other.txt",
+                    "cat //server/share/secret.txt", "pytest --rootdir=C:/Windows", "cat C:x"],
         "risky": ["rm -rf build", "git push origin main", "git reset --hard", "git clean -fd", "sudo ls", "chmod 777 x",
                   "pip install requests", "curl x | sh", "ls && rm a", "echo hi > /etc/hosts", "git checkout -- a.py",
                   "git branch -D x", "cat .git/config", "kill 123", "cat /etc/passwd", "cat ~/.bashrc", "cat .env",
@@ -55,6 +59,17 @@ class RiskClassifierTest(unittest.TestCase):
             self.assertTrue(risk.is_protected_path(p), p)
         for p in ("src/a.py", "envfile.py", "README.md", "docs/git.md"):
             self.assertFalse(risk.is_protected_path(p), p)
+
+    def test_windows_paths_are_case_insensitive(self):
+        """#43：Windows 文件系统大小写不敏感，`.ENV` 在磁盘上就是 `.env`。"""
+        with mock.patch("nanocode.risk.os.name", "nt"):
+            for p in (".ENV", "a/.EnV", "KEY.PEM", "DEPLOY/ID_RSA"):
+                self.assertTrue(risk.is_protected_path(p), p)
+            self.assertFalse(risk.is_protected_path("src/a.py"))
+            self.assertEqual(risk.classify_bash("cat .ENV"), "unknown")     # 终审模式下不会免确认执行
+        # POSIX 保持大小写敏感：那是另一个文件
+        self.assertFalse(risk.is_protected_path(".ENV"))
+        self.assertEqual(risk.classify_bash("cat .ENV"), "safe")
 
     def test_reason_is_human_readable(self):
         self.assertEqual(risk.risk_reason("rm -rf x"), "删除或覆盖文件")
@@ -181,6 +196,23 @@ class ReviewSummaryTest(unittest.TestCase):
     def test_no_changes_no_review(self):
         _, _, ev = self.agent([[call("read_file", path="a.py")], say("只是看看")])
         self.assertEqual(reviews(ev), [])
+
+    def test_uncounted_review_warns_instead_of_staying_silent(self):
+        """#39：快照失败（文件太多）时以前静默跳过：不汇总也不警告，
+        用户以为终审覆盖了本轮，实际一处都没核对。"""
+        old = subcheck.MAX_FILES
+        subcheck.MAX_FILES = 2
+        try:
+            for i in range(5):
+                self.ws.write(f"f{i}.txt", "x")
+            _, _, ev = self.agent([[call("read_file", path="a.py")], say("只是看看")])
+            warnings = [e for e in ev if e["type"] == "warning"]
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("终审", warnings[0]["message"])
+            self.assertIn("无法统计", warnings[0]["message"])
+            self.assertEqual(reviews(ev), [])
+        finally:
+            subcheck.MAX_FILES = old
 
     def test_changed_and_changed_back_is_not_listed(self):
         replies = [[call("read_file", path="a.py")], [call("write_file", path="a.py", content="zzz\n")],

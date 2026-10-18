@@ -60,8 +60,8 @@ class Platform:
     def start(self) -> None:
         """在后台线程里启动服务，立即返回。"""
         if self.gateway:
-            self.gateway_server = self._serve(make_server(self.gateway, self.cfg.gateway_host, self.cfg.gateway_port),
-                                              "模型网关")
+            self.gateway_server = self._serve(make_server(self.gateway, self.cfg.gateway_host, self.cfg.gateway_port,
+                                                          self.cfg.max_connections), "模型网关")
             if self.sessions and self.cfg.gateway_port == 0 and not self.cfg.gateway_url:   # 测试用随机端口：沙箱要知道真实端口
                 port = self.gateway_server.server_address[1]
                 self.cfg.gateway_port = port
@@ -69,7 +69,8 @@ class Platform:
                                              or f"http://{self.cfg.gateway_host}:{port}")
         if self.control:
             self.sessions.reconcile()
-            self.control_server = self._serve(make_server(self.control, self.cfg.host, self.cfg.port), "控制面")
+            self.control_server = self._serve(make_server(self.control, self.cfg.host, self.cfg.port,
+                                                          self.cfg.max_connections), "控制面")
             threading.Thread(target=self.sessions.reap_forever, args=(self._stop,), daemon=True).start()
 
     def _serve(self, server, name: str):
