@@ -182,7 +182,7 @@ class DockerLauncher(Launcher):
             os.makedirs(d, exist_ok=True)
         with open(os.path.join(policy_dir, "policy.json"), "w", encoding="utf-8") as f:
             json.dump({**spec.policy, "audit_log": "/data/home/audit.jsonl"}, f, ensure_ascii=False, indent=1)
-        if os.geteuid() == 0:          # 容器里以 10001 运行，工作区要归它所有
+        if os.name != "nt" and os.geteuid() == 0:  # 容器里以 10001 运行，工作区要归它所有（Windows 无 geteuid）
             for root, dirs, files in os.walk(data_dir):
                 for p in [root, *(os.path.join(root, n) for n in dirs + files)]:
                     os.chown(p, UID, UID)
