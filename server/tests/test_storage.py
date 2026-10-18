@@ -72,6 +72,38 @@ class StoreContract:
         self.assertEqual((u["requests"], u["total_tokens"], u["billable_tokens"]), (2, 165, 110))
         self.assertEqual(self.store.get_usage(self.bob)["requests"], 0)
 
+    def test_reserve_quota_is_atomic(self):
+        """#54：检查 + 预留必须原子。并发的预留都读到同一个旧值，就会合力超额。"""
+        day, limit = "2026-01-01", 100
+        self.store.add_usage(self.alice, 0, 0, 0, billable=False, day=day)      # 先把当天的行建出来
+        results = []
+        barrier = threading.Barrier(10)
+
+        def reserve():
+            barrier.wait()
+            results.append(self.store.reserve_quota(self.alice, 30, limit, day=day))
+
+        threads = [threading.Thread(target=reserve) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        self.assertEqual(results.count(True), 3)          # 100 只放得下 3 个 30
+        self.assertEqual(self.store.get_usage(self.alice, day=day)["billable_tokens"], 90)
+
+    def test_reserve_quota_rejects_when_full_and_settle_refunds(self):
+        day = "2026-01-01"
+        self.assertTrue(self.store.reserve_quota(self.alice, 60, 100, day=day))
+        self.assertFalse(self.store.reserve_quota(self.alice, 60, 100, day=day))      # 120 > 100，放不下
+        self.assertEqual(self.store.get_usage(self.alice, day=day)["billable_tokens"], 60)
+        self.store.settle_usage(self.alice, 1, 35, 5, 40 - 60, day=day)                 # 实际只用 40：退 20
+        u = self.store.get_usage(self.alice, day=day)
+        self.assertEqual((u["requests"], u["input_tokens"], u["output_tokens"], u["billable_tokens"]),
+                         (1, 35, 5, 40))
+
+    def test_reserve_quota_zero_limit_means_unlimited(self):
+        self.assertTrue(self.store.reserve_quota(self.alice, 10 ** 9, 0))
+
 
 class SqliteStoreTest(StoreContract, unittest.TestCase):
     def make_store(self):

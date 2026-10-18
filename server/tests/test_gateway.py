@@ -14,7 +14,7 @@ from nanocode.llm.base import quota_exhausted_message
 from nanocode_server.models import Upstream
 from nanocode_server.security.keys import internal_key
 from nanocode_server.security.secretbox import SecretBox
-from nanocode_server.security.tokens import Signer
+from nanocode_server.security.tokens import Signer, web_token_digest
 from nanocode_server.services.catalog import ModelCatalog
 from nanocode_server.storage import MemoryRateLimiter, open_store
 from nanocode_server.web.framework import make_server
@@ -45,6 +45,13 @@ class GatewayTest(unittest.TestCase):
         self.own = self.store.create_session("alice", "s", f"c:{cred.id}:own-model")
         self.platform = self.store.create_session("alice", "p", "p:big")
         self.signer = Signer(SECRET, "gateway")
+        self.own_token = self.start_session(self.own)
+        self.start_session(self.platform)
+
+    def start_session(self, session, web_token="w" * 32):
+        """把会话标成运行中（#53 起网关只认运行中的会话），返回本次沙箱的 web_token。"""
+        self.store.update_session(session.id, status="running", endpoint="http://sandbox", web_token=web_token)
+        return web_token
 
     def tearDown(self):
         self.server.shutdown()
@@ -61,7 +68,9 @@ class GatewayTest(unittest.TestCase):
             {"choices": [{"message": {"content": "hi"}}], "usage": {"prompt_tokens": 50, "completion_tokens": 5}}).encode()
 
     def token(self, session, owner=None):
-        return self.signer.sign({"u": owner or session.owner, "s": session.id}, 600)
+        s = self.store.get_session(session.id) or session
+        return self.signer.sign({"u": owner or s.owner, "s": s.id,
+                                 "w": web_token_digest(s.web_token)}, 600)
 
     def post(self, body, token=None, path="/v1/chat/completions", headers=None):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
@@ -79,9 +88,24 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(self.post({"messages": []}, token="v1.x.y")[0], 401)
         self.assertEqual(self.post({"messages": []}, token=Signer(SECRET, "login").sign({"u": "alice", "s": self.own.id}, 60))[0], 401)
         self.assertEqual(self.post({"messages": []}, token=self.token(self.own, owner="mallory"))[0], 401)
+        old = self.token(self.own)
+        self.store.update_session(self.own.id, status="stopped", endpoint="")     # 会话停了
+        self.assertEqual(self.post({"messages": []}, token=old)[0], 401)
+        self.start_session(self.own, web_token="x" * 32)                          # 重启：web_token 轮换
+        self.assertEqual(self.post({"messages": []}, token=old)[0], 401)          # 旧代次的令牌也拒绝
         self.store.update_session(self.own.id, status="deleted")
         self.assertEqual(self.post({"messages": []}, token=self.token(self.own))[0], 401)
         self.assertEqual(self.upstream.requests, [])
+
+    def test_token_dies_with_the_sandbox(self):
+        """#53：stop 之后旧令牌必须立刻失效，重启后也只有新沙箱的令牌能用。"""
+        self.assertEqual(self.post({"messages": []}, self.token(self.own))[0], 200)
+        old = self.token(self.own)
+        self.store.update_session(self.own.id, status="stopped", endpoint="")
+        self.assertEqual(self.post({"messages": []}, token=old)[0], 401)
+        self.start_session(self.own, web_token="x" * 32)                          # 重启，换了 web_token
+        self.assertEqual(self.post({"messages": []}, token=old)[0], 401)          # 泄漏的旧令牌不能跟着复活
+        self.assertEqual(self.post({"messages": []}, self.token(self.own))[0], 200)
 
     def test_routes_by_session_and_meters(self):
         status, _, data = self.post({"model": "whatever-the-sandbox-says", "stream": True, "max_tokens": 99999,
@@ -172,6 +196,7 @@ class ChunkedKeepAliveTest(unittest.TestCase):
         cred = catalog.add_credential("alice", "custom", "sk-123456", ["m"],
                                       base_url=f"http://127.0.0.1:{self.listener.getsockname()[1]}/v1")
         self.session = self.store.create_session("alice", "s", f"c:{cred.id}:m")
+        self.store.update_session(self.session.id, status="running", web_token="w" * 32)
         self.server = make_server(GatewayApp(self.cfg, self.store, catalog, MemoryRateLimiter(0)), "127.0.0.1", 0)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
@@ -204,7 +229,8 @@ class ChunkedKeepAliveTest(unittest.TestCase):
 
     def test_decodes_and_finishes_promptly(self):
         conn = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=10)
-        token = Signer(SECRET, "gateway").sign({"u": "alice", "s": self.session.id}, 600)
+        token = Signer(SECRET, "gateway").sign(
+            {"u": "alice", "s": self.session.id, "w": web_token_digest("w" * 32)}, 600)
         conn.request("POST", "/v1/chat/completions", json.dumps({"stream": True, "messages": []}),
                      {"content-type": "application/json", "authorization": f"Bearer {token}"})
         started = time.time()
@@ -216,6 +242,63 @@ class ChunkedKeepAliveTest(unittest.TestCase):
         while self.store.get_usage("alice")["requests"] == 0 and time.time() < deadline:
             time.sleep(0.05)
         self.assertEqual(self.store.get_usage("alice")["input_tokens"], 120)
+
+
+class QuotaReservationTest(unittest.TestCase):
+    """#54：每日额度的「检查 + 扣减」以前是 TOCTOU，并发的请求能合力超支。"""
+
+    def setUp(self):
+        self.upstream = FakeServer(self.reply)
+        self.cfg = make_config(allow_private_upstreams=True, daily_tokens=5000, requests_per_minute=100,
+                               max_output_tokens=100, platform_base_url=self.upstream.url + "/v1",
+                               platform_api_key="PLATFORM-KEY", platform_models=["big"])
+        self.store = open_store(self.cfg)
+        self.catalog = ModelCatalog(self.cfg, self.store, SecretBox(SECRET))
+        self.app = GatewayApp(self.cfg, self.store, self.catalog, MemoryRateLimiter(100))
+        self.server = make_server(self.app, "127.0.0.1", 0)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.session = self.store.create_session("alice", "p", "p:big")
+        self.store.update_session(self.session.id, status="running", web_token="w" * 32)
+        self.token = Signer(SECRET, "gateway").sign(
+            {"u": "alice", "s": self.session.id, "w": web_token_digest("w" * 32)}, 600)
+        self.body = {"messages": [{"role": "user", "content": "x" * 2000}]}
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.upstream.close()
+        self.store.close()
+
+    def reply(self, method, path, headers, body):
+        time.sleep(0.05)                      # 放大并发窗口：让请求在网关里重叠
+        return 200, {"content-type": "application/json"}, json.dumps(
+            {"choices": [{"message": {"content": "hi"}}],
+             "usage": {"prompt_tokens": 1200, "completion_tokens": 100}}).encode()
+
+    def test_concurrent_requests_cannot_exceed_daily_quota(self):
+        statuses = []
+
+        def call():
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+            conn.request("POST", "/v1/chat/completions", json.dumps(self.body),
+                         {"content-type": "application/json", "authorization": f"Bearer {self.token}"})
+            statuses.append(conn.getresponse().status)
+            conn.close()
+
+        threads = [threading.Thread(target=call) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        # 每次预留 = 输入预估（约 1015）+ 输出上限（100）≈ 1115：5000 的额度只放得下 4 个，
+        # 其余必须 429。改成旧的「先读后放行」，20 个会全部通过、合力记 26000。
+        self.assertEqual(statuses.count(200), 4)
+        self.assertEqual(statuses.count(429), 16)
+        self.assertEqual(len(self.upstream.requests), 4)
+        used = self.store.get_usage("alice")
+        self.assertLessEqual(used["billable_tokens"], 5000)      # 每日总额是硬上限
+        self.assertEqual(used["input_tokens"], 4 * 1200)         # 真实用量照记，统计不失真
 
 
 if __name__ == "__main__":

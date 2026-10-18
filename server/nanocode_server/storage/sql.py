@@ -262,6 +262,36 @@ class Store:
                         "billable_tokens = usage.billable_tokens + EXCLUDED.billable_tokens",
                         (owner, day or utc_day(), requests, input_tokens, output_tokens, billed))
 
+    def reserve_quota(self, owner: str, tokens: int, limit: int, day: str | None = None) -> bool:
+        """原子地「检查 + 预留」每日额度：今天的 billable_tokens 加上 tokens 仍不超过
+        limit，才把 tokens 记进去并返回 True；放不下返回 False。
+
+        以前网关是「请求前读一次用量 → 放行 → 结束后再记账」，并发的请求都读到同一个
+        旧值、全部通过检查，合力可以把额度超支几倍（#54）。这里把查和留放进同一条
+        UPDATE 的 WHERE 里，靠数据库行锁串行化：只有真正放得下的请求能预留成功。
+        """
+        if limit <= 0:
+            return True                      # 0 = 不限制
+        day = day or utc_day()
+        # 先保证当天有行（并发下只有一个能插入，另一个 DO NOTHING），再原子地占额度。
+        self.db.execute("INSERT INTO usage (owner, day, requests, input_tokens, output_tokens, billable_tokens) "
+                        "VALUES (?, ?, 0, 0, 0, 0) ON CONFLICT (owner, day) DO NOTHING", (owner, day))
+        return self.db.update(
+            "UPDATE usage SET billable_tokens = billable_tokens + ? WHERE owner = ? AND day = ? AND "
+            "billable_tokens + ? <= ?", (tokens, owner, day, tokens, limit)) == 1
+
+    def settle_usage(self, owner: str, requests: int, input_tokens: int, output_tokens: int,
+                     billable_delta: int, day: str | None = None) -> None:
+        """结算一次模型请求：补记真实的 input/output，billable 按「实际 - 预留」多退
+        少补（delta 可为负，退款；调用方保证 delta <= 0，见 gateway.record）。"""
+        self.db.execute("INSERT INTO usage (owner, day, requests, input_tokens, output_tokens, billable_tokens) "
+                        "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (owner, day) DO UPDATE SET "
+                        "requests = usage.requests + EXCLUDED.requests, "
+                        "input_tokens = usage.input_tokens + EXCLUDED.input_tokens, "
+                        "output_tokens = usage.output_tokens + EXCLUDED.output_tokens, "
+                        "billable_tokens = usage.billable_tokens + EXCLUDED.billable_tokens",
+                        (owner, day or utc_day(), requests, input_tokens, output_tokens, billable_delta))
+
     def get_usage(self, owner: str, day: str | None = None) -> dict:
         day = day or utc_day()
         rows = self.db.execute("SELECT requests, input_tokens, output_tokens, billable_tokens FROM usage "
