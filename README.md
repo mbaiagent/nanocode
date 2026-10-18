@@ -12,6 +12,8 @@
 ![Eval](https://img.shields.io/badge/agent%20eval-37%2F39-blue)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
+**中文** | [English](README.en.md)
+
 [30 秒跑起来](#30-秒跑起来不需要-api-key) ·
 [截图](#截图) ·
 [架构](#架构) ·
