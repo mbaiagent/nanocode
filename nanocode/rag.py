@@ -25,6 +25,8 @@ import json
 import math
 import os
 import re
+import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -247,6 +249,12 @@ class DocIndex:
         self.chunks: list[Chunk] = []
         self.bm25: BM25 | None = None
         self.warning = ""
+        # embedding 熔断：配了 embedder 但 key 错 / 服务挂时，c.vec 会永远是 None，
+        # 于是每次 search_docs 都先等一次超时（默认 60s）再退化成关键词检索（#49）。
+        # 失败一次就冷却一段时间，期间直接走 BM25。
+        self._embed_failed_at: float | None = None
+        self._embed_cooldown = 60.0
+        self._lock = threading.RLock()
         self._load()
 
     # ---- 持久化
@@ -296,14 +304,27 @@ class DocIndex:
                     found[rel] = [st.st_mtime_ns, st.st_size]
         return found
 
-    def refresh(self) -> dict:
-        """让索引和磁盘一致。返回 {"added","changed","removed","embedded"} 的数量。"""
+    def refresh(self, cancel=None) -> dict:
+        """让索引和磁盘一致。返回 {"added","changed","removed","embedded"} 的数量。
+
+        cancel 是一个 threading.Event（可省）：用户按停止时，长耗时步骤之间检查它，
+        否则一次全量向量化（几十个文件、每个几十次 HTTP 调用）谁都拦不住（#49）。
+
+        整个方法持锁：search_docs 是只读工具、会被并行执行，两个 DocIndex 各自建
+        索引、同时写 docs.json.tmp 会互相覆盖（#49）。
+        """
+        with self._lock:
+            return self._refresh_locked(cancel)
+
+    def _refresh_locked(self, cancel=None) -> dict:
         scan = self._scan()
         stats = {"added": 0, "changed": 0, "removed": 0, "embedded": 0}
         for rel in set(self.files) - set(scan):
             del self.files[rel]
             stats["removed"] += 1
         for rel, sig in scan.items():
+            if cancel is not None and cancel.is_set():
+                break
             old = self.files.get(rel)
             if old and old["sig"] == sig:
                 continue
@@ -316,7 +337,7 @@ class DocIndex:
             self.files[rel] = {"sig": sig, "chunks": chunk_file(rel, text, self.max_chars)}
         self.chunks = [c for e in self.files.values() for c in e["chunks"]]
         self.warning = ""
-        if self.embedder:
+        if self.embedder and not self._embed_circuit_open():
             missing = [c for c in self.chunks if c.vec is None]
             if missing:
                 try:
@@ -324,42 +345,66 @@ class DocIndex:
                         c.vec = v
                     stats["embedded"] = len(missing)
                 except EmbeddingError as e:
+                    # 记住失败时刻，接下来一段时间不再试 —— 配了 embedder 但 key 错 /
+                    # 服务挂时，vec 永远是 None，不熔断就意味着每次检索都白等一次超时
+                    self._embed_failed_at = time.time()
                     self.warning = f"向量化失败，本次只用关键词检索：{e}"
+        elif self.embedder:
+            self.warning = "向量化仍在冷却中（上次失败未满 %d 秒），本次只用关键词检索" % self._embed_cooldown
         self.bm25 = BM25([tokenize(c.index_text) for c in self.chunks])
         if any(stats[k] for k in ("added", "changed", "removed", "embedded")):
             self.save()
         return stats
 
+    def _embed_circuit_open(self) -> bool:
+        """embedding 是否处于熔断冷却期。"""
+        if self._embed_failed_at is None:
+            return False
+        if time.time() - self._embed_failed_at < self._embed_cooldown:
+            return True
+        self._embed_failed_at = None      # 冷却结束，允许再试一次
+        return False
+
     # ---- 检索
 
-    def search(self, query: str, k: int = 5, mode: str = "auto") -> list[Hit]:
-        """mode: bm25 | vector | hybrid | auto（有向量就混合，否则 bm25）"""
-        if self.bm25 is None:
-            self.refresh()
-        if not self.chunks:
-            return []
-        have_vec = bool(self.embedder) and all(c.vec is not None for c in self.chunks)
-        if mode == "auto":
-            mode = "hybrid" if have_vec else "bm25"
-        if mode in ("vector", "hybrid") and not have_vec:
-            mode = "bm25"
-        pool = max(k * 4, 20)
-        bm = self.bm25.search(tokenize(query), pool) if mode in ("bm25", "hybrid") else []
-        vec: list[tuple[int, float]] = []
-        if mode in ("vector", "hybrid"):
-            try:
-                q = self.embedder.embed([query])[0]
-                vec = sorted(((i, cosine(q, c.vec)) for i, c in enumerate(self.chunks)), key=lambda x: -x[1])[:pool]
-            except EmbeddingError as e:
-                self.warning = f"查询向量化失败，改用关键词检索：{e}"
+    def search(self, query: str, k: int = 5, mode: str = "auto", cancel=None) -> list[Hit]:
+        """mode: bm25 | vector | hybrid | auto（有向量就混合，否则 bm25）
+
+        持锁执行：search_docs 是只读工具，模型一条回复里发两个就会并行（#49）。
+        """
+        with self._lock:
+            if self.bm25 is None:
+                self.refresh(cancel)
+            if not self.chunks:
+                return []
+            if cancel is not None and cancel.is_set():
+                return []
+            if self.embedder and self._embed_circuit_open():
+                # 检索时也讲清楚为什么没有向量结果，别让用户以为检索坏了
+                self.warning = "向量化仍在冷却中（上次失败未满 %d 秒），本次只用关键词检索" % self._embed_cooldown
+            have_vec = bool(self.embedder) and all(c.vec is not None for c in self.chunks)
+            if mode == "auto":
+                mode = "hybrid" if have_vec else "bm25"
+            if mode in ("vector", "hybrid") and not have_vec:
                 mode = "bm25"
-        if mode == "bm25":
-            ranked = bm
-        elif mode == "vector":
-            ranked = vec
-        else:
-            ranked = rrf([[i for i, _ in bm], [i for i, _ in vec]])
-        return [Hit(self.chunks[i], s) for i, s in ranked[:k]]
+            pool = max(k * 4, 20)
+            bm = self.bm25.search(tokenize(query), pool) if mode in ("bm25", "hybrid") else []
+            vec: list[tuple[int, float]] = []
+            if mode in ("vector", "hybrid") and not self._embed_circuit_open():
+                try:
+                    q = self.embedder.embed([query])[0]
+                    vec = sorted(((i, cosine(q, c.vec)) for i, c in enumerate(self.chunks)), key=lambda x: -x[1])[:pool]
+                except EmbeddingError as e:
+                    self._embed_failed_at = time.time()
+                    self.warning = f"查询向量化失败，改用关键词检索：{e}"
+                    mode = "bm25"
+            if mode == "bm25":
+                ranked = bm
+            elif mode == "vector":
+                ranked = vec
+            else:
+                ranked = rrf([[i for i, _ in bm], [i for i, _ in vec]])
+            return [Hit(self.chunks[i], s) for i, s in ranked[:k]]
 
 
 def make_embedder(cfg: dict | None) -> Embedder | None:

@@ -22,6 +22,7 @@ Agent 的全部"记忆"就是一个 messages 列表。nanocode 内部统一使�
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -69,6 +70,16 @@ def is_tool_result_message(message: Message) -> bool:
     return message["role"] == "user" and bool(content) and all(b.get("type") == "tool_result" for b in content)
 
 
+def has_tool_result(message: Message) -> bool:
+    """消息里是否含有工具结果块。
+
+    比 is_tool_result_message 宽：`_append_user` 会把新提问合并进上一条
+    user(tool_result)，得到 `[tool_result, text]` 这种混合形态。它不是"纯工具
+    结果"，但同样不能当成人说的话 —— 对应的 assistant(tool_use) 在它前面（#33）。
+    """
+    return any(b.get("type") == "tool_result" for b in message.get("content", []))
+
+
 def estimate_tokens(obj: Any) -> int:
     """粗略估算 token 数。
 
@@ -94,6 +105,19 @@ class Usage:
 
     def to_dict(self) -> dict:
         return {"input_tokens": self.input_tokens, "output_tokens": self.output_tokens, "estimated": self.estimated}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Usage":
+        return cls(int(d.get("input_tokens", 0) or 0), int(d.get("output_tokens", 0) or 0),
+                   bool(d.get("estimated", False)))
+
+    def merge(self, other: "Usage") -> None:
+        """线程安全地并进另一个 Usage（子 Agent 在工作线程里累加时用，见 #48）。"""
+        with _USAGE_LOCK:
+            self.add(other)
+
+
+_USAGE_LOCK = threading.Lock()
 
 
 @dataclass

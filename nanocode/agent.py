@@ -257,8 +257,9 @@ class Agent:
         # 先依次过权限（可能要问用户，必须串行），再执行
         plans = [self._prepare(call) for call in calls]
         runnable = [p for p in plans if p["result"] is None]
-        if len(runnable) > 1 and all(p["tool"].is_read_only for p in runnable):
-            # 多个只读工具互不影响 → 并行执行
+        if len(runnable) > 1 and all(p["tool"].parallel_safe for p in runnable):
+            # 多个互不影响的工具 → 并行执行。判定用 parallel_safe 而不是 is_read_only：
+            # task 是只读的（子 Agent 的调用单独走权限），但会读写父 Agent 的共享状态（#46）
             with ThreadPoolExecutor(max_workers=min(8, len(runnable))) as pool:
                 list(pool.map(self._execute, runnable))
         else:
@@ -409,8 +410,12 @@ class Agent:
             # 太大的是"当前这一轮"本身（比如刚读了一个巨大的文件）。只总结更早的轮次压不下来，
             # 连当前这一轮一起总结，再让模型在摘要基础上继续。
             keep = 0
-        self.messages, summary = compact_messages(self.provider, self.messages, keep_turns=keep, focus=focus,
-                                                  mid_turn=mid_turn)
+        self.messages, summary, usage = compact_messages(self.provider, self.messages, keep_turns=keep, focus=focus,
+                                                        mid_turn=mid_turn)
+        if usage:
+            # 摘要自己也是一次模型调用。以前把 usage 扔了，/cost 和评测统计偏低，
+            # 而每日调用数却已经计了它，两边对不上（#48）。
+            self.usage.add(Usage.from_dict(usage))
         after = context_tokens(self.system_prompt(), self.messages, self.tools.schemas())
         self._compacted_at = after
         self.emit("compact", auto=auto, before=before, after=after, summary=summary)
@@ -442,7 +447,10 @@ class Agent:
                 break
             result = sub._run(subcheck.feedback(report, output))   # 子 Agent 保留上下文，接着修
         self._dirty = self._dirty or sub._dirty   # 子 Agent 改了东西，也算本轮有改动
-        self.usage.add(sub.usage)
+        # merge 而不是 add：这里动的是父 Agent 自己的 usage。task 已经标成
+        # parallel_safe=False（#46）所以正常情况下就在主线程，但累加共享计数器
+        # 用带锁的那条路，将来谁再把并行放开也不会静默丢计数（#48）。
+        self.usage.merge(sub.usage)
         self.emit("subagent_end", description=description, result=result, usage=sub.usage.to_dict(), report=report.to_dict())
         return f"{result or '(子 Agent 没有返回内容)'}\n\n{report.render()}"
 

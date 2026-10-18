@@ -44,6 +44,19 @@ class FakeEmbedder:
         return [[1.0 if "agent" in t.lower() else 0.0, 1.0 if "权限" in t else 0.0, 0.1] for t in texts]
 
 
+class BrokenEmbedder:
+    """永远失败的 embedder：模拟 key 错 / 服务挂。"""
+
+    name = "broken"
+
+    def __init__(self):
+        self.calls = 0
+
+    def embed(self, texts):
+        self.calls += len(texts)
+        raise EmbeddingError("401 Unauthorized")
+
+
 class TokenizeTest(unittest.TestCase):
     def test_mixed(self):
         self.assertEqual(tokenize("edit_file 必须唯一"), ["edit", "file", "必须", "须唯", "唯一"])
@@ -143,6 +156,22 @@ class IndexTest(unittest.TestCase):
         idx.refresh()
         self.assertIn("没网", idx.warning)
         self.assertEqual(idx.search("独立上下文", 1)[0].chunk.path, "docs/sub.md")
+
+    def test_embedding_failure_opens_a_circuit_breaker(self):
+        """#49：配了 embedder 但服务挂时，不能每次检索都重试全量向量化。"""
+        emb = BrokenEmbedder()
+        idx = DocIndex(self.ws.dir, embedder=emb)
+        idx.refresh()
+        self.assertEqual(emb.calls, 2)                            # 两个文件各一个 chunk
+        # 连着检索几次：熔断期间一次都不该再调 embedder（以前每次都白等一次超时）
+        for _ in range(3):
+            idx.search("独立上下文", 1)
+        self.assertEqual(emb.calls, 2)
+        self.assertIn("冷却", idx.warning)                        # 说清楚是冷却，别让用户以为检索坏了
+        # 把失败时刻推到很久以前：允许再试一次（这次仍然失败，但确实又试了）
+        idx._embed_failed_at = time.time() - idx._embed_cooldown - 1
+        idx.refresh()
+        self.assertEqual(emb.calls, 4)
 
     def test_corrupt_index_is_ignored(self):
         os.makedirs(os.path.dirname(self.store))

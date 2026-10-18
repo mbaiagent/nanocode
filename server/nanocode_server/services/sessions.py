@@ -58,8 +58,10 @@ class SessionManager:
         self._locks_guard = threading.Lock()
 
     def _lock(self, sid: str) -> threading.Lock:
+        # RLock 而不是 Lock：switch_model 要持锁走完「查 busy → stop → 改 DB → 重启」
+        # 整条序列，而 stop / ensure_running 自己也会拿同一把锁（#61）。
         with self._locks_guard:
-            return self._locks.setdefault(sid, threading.Lock())
+            return self._locks.setdefault(sid, threading.RLock())
 
     # ------------------------------------------------------------------ 查询
 
@@ -156,20 +158,33 @@ class SessionManager:
         self.store.update_session(sid, last_active=time.time())
 
     def switch_model(self, owner: str, sid: str, ref: str) -> Session:
-        """换模型：沙箱里的模型配置是启动时锁定的，所以换完重启沙箱（恢复对话），Agent 也知道自己换了模型。"""
+        """换模型：沙箱里的模型配置是启动时锁定的，所以换完重启沙箱（恢复对话），Agent 也知道自己换了模型。
+
+        整条序列必须在 per-session 锁里做完。以前「查 busy → stop → 改 DB → 重启」
+        四步之间不持锁，两个后果：
+          1. 检查通过后新的 /api/chat 立刻进来 → stop 把沙箱杀了，当前回合连工具执行
+             一起丢掉，用户看到的是聊到一半会话没了；
+          2. 另一个请求在 stop 之后、ensure_running 之前插进来，会拿**旧** model_ref
+             重启沙箱；随后 switch 看到 running 直接返回，于是「数据库说新模型、
+             沙箱跑的还是旧模型」，而网关只认数据库，两边就打架了（#61）。
+        """
         s = self.owned(owner, sid)
         try:
             self.catalog.option(owner, ref)
         except CatalogError as e:
             raise SessionError(400, str(e)) from None
-        if s.status == "running":
-            state = self.sandbox_state(s)
-            if state and (state.get("busy") or state.get("queue")):
-                raise SessionError(409, "Agent 正在工作，等它做完（或先中断）再换模型")
-        was_running = s.status == "running"
-        self.stop(sid)
-        self.store.update_session(sid, model_ref=ref)
-        return self.ensure_running(sid) if was_running else self.store.get_session(sid)
+        with self._lock(sid):
+            # 锁内再查一次：拿锁之前那段时间里，Agent 可能刚好开始跑
+            s = self.store.get_session(sid) or s
+            if s.status == "running":
+                state = self.sandbox_state(s)
+                if state and (state.get("busy") or state.get("queue")):
+                    raise SessionError(409, "Agent 正在工作，等它做完（或先中断）再换模型")
+            was_running = s.status == "running"
+            self.stop(sid)
+            self.store.update_session(sid, model_ref=ref)
+            # 重启也用刚写进去的 ref：锁保证了这中间没人能拿旧配置先把沙箱拉起来
+            return self.ensure_running(sid) if was_running else self.store.get_session(sid)
 
     # ------------------------------------------------------------------ 维护
 

@@ -93,6 +93,22 @@ class Tool:
     path_target: bool = False   # permission_target() 返回的是文件路径（权限系统据此判断是否在项目内）
 
     @property
+    def parallel_safe(self) -> bool:
+        """可以和同一回复里的其它工具调用并行执行吗。默认只读的才可以。
+
+        注意"可以免确认"（is_read_only）和"可以并行"不是一回事：
+          - write_file 不免确认，也当然不能并行 —— 它和 read_file 并行时，
+            read_file 还没把"已读过"登记上，write_file 就会以"修改前必须先读"拒绝；
+          - task 名义上只读（子 Agent 的每个调用仍单独走权限），实际却会在工作线程里
+            读写父 Agent 的 usage / _dirty / _review_originals，并对整棵工作树做快照，
+            两个 task 并行会互相把对方的改动算成自己的（#46）。
+
+        所以默认值跟着 is_read_only 走，需要例外的子类用类属性覆盖
+        （`parallel_safe = False` 会遮住这个 property）。
+        """
+        return self.is_read_only
+
+    @property
     def changes_workspace(self) -> bool:
         """成功执行后，项目里的东西是否可能变了（决定"改完要验证"的闸门要不要关上）。默认：不是只读就算。
         联网这类"有副作用、但不改项目"的工具可以在子类里覆盖成 False。"""

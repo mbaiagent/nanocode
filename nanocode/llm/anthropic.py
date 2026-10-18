@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 
-from ..messages import LLMResponse, Message, Usage
+from ..messages import LLMResponse, Message, Usage, estimate_tokens
 from .base import LLMError, Provider, TextCallback, finalize_text_blocks, parse_tool_input
 
 
@@ -122,4 +122,11 @@ class AnthropicProvider(Provider):
             stop = "tool_use"
         elif stop not in ("max_tokens",):
             stop = "end_turn"
+        # 流被中途掐断（连接断开、代理超时）时，message_start / message_delta 都没到，
+        # usage 会停在 0 而内容已经收了一部分。当成"0 token 的成功"记账，
+        # /cost 和评测统计就静默偏低了（#48）。有内容就按估算回填并标记为估算值。
+        if blocks and not usage.input_tokens and not usage.output_tokens:
+            text = "".join(b.get("text", "") for b in blocks)
+            usage.output_tokens = estimate_tokens(text) or 1
+            usage.estimated = True
         return LLMResponse(content=blocks, stop_reason=stop, usage=usage)

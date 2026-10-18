@@ -275,5 +275,52 @@ class DirtyPropagationTest(Base):
         self.assertEqual([e["status"] for e in ev if e["type"] == "verify"], ["running", "pass"])
 
 
+class ParallelSafetyTest(Base):
+    """#46：task 名义只读，实际会读写父 Agent 的共享状态，绝不能并行。"""
+
+    def test_two_tasks_in_one_reply_run_serially(self):
+        # 一条回复里两个 task：必须一个做完再做一个。
+        # 并行的话，两个子 Agent 会互相把对方的写文件算成自己的改动（快照是整棵工作树），
+        # 而且会并发读改写父 Agent 的 usage / _dirty / _review_originals。
+        order = []
+
+        def sub_a(messages, tools):
+            order.append("a:start")
+            return [call("read_file", path="a.txt"), call("write_file", path="a.txt", content="from-a")]
+
+        def sub_b(messages, tools):
+            order.append("b:start")
+            return [call("read_file", path="src/x.py"), call("write_file", path="b.txt", content="from-b")]
+
+        replies = [
+            [call("task", description="甲", prompt="写 a"), call("task", description="乙", prompt="写 b")],
+            sub_a, say("甲完成"),          # 子 Agent 甲：读 + 写，然后汇报
+            sub_b, say("乙完成"),          # 子 Agent 乙：读 + 写，然后汇报
+            say("主完成"),
+        ]
+        agent, prov, ev = make_agent(self.ws, replies)
+        agent.run("x")
+        starts = [i for i, x in enumerate(order) if x.endswith(":start")]
+        self.assertEqual(order, ["a:start", "b:start"])
+        # 关键不在顺序而在"不重叠"：乙开工时甲已经收工
+        ends = [e for e in ev if e["type"] == "subagent_end"]
+        self.assertEqual(len(ends), 2)
+        self.assertLess(ends[0]["ts"], ends[1]["ts"])
+        # 每个子 Agent 的快照只算到自己改的文件
+        self.assertEqual(ends[0]["report"]["changed"], ["a.txt"])
+        self.assertEqual(ends[1]["report"]["changed"], ["b.txt"])
+        # usage 没丢：每一次模型调用（含两个子 Agent 的）都按 10 input tokens 计进了父 Agent
+        self.assertEqual(agent.usage.input_tokens, 10 * len(prov.calls))
+        self.assertGreater(len(prov.calls), 4)                   # 主 Agent + 两个子 Agent 都跑过
+
+    def test_task_declares_itself_not_parallel_safe(self):
+        from nanocode.tools import default_tools
+        names = {t.name: t for t in default_tools()}
+        self.assertTrue(names["task"].is_read_only)              # 仍然免确认、plan 模式可用
+        self.assertFalse(names["task"].parallel_safe)            # 但不许并行
+        self.assertTrue(names["read_file"].parallel_safe)        # 真只读的照旧并行
+        self.assertFalse(names["write_file"].parallel_safe)      # 会写盘的不并行
+
+
 if __name__ == "__main__":
     unittest.main()

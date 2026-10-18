@@ -65,6 +65,10 @@ class TodoWrite(Tool):
 class Task(Tool):
     name = "task"
     is_read_only = True  # 子 Agent 内部的每个工具调用仍然会单独走权限检查
+    # 但绝不许并行：子 Agent 会写文件、跑 bash，还在工作线程里读写父 Agent 的
+    # usage / _dirty / _review_originals，并对整棵工作树做快照。
+    # 一条回复里发两个 task 就会并发，互相把对方的改动算成自己的（#46）。
+    parallel_safe = False
     description = ("启动一个子 Agent 独立完成一项子任务，它有自己全新的上下文，完成后只返回最终结论。"
                    "适合：大范围搜索代码、调研某个问题、需要读很多文件才能得出结论的工作。"
                    "prompt 要写清楚任务目标和希望返回什么，因为子 Agent 看不到当前对话。"
