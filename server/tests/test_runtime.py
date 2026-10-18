@@ -2,8 +2,11 @@
 
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,6 +16,7 @@ import support  # noqa: F401
 
 from nanocode_server.runtime import (DockerClient, DockerLauncher, KubeClient, KubernetesLauncher, LaunchError,
                                      LocalLauncher, SandboxSpec)
+from nanocode_server.runtime.docker import sandbox_ids
 from support import DOCKER, FakeServer, make_config
 
 POLICY = {"provider": "custom", "model": "m", "allowed_modes": ["default"], "mode": "default"}
@@ -79,6 +83,11 @@ class FakeKube:
                 outer.calls.append(("GET", self.path))
                 if "persistentvolumeclaims" in self.path:
                     return self.reply(200 if outer.pvc else 404, {})
+                if "/pods?" in self.path:                 # 带 labelSelector 的列表（shutdown/reconcile 用）
+                    items = ([{"metadata": {"name": f"ncs-sbx-{SPEC.session_id}",
+                                            "labels": {"ncs/session": SPEC.session_id}}}]
+                             if outer.pod else [])
+                    return self.reply(200, {"items": items})
                 if outer.terminating > 0:
                     outer.terminating -= 1
                     return self.reply(200, {"status": {"phase": "Running"}})
@@ -180,7 +189,12 @@ class DockerConfigTest(unittest.TestCase):
         launcher.image, launcher.network, launcher.runtime, launcher.cpu, launcher.memory = "img", "ncs-sbx", "runsc", "1.5", "512Mi"
         c = launcher.container_config(SPEC, "/host/data", "/host/policy")
         h = c["HostConfig"]
-        self.assertEqual(c["User"], "10001:10001")
+        # 容器 uid:gid 跟着控制面身份走：root 时是 10001（并 chown 工作区），
+        # 普通用户时就是控制面自己——否则容器里写不了工作区（#58）
+        uid, gid = sandbox_ids()
+        self.assertEqual(c["User"], f"{uid}:{gid}")
+        self.assertNotEqual(uid, 0)                           # 任何情况下容器都不以 root 跑
+        self.assertIn("ncs.created", c["Labels"])             # 对账时按它停掉超寿容器（#60）
         self.assertTrue(h["ReadonlyRootfs"])
         self.assertEqual(h["CapDrop"], ["ALL"])
         self.assertIn("no-new-privileges", h["SecurityOpt"])
@@ -323,6 +337,169 @@ class LocalLauncherTest(unittest.TestCase):
             launcher.stop("s")
         proc.terminate.assert_called_once()
         proc.kill.assert_not_called()
+
+
+class FakeDockerClient:
+    """假 Docker API：只会列容器和删容器（shutdown / reconcile 用）。"""
+
+    def __init__(self, containers):
+        self.containers = list(containers)
+        self.deleted = []
+
+    def request(self, method, path, body=None, timeout=60):
+        if method == "GET" and path.startswith("/containers/json"):
+            return 200, self.containers
+        if method == "DELETE":
+            name = path[len("/containers/"):].split("?", 1)[0]
+            self.deleted.append(name)
+            self.containers = [c for c in self.containers
+                               if not any(n.lstrip("/") == name for n in c.get("Names", []))]
+            return 204, {}
+        raise AssertionError(f"假 Docker 不认识的调用：{method} {path}")
+
+
+class DockerLifecycleTest(unittest.TestCase):
+    """#60：控制面退出/重启时，Docker 沙箱容器要被清掉，不能带着有效令牌继续跑。"""
+
+    def launcher(self, containers):
+        launcher = DockerLauncher.__new__(DockerLauncher)
+        launcher.docker = FakeDockerClient(containers)
+        launcher.max_lifetime = 43200
+        return launcher
+
+    @staticmethod
+    def container(sid, created=None):
+        labels = {"app": "nanocode-sandbox", "ncs.session": sid}
+        if created is not None:
+            labels["ncs.created"] = str(int(created))
+        return {"Names": [f"/ncs-sbx-{sid}"], "Labels": labels}
+
+    def test_shutdown_stops_all_sandbox_containers(self):
+        launcher = self.launcher([self.container("a" * 16), self.container("b" * 16),
+                                  {"Names": ["/someone-elses"], "Labels": {"app": "other"}}])
+        launcher.shutdown()
+        self.assertEqual(sorted(launcher.docker.deleted), sorted(["ncs-sbx-" + "a" * 16, "ncs-sbx-" + "b" * 16]))
+
+    def test_reconcile_stops_orphans_and_expired(self):
+        now = time.time()
+        keep, orphan, old, noage = "k" * 16, "o" * 16, "d" * 16, "n" * 16
+        launcher = self.launcher([
+            self.container(keep, now), self.container(orphan, now),
+            self.container(old, now - 100000),          # 超寿：会话还在也停掉
+            self.container(noage),                      # 更早的版本起的：没有 created 就不猜寿龄
+        ])
+        launcher.reconcile({keep, noage})
+        self.assertEqual(sorted(launcher.docker.deleted),
+                         sorted([f"ncs-sbx-{orphan}", f"ncs-sbx-{old}"]))
+
+
+class KubernetesLifecycleTest(unittest.TestCase):
+    """#60：K8s 启动器同样要实现 shutdown / reconcile（以前基类是空实现）。"""
+
+    def launcher(self, kube):
+        return k8s(KubeClient(kube.url), ready_timeout=10, poll=0.05)
+
+    def test_shutdown_deletes_all_sandbox_pods(self):
+        kube = FakeKube(pod_exists=True)
+        try:
+            self.launcher(kube).shutdown()
+            deleted = [c[1] for c in kube.calls if c[0] == "DELETE" and "/pods/" in c[1]]
+            self.assertEqual(len(deleted), 1)
+            self.assertIn(SPEC.session_id, deleted[0])
+        finally:
+            kube.close()
+
+    def test_reconcile_removes_pods_without_a_session(self):
+        kube = FakeKube(pod_exists=True)
+        try:
+            self.launcher(kube).reconcile(set())                # 数据库里没有会话：Pod 全清
+            self.assertTrue(any(c[0] == "DELETE" and "/pods/" in c[1] for c in kube.calls))
+            kube.calls.clear()
+            self.launcher(kube).reconcile({SPEC.session_id})    # 会话还在：不动
+            self.assertFalse(any(c[0] == "DELETE" and "/pods/" in c[1] for c in kube.calls))
+        finally:
+            kube.close()
+
+
+class _FakeSandbox(ThreadingHTTPServer):
+    """假沙箱：只认带对令牌的 /api/state，用来验证 pid 文件里的令牌校验。"""
+
+    def __init__(self, token: str):
+        outer = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                ok = self.headers.get("x-nanocode-token") == outer.token
+                self.send_response(200 if ok else 403)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+        super().__init__(("127.0.0.1", 0), H)
+        self.token = token
+        self.port = self.server_address[1]
+
+
+def _kill_later(proc):
+    def cleanup():
+        if proc.poll() is None:
+            proc.kill()
+    return cleanup
+
+
+def _dummy_process():
+    # 必须 start_new_session：真沙箱也是这么起的，killpg 才杀得到它自己那一组。
+    # 不分组的话它和 pytest 同一个进程组，测试里的 killpg 会把测试自己一起杀掉。
+    return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+
+
+class LocalPidFileTest(unittest.TestCase):
+    """#60：控制面重启后内存字典是空的，但沙箱进程还活着——要凭着 pid 文件找回来，
+    不能判成死再起一个（旧进程就成了没人管的孤儿）。"""
+
+    def setUp(self):
+        self.sandbox = _FakeSandbox("tok-123")
+        # 必须真的 serve：_alive_pid 要连过去问 /api/state。只 shutdown 不 serve_forever
+        # 会永远等在那个事件上（server_close 才是关监听）。
+        threading.Thread(target=self.sandbox.serve_forever, daemon=True).start()
+        self.addCleanup(self.sandbox.shutdown)
+        self.addCleanup(self.sandbox.server_close)
+        self.dummy = _dummy_process()
+        self.addCleanup(_kill_later(self.dummy))
+        self.launcher = LocalLauncher(make_config().data_dir)
+        self.sid = "0" * 16
+        self.launcher._write_pid(self.sid, self.dummy.pid, self.sandbox.port, "tok-123")
+
+    def test_sandbox_is_found_after_restart(self):
+        self.assertTrue(self.launcher.is_alive(self.sid))
+        self.launcher.procs.clear()                       # 模拟控制面重启
+        self.assertTrue(self.launcher.is_alive(self.sid))
+        self.launcher.stop(self.sid)                      # 重启后也能停掉它
+        self.assertFalse(self.launcher.is_alive(self.sid))
+        self.dummy.wait(timeout=10)
+        self.assertEqual(self.dummy.returncode, -15)      # SIGTERM 正常终止
+
+    def test_wrong_token_means_not_ours(self):
+        """pid 可能被系统复用给别的进程：令牌对不上就不是我们的沙箱，不能杀（#60）。"""
+        self.launcher._write_pid(self.sid, self.dummy.pid, self.sandbox.port, "wrong-token")
+        self.assertFalse(self.launcher.is_alive(self.sid))
+        self.launcher.stop(self.sid)
+        self.assertIsNone(self.dummy.poll())              # 无辜的进程还活着
+
+    def test_reconcile_and_shutdown_cover_pid_files(self):
+        other = "1" * 16
+        dummy2 = _dummy_process()
+        self.addCleanup(_kill_later(dummy2))
+        self.launcher._write_pid(other, dummy2.pid, self.sandbox.port, "tok-123")
+        self.launcher.reconcile({self.sid})               # other 不在 keep 里：停掉
+        self.assertFalse(self.launcher.is_alive(other))
+        dummy2.wait(timeout=10)
+        self.assertTrue(self.launcher.is_alive(self.sid))     # keep 里的不动
+        self.launcher.shutdown()                              # 剩下的全停
+        self.assertFalse(self.launcher.is_alive(self.sid))
+        self.dummy.wait(timeout=10)
 
 
 if __name__ == "__main__":

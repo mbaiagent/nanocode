@@ -33,7 +33,7 @@ from ..security.auth import Authenticator, AuthError
 from ..security.keys import internal_key
 from ..services.catalog import CatalogError, ModelCatalog
 from ..services.sessions import SessionError, SessionManager
-from ..storage import Store
+from ..storage import StorageBusy, Store
 from .framework import App, HttpError, Request, Response, static_dir
 from .proxy import SandboxGone, forward
 
@@ -76,6 +76,9 @@ class ControlApp(App):
             raise HttpError(e.status, str(e)) from None
         except CatalogError as e:
             raise HttpError(400, str(e)) from None
+        except StorageBusy as e:
+            # 连接池拿不到连接：明确告诉客户端"服务端忙，重试"，别变成 500 或断连接（#60）
+            raise HttpError(503, f"数据库正忙，请稍后重试：{e}") from None
 
     @staticmethod
     def _same_origin(req: Request) -> bool:
@@ -90,7 +93,9 @@ class ControlApp(App):
 
         @r("GET", "/healthz")
         def healthz(req):
-            return Response.json({"ok": True})
+            # 编排层靠这个探测平台是不是退化成没有隔离的本机启动器（#36）：
+            # launcher=local 且 isolated=false 时应该告警，而不是等用户登录后从 /api/me 里发现。
+            return Response.json({"ok": True, "launcher": self.launcher.name, "isolated": self.launcher.isolated})
 
         @r("GET", "/static/{name}")
         def static(req):

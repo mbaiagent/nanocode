@@ -5,7 +5,9 @@
     数据库      NCS_DATABASE_URL=postgresql://...  → PostgreSQL（需要 psycopg）；不配 → SQLite 文件
     限流计数    NCS_REDIS_URL=redis://...          → Redis（需要 redis 包）；不配 → 进程内存
     沙箱        NCS_LAUNCHER=auto                  → 在 K8s 里就用 K8s；本机有 Docker 且有沙箱镜像就用 Docker；
-                                                     否则本机子进程（没有隔离，只适合开发）
+                                                     否则本机子进程（没有隔离，只适合开发）。
+                                                     生产模式（NCS_AUTH != dev）拒绝这种静默退化，也拒绝显式
+                                                     NCS_LAUNCHER=local，除非显式 NCS_ALLOW_UNISOLATED=1
 
 配了却用不了（比如配了 PostgreSQL 地址但没装驱动）会直接报错，不会悄悄退回内置实现：
 那样一个以为跑在 PostgreSQL 上的集群，其实每个副本各写各的 SQLite。
@@ -79,6 +81,7 @@ class Config:
 
     # ------------------------------------------------------------ 沙箱
     launcher: str = "auto"                  # auto / local / docker / k8s
+    allow_unisolated: bool = False          # 显式承认"生产模式也没有隔离"的风险（NCS_ALLOW_UNISOLATED=1）
     sandbox_modes: list[str] = field(default_factory=lambda: list(SAFE_MODES))
     sandbox_mode: str = "default"
     sandbox_image: str = "nanocode-sandbox:latest"   # Docker 和 K8s 启动器用的沙箱镜像
@@ -129,6 +132,7 @@ class Config:
             token_ttl=_int("NCS_TOKEN_TTL", d.token_ttl),
             login_ttl=_int("NCS_LOGIN_TTL", d.login_ttl),
             launcher=_env("NCS_LAUNCHER", d.launcher),
+            allow_unisolated=_bool("NCS_ALLOW_UNISOLATED", False),
             sandbox_modes=_list("NCS_SANDBOX_MODES", SAFE_MODES),
             sandbox_mode=_env("NCS_SANDBOX_MODE", d.sandbox_mode),
             sandbox_image=_env("NCS_SANDBOX_IMAGE", d.sandbox_image),
@@ -185,8 +189,11 @@ class Config:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(self.secret_key)
 
-    def validate(self) -> None:
-        """启动前的安全检查：配错了宁可起不来，也不要带着漏洞运行。"""
+    def validate(self, launcher_needed: bool = True) -> None:
+        """启动前的安全检查：配错了宁可起不来，也不要带着漏洞运行。
+
+        launcher_needed=False 给"只启动模型网关"的角色用：它不创建沙箱，隔离与否与它无关。
+        """
         if len(self.secret_key) < 32:
             raise ValueError("NCS_SECRET_KEY 至少 32 个字符")
         if self.auth not in ("dev", "proxy"):
@@ -197,6 +204,16 @@ class Config:
             raise ValueError("NCS_ALLOW_PRIVATE_UPSTREAMS 仅限 dev 认证模式")
         if self.auth == "dev" and self.host not in LOOPBACK:
             raise ValueError("dev 认证（输入任意用户名登录）只能在只监听本机时使用，对外服务请用 NCS_AUTH=proxy")
+        if self.launcher not in ("auto", "local", "docker", "k8s"):
+            raise ValueError("NCS_LAUNCHER 只能是 auto / local / docker / k8s")
+        if launcher_needed and self.auth != "dev" and self.launcher == "local" and not self.allow_unisolated:
+            # 没有隔离时，"每个用户一个沙箱"的所有保证都不成立（#36）：Agent 会以控制面同一个
+            # 系统用户运行，读得到主密钥、数据库里所有会话的令牌和别人的工作区。/api/me 里的
+            # isolated:false 要登录后才看得到，阻止不了事故——所以在启动前就拒绝。
+            raise ValueError(
+                "生产模式（NCS_AUTH != dev）不能用没有隔离的本机启动器：请构建沙箱镜像让 NCS_LAUNCHER=auto "
+                "选到 Docker/K8s，或显式设置 NCS_LAUNCHER=docker/k8s；确实要在生产里无隔离运行，"
+                "请显式设置 NCS_ALLOW_UNISOLATED=1 承认这个风险")
         if self.sandbox_mode not in self.sandbox_modes:
             raise ValueError(f"NCS_SANDBOX_MODE={self.sandbox_mode} 不在 NCS_SANDBOX_MODES 里")
         servers = self.sandbox_mcp_servers

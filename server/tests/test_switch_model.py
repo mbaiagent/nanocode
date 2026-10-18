@@ -40,6 +40,25 @@ class FakeStore:
     def claim_start(self, sid, token):
         return True
 
+    # #59 之后的守卫式写入：都真的改状态，并像真的存储一样返回是否写进去了
+    def finish_start(self, sid, token, endpoint, now):
+        self.updates.append({"status": "running"})
+        self.s.status, self.s.endpoint, self.s.started = "running", endpoint, now
+        return True
+
+    def fail_start(self, sid, token, error):
+        self.updates.append({"status": "failed", "error": error})
+        self.s.status, self.s.error = "failed", error
+        return True
+
+    def stop_session(self, sid):
+        self.updates.append({"status": "stopped"})
+        self.s.status, self.s.endpoint = "stopped", ""
+        return True
+
+    def mark_dead(self, sid):
+        return self.stop_session(sid)
+
 
 def make_manager(s: Session):
     cfg = support.make_config()

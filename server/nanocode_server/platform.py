@@ -31,7 +31,8 @@ class Platform:
         if role not in ROLES:
             raise ValueError(f"未知的角色：{role}")
         cfg.ensure_secret()
-        cfg.validate()
+        # 只启动网关的角色不创建沙箱：隔离检查与它无关，不能因为它拒启动（#36）
+        cfg.validate(launcher_needed=role in ("all", "control"))
         self.cfg, self.log, self.role = cfg, log, role
         self.store = open_store(cfg)
         self.limiter = make_rate_limiter(cfg)

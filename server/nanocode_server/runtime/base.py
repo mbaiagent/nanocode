@@ -82,6 +82,9 @@ class Launcher(ABC):
         """沙箱里访问网关用的地址；None = 用配置里的。"""
         return None
 
+    def reconcile(self, keep: set[str]) -> None:
+        """控制面启动时调用：停掉 keep（数据库里还在用的会话）之外的沙箱。默认什么都不做。"""
+
     def shutdown(self) -> None:
         """控制面退出时调用。"""
 

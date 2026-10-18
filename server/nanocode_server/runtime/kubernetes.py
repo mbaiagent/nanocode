@@ -202,5 +202,40 @@ class KubernetesLauncher(Launcher):
         status, pod = self.kube.request("GET", self._path("pods", self.names(session_id)["pod"]))
         return status == 200 and pod.get("status", {}).get("phase") in ("Pending", "Running")
 
+    # ------------------------------------------------------------------ 控制面生命周期
+
+    def _sandbox_pods(self) -> list[dict]:
+        status, pods = self.kube.request("GET", self._path("pods") + "?labelSelector=app%3Dnanocode-sandbox")
+        if status != 200:
+            raise LaunchError(f"列不出沙箱 Pod：HTTP {status}")
+        return pods.get("items", [])
+
+    def shutdown(self) -> None:
+        """控制面退出：删掉所有沙箱 Pod（#60）。
+
+        以前基类是空实现，滚动更新 / docker stop 控制面后 Pod 还带着有效网关令牌继续跑。
+        PVC 保留：工作区还要用于恢复对话，下次访问会重建 Pod。
+        """
+        try:
+            pods = self._sandbox_pods()
+        except LaunchError:
+            return                      # API 已经不在了：Pod 大概率也没了
+        for pod in pods:
+            sid = (pod.get("metadata") or {}).get("labels", {}).get("ncs/session", "")
+            if sid:
+                self.stop(sid)
+
+    def reconcile(self, keep: set[str]) -> None:
+        """控制面启动时：删掉 keep 之外的沙箱 Pod（#60）。
+
+        寿龄有 activeDeadlineSeconds 兜底，这里只管"数据库里已经没有会话"的无主 Pod。
+        PVC 保留，会话下次访问会重建 Pod。API 连不上就让它抛出来：控制面的核心职责
+        就是管沙箱，后端不可用时宁可起不来（和上面 is_alive 的行为一致）。
+        """
+        for pod in self._sandbox_pods():
+            sid = (pod.get("metadata") or {}).get("labels", {}).get("ncs/session", "")
+            if sid and sid not in keep:
+                self.stop(sid)
+
 
 __all__ = ["KubernetesLauncher", "KubeClient", "in_cluster"]

@@ -19,8 +19,11 @@ import mimetypes
 import os
 import re
 import socket
+import sys
 import threading
 import time
+import traceback
+import uuid
 from dataclasses import dataclass, field
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -56,6 +59,7 @@ class Request:
     raw_query: str = ""
     params: dict = field(default_factory=dict)
     user: str | None = None              # 认证中间件填写
+    rid: str = ""                        # 请求编号：出错时客户端和服务端日志能对上（#60）
 
     @property
     def cookies(self) -> dict:
@@ -161,6 +165,14 @@ class App:
             return self.handle(req)
         except HttpError as e:
             return Response.error(e.status, str(e), e.headers)
+        except Exception:
+            # 业务代码没接住的异常（Docker/K8s 出错、解密失败、连接池忙……）：
+            # 必须回一个 5xx JSON，不能直接把连接掐了（#60）。否则客户端看到的是
+            # RemoteDisconnected，分不清是平台故障还是自己网络断了，也无法重试。
+            print(f"[nanocode] 请求 {req.rid} {req.method} {req.path} 未处理异常：", file=sys.stderr)
+            traceback.print_exc()
+            return Response.error(500, f"服务器内部错误（请求号 {req.rid or '-'}），请稍后重试；"
+                                       "反复出现请把请求号告诉管理员")
 
 
 def static_dir() -> str:
@@ -237,7 +249,8 @@ def make_server(app: App, host: str, port: int, max_connections: int = 256) -> T
             if body is None:                   # 请求体发得太慢，总时限用完：断掉
                 self.close_connection = True
                 return self._write(Response.error(408, "请求体发送太慢，连接已关闭"))
-            req = Request(method, u.path, parse_qs(u.query), self.headers, body, self.client_address[0], u.query)
+            req = Request(method, u.path, parse_qs(u.query), self.headers, body, self.client_address[0], u.query,
+                          rid=uuid.uuid4().hex[:8])
             # 响应阶段解除 socket 超时：流式响应 / SSE 可以几分钟没有一个字节，
             # 慢消费者不该被误杀（连接数由 _Server 的信号量兜底）。
             self.connection.settimeout(None)
@@ -278,11 +291,21 @@ def make_server(app: App, host: str, port: int, max_connections: int = 256) -> T
                 if not resp.stream:
                     self.wfile.write(resp.body)
                     return
-                for chunk in resp.body:
-                    self.wfile.write(chunk)
-                    self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
-                pass                           # 对方断开了
+                try:
+                    for chunk in resp.body:
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+                except OSError:
+                    # 对方断开了。Windows 上报的是 ConnectionAbortedError（WinError 10053/10054），
+                    # 不在 Linux 常见的 BrokenPipe / ConnectionReset 里：压测时每个断连刷一条
+                    # traceback，真正的错误反而被淹没（#70）。
+                    pass
+                except Exception:
+                    # 流中途出错（比如记账时代理挂了）：连接上已经写出去一部分，变不成 5xx 了，
+                    # 至少留下现场，别只靠 socketserver 那句没上下文的 traceback（#60）。
+                    traceback.print_exc()
+            except OSError:
+                pass                           # 写响应头时对方就已经断开（同上，#70）
             finally:
                 close = getattr(resp.body, "close", None)
                 if resp.stream and close:
