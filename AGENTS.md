@@ -53,7 +53,7 @@ docs/               教学文档（每章对应一个模块）
 
 ### 1. Worktree 隔离
 
-**不要在主工作区 `/Users/mibao/dev/nanocode` 直接改代码**。每个 agent 用独立 worktree：
+**不要在主工作区直接改代码**（就是你 clone 仓库的那个目录）。每个 agent 用独立 worktree：
 
 ```bash
 git worktree add /tmp/nc-<your-name> -b fix/<topic> origin/main
