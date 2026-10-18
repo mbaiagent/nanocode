@@ -16,7 +16,7 @@ import urllib.request
 from ..config import Config
 from ..models import ModelOption, Session
 from ..runtime import Launcher, LaunchError, SandboxSpec
-from ..security.tokens import Signer
+from ..security.tokens import Signer, web_token_digest
 from ..storage import Store
 from .catalog import MOCK_REF, CatalogError, ModelCatalog
 
@@ -127,8 +127,11 @@ class SessionManager:
                 web_token = secrets.token_urlsafe(32)
                 if not self.store.claim_start(sid, web_token):
                     return self._wait_started(sid)        # 别的副本正在启动它
-            api_key = "" if option.ref == MOCK_REF else \
-                self.gateway_signer.sign({"u": s.owner, "s": sid}, self.cfg.token_ttl)
+            api_key = "" if option.ref == MOCK_REF else self.gateway_signer.sign(
+                # 载荷里带本次启动的 web_token 摘要（代次）：stop / 重启会换 web_token，
+                # 网关比对当前值即可拒绝旧令牌——沙箱停了、或者泄漏的令牌，都不能
+                # 再消耗平台额度（#53）。
+                {"u": s.owner, "s": sid, "w": web_token_digest(web_token)}, self.cfg.token_ttl)
             spec = SandboxSpec(sid, s.owner, web_token, api_key, build_policy(self.cfg, option, self.gateway_url),
                                resume=bool(s.started))
             try:

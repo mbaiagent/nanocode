@@ -24,6 +24,7 @@ from .base import SANDBOX_PORT, Launcher, LaunchError, SandboxSpec, wait_ready
 
 DOCKER_SOCKET = "/var/run/docker.sock"
 UID = 10001
+ICC_OPTION = "com.docker.network.bridge.enable_icc"
 
 
 class _UnixConnection(http.client.HTTPConnection):
@@ -100,15 +101,36 @@ class DockerLauncher(Launcher):
         if status == 404:
             status, _ = self.docker.request("POST", "/networks/create", {
                 "Name": self.network, "Driver": "bridge", "Internal": True,      # 出不了外网，容器之间也不通
-                "Options": {"com.docker.network.bridge.enable_icc": "false"}})
+                "Options": {ICC_OPTION: "false"}})
             if status not in (200, 201):
                 raise LaunchError(f"创建沙箱网络失败：HTTP {status}")
             status, net = self.docker.request("GET", f"/networks/{self.network}")
+        elif status != 200:
+            raise LaunchError(f"读不到沙箱网络 {self.network}：HTTP {status}")
+        self._check_isolation(net)
         configs = (net.get("IPAM") or {}).get("Config") or []
         gateway = next((c.get("Gateway") for c in configs if c.get("Gateway")), "")
         if not gateway:
             raise LaunchError(f"沙箱网络 {self.network} 没有网关地址")
         return gateway
+
+    def _check_isolation(self, net: dict) -> None:
+        """已存在的沙箱网络（上次部署留下的、管理员预建的、NCS_DOCKER_NETWORK 指过去
+        的，包括默认的 bridge）必须真的是隔离网络，否则拒绝启动。
+
+        只在自己创建时设 Internal/enable_icc 是不够的：预建一个普通 bridge（或
+        NCS_DOCKER_NETWORK=bridge）时，沙箱就有完整公网出口，能把用户数据和密钥
+        外传，还能以网桥地址访问宿主机上所有监听的服务（Redis、管理端口……）（#57）。
+        宁可拒绝启动，也不带着敞口的网络跑。
+        """
+        if net.get("Driver") != "bridge":
+            raise LaunchError(f"沙箱网络 {self.network} 的驱动是 {net.get('Driver')!r}，只支持 bridge")
+        if not net.get("Internal"):
+            raise LaunchError(f"沙箱网络 {self.network} 不是 internal 网络（有外网出口）。请删掉它让平台重建，"
+                              f"或用 NCS_DOCKER_NETWORK 指定一个 internal 网络")
+        if (net.get("Options") or {}).get(ICC_OPTION) != "false":
+            raise LaunchError(f"沙箱网络 {self.network} 没有关闭容器间通信（{ICC_OPTION}=false），"
+                              f"沙箱之间能互访。请删掉它让平台重建")
 
     def gateway_bind_host(self) -> str:
         return self._gateway_ip

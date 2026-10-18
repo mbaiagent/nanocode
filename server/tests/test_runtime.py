@@ -189,6 +189,56 @@ class DockerConfigTest(unittest.TestCase):
         self.assertEqual(env["NANOCODE_API_KEY"], "gateway-token")
 
 
+class DockerNetworkTest(unittest.TestCase):
+    """#57：已存在的沙箱网络必须真的是隔离网络（internal + 容器间不通 + bridge），否则拒绝启动。"""
+
+    INTERNAL = {"Driver": "bridge", "Internal": True,
+                "Options": {"com.docker.network.bridge.enable_icc": "false"},
+                "IPAM": {"Config": [{"Gateway": "172.18.0.1"}]}}
+
+    def launcher(self, net=None):
+        class FakeDocker:
+            def __init__(self):
+                self.net, self.created = net, None
+
+            def request(self, method, path, body=None, timeout=60):
+                if method == "GET" and path.startswith("/networks/"):
+                    return (200, self.net) if self.net is not None else (404, {})
+                if method == "POST" and path == "/networks/create":
+                    self.created = body
+                    self.net = {"Driver": "bridge", "Internal": True,
+                                "Options": {"com.docker.network.bridge.enable_icc": "false"},
+                                "IPAM": {"Config": [{"Gateway": "172.19.0.1"}]}}
+                    return 201, {}
+                return 200, {}
+
+        d = DockerLauncher.__new__(DockerLauncher)        # 不连 Docker，只测网络校验
+        d.network, d.docker = "ncs-sandboxes", FakeDocker()
+        return d
+
+    def test_accepts_internal_network(self):
+        self.assertEqual(self.launcher(self.INTERNAL)._ensure_network(), "172.18.0.1")
+
+    def test_rejects_networks_without_isolation(self):
+        for bad in ({**self.INTERNAL, "Internal": False},                    # 普通 bridge：有公网出口
+                    {**self.INTERNAL, "Options": {}},                        # 没关 icc：容器之间能互访
+                    {**self.INTERNAL, "Options": {"com.docker.network.bridge.enable_icc": "true"}},
+                    {**self.INTERNAL, "Driver": "overlay"}):                 # 非 bridge 驱动
+            with self.subTest(net=bad):
+                with self.assertRaises(LaunchError):
+                    self.launcher(bad)._ensure_network()
+
+    def test_missing_network_is_created_as_internal(self):
+        d = self.launcher(None)                                               # 404：平台自己创建
+        self.assertEqual(d._ensure_network(), "172.19.0.1")
+        self.assertEqual(d.docker.created["Internal"], True)
+        self.assertEqual(d.docker.created["Options"]["com.docker.network.bridge.enable_icc"], "false")
+
+    def test_network_without_gateway_address_is_refused(self):
+        with self.assertRaises(LaunchError):
+            self.launcher({**self.INTERNAL, "IPAM": {}})._ensure_network()
+
+
 @unittest.skipUnless(DOCKER, "设置 NCS_TEST_DOCKER=1 才真的启动 Docker 沙箱")
 class DockerRealTest(unittest.TestCase):
     def test_start_stop_and_isolation(self):

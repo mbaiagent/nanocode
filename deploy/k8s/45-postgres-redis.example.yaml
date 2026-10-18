@@ -1,5 +1,16 @@
 # 示例：在集群里跑一个 PostgreSQL 和一个 Redis。生产环境建议直接用云厂商的托管数据库和托管 Redis
 #（自动备份、主备切换），只要把连接地址填进 ncs-secrets 即可，不需要这个文件。
+# Redis 必须设密码：单机 Docker 部署时沙箱能通过网桥地址访问宿主机上监听的 Redis，
+# 无密码意味着沙箱可以删改限流键，绕过所有用户的每分钟请求限制（#57）。
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ncs-redis
+  namespace: nanocode-system
+type: Opaque
+stringData:
+  REDIS_PASSWORD: "替换成密码"
+---
 apiVersion: v1
 kind: Secret
 metadata:
@@ -67,7 +78,11 @@ spec:
       containers:
         - name: redis
           image: redis:7
-          args: ["--save", "", "--appendonly", "no"]      # 只存限流计数，丢了也无妨
+          args: ["--save", "", "--appendonly", "no", "--requirepass", "$(REDIS_PASSWORD)"]   # 只存限流计数，丢了也无妨
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: ncs-redis, key: REDIS_PASSWORD}
           ports: [{containerPort: 6379}]
 ---
 apiVersion: v1

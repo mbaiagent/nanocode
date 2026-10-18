@@ -107,6 +107,7 @@ class Config:
     daily_tokens: int = 2_000_000           # 每人每天平台模型的 token 上限；用户自己的 Key 不受限
     requests_per_minute: int = 30
     max_output_tokens: int = 8192
+    max_connections: int = 256              # HTTP 服务并发连接上限（线程数），超限直接 503：防慢连接/半开连接占满资源
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -154,6 +155,7 @@ class Config:
             daily_tokens=_int("NCS_DAILY_TOKENS", d.daily_tokens),
             requests_per_minute=_int("NCS_RPM", d.requests_per_minute),
             max_output_tokens=_int("NCS_MAX_OUTPUT_TOKENS", d.max_output_tokens),
+            max_connections=_int("NCS_MAX_CONNECTIONS", d.max_connections),
         )
 
     # ------------------------------------------------------------ 派生值

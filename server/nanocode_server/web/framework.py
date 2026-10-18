@@ -18,6 +18,9 @@ import json
 import mimetypes
 import os
 import re
+import socket
+import threading
+import time
 from dataclasses import dataclass, field
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -25,6 +28,14 @@ from typing import Callable, Iterable
 from urllib.parse import parse_qs, urlparse
 
 SECURITY_HEADERS = [("x-content-type-options", "nosniff"), ("referrer-policy", "no-referrer")]
+
+# 读请求阶段的 socket 超时和整个请求（请求行 + 头 + 体）的总时限（#55）。
+# 沙箱被网络策略允许访问网关：一个租户开几千个只发半个请求的连接，就能把
+# ThreadingHTTPServer 的线程占光，所有用户的模型请求一起失败。socket 超时挡
+# 「连上不发数据」，总时限挡「每次只发几个字节」的慢速客户端。响应阶段会解除
+# 超时：模型流式响应 / SSE 可能几分钟没有一个字节，慢消费者不能误杀。
+REQUEST_TIMEOUT = 15
+READ_DEADLINE = 60
 
 
 class HttpError(Exception):
@@ -161,14 +172,57 @@ class _Server(ThreadingHTTPServer):
     # 队列满了内核会丢弃 SYN，客户端要等 1 秒重试，或者直接被重置。压测时就是这样发现的。
     request_queue_size = 256
 
+    def __init__(self, *args, max_connections: int = 256, **kwargs):
+        super().__init__(*args, **kwargs)
+        # 并发连接上限（#55）：ThreadingHTTPServer 每个连接起一个线程、没有上限，
+        # 半打开的连接 + 16MB 请求体就能耗尽线程和内存。放不下的连接直接回 503，
+        # 不起线程；线程结束（无论正常还是异常）都把名额还回去。
+        self._slots = threading.BoundedSemaphore(max_connections) if max_connections > 0 else None
 
-def make_server(app: App, host: str, port: int) -> ThreadingHTTPServer:
+    def process_request(self, request, client_address):
+        if self._slots is not None and not self._slots.acquire(blocking=False):
+            return self._reject(request)
+        try:
+            super().process_request(request, client_address)
+        except Exception:                        # 起线程失败（fd/线程耗尽）也要还名额
+            if self._slots is not None:
+                self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            if self._slots is not None:
+                self._slots.release()
+
+    @staticmethod
+    def _reject(request):
+        try:
+            request.settimeout(5)                # 别让回 503 本身阻塞住 accept 循环
+            request.sendall(b"HTTP/1.0 503 Service Unavailable\r\ncontent-length: 0\r\n"
+                            b"retry-after: 1\r\nconnection: close\r\n\r\n")
+        except OSError:
+            pass
+        finally:
+            request.close()
+
+
+def make_server(app: App, host: str, port: int, max_connections: int = 256) -> ThreadingHTTPServer:
     class RequestHandler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.0"          # 写完就关连接：流式响应不需要分块编码
         server_version = "nanocode-server"
+        timeout = REQUEST_TIMEOUT              # 读请求的阶段：空闲/龟速连接不能占住线程（#55）
+        read_deadline = READ_DEADLINE          # 整个请求的总时限（头 + 体）
 
         def log_message(self, *args):
             pass
+
+        def handle_one_request(self):
+            # 从读请求行开始计时：总时限要覆盖慢速地把头和体一点点吐出来的客户端，
+            # socket timeout 只限制单次 recv，挡不住每次只发一个字节的攻击。
+            self._deadline = time.monotonic() + self.read_deadline
+            super().handle_one_request()
 
         def _serve(self, method: str) -> None:
             u = urlparse(self.path)
@@ -179,9 +233,39 @@ def make_server(app: App, host: str, port: int) -> ThreadingHTTPServer:
             if n < 0 or n > app.max_body:
                 self.close_connection = True
                 return self._write(Response.error(413, "请求体过大"))
-            body = self.rfile.read(n) if n else b""
+            body = self._read_body(n)
+            if body is None:                   # 请求体发得太慢，总时限用完：断掉
+                self.close_connection = True
+                return self._write(Response.error(408, "请求体发送太慢，连接已关闭"))
             req = Request(method, u.path, parse_qs(u.query), self.headers, body, self.client_address[0], u.query)
+            # 响应阶段解除 socket 超时：流式响应 / SSE 可以几分钟没有一个字节，
+            # 慢消费者不该被误杀（连接数由 _Server 的信号量兜底）。
+            self.connection.settimeout(None)
             self._write(app(req))
+
+        def _read_body(self, n: int) -> bytes | None:
+            """按声明的长度读请求体；超时或对方断开返回 None。
+
+            不能一口气 rfile.read(n)：那会阻塞到收满 n 字节，每秒只发几个字节的客户端
+            就能永远占住一个线程（#55）。也不能用 select 等 socket 可读：请求体很可能
+            在读请求头时已经被 rfile 的缓冲吞进去了，socket 上反而没有数据。read1 每次
+            最多做一次 recv（被 socket 超时兜底），间隙里检查总时限，两种情况都对。
+            """
+            if n <= 0:
+                return b""
+            chunks, got = [], 0
+            while got < n:
+                if self._deadline - time.monotonic() <= 0:
+                    return None
+                try:
+                    chunk = self.rfile.read1(min(n - got, 65536))
+                except (socket.timeout, OSError):
+                    return None                     # 读得太慢或对方断开
+                if not chunk:
+                    return None
+                chunks.append(chunk)
+                got += len(chunk)
+            return b"".join(chunks)
 
         def _write(self, resp: Response) -> None:
             try:
@@ -213,7 +297,7 @@ def make_server(app: App, host: str, port: int) -> ThreadingHTTPServer:
         def do_DELETE(self):
             self._serve("DELETE")
 
-    server = _Server((host, port), RequestHandler)
+    server = _Server((host, port), RequestHandler, max_connections=max_connections)
     server.daemon_threads = True
     return server
 
