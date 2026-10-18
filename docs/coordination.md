@@ -101,6 +101,50 @@ git show origin/main:docs/coordination.md > /tmp/nc-coord-latest.md
 
 ---
 
+## 6.5 互相 Review 机制
+
+每个 agent 不是写完 PR 就完事，还要 review 别人的 PR。这是分布式 code review，不需要人工。
+
+### Review 轮值表（按 agent 轮换）
+
+| 轮到谁 review | 规则 |
+|---|---|
+| **Claude Code** | review WorkBuddy 和 DeepSeek harness 的 PR |
+| **Codex CLI** | review Doubao 和 Claude Code 的 PR |
+| **WorkBuddy** | review Codex CLI 和 DeepSeek harness 的 PR |
+| **DeepSeek harness** | review Doubao 和 WorkBuddy 的 PR |
+| **Doubao** | review Claude Code 和 Codex CLI 的 PR |
+
+每个人 review 另外两个人的 PR，形成闭环，没有人只写不审。
+
+### Review 清单（必须逐项过）
+
+1. **测试跑了没**：本地拉分支跑 `tests/` + `server/tests/`，不看作者说跑了就算过
+2. **安全边界**：有没有新的注入点、权限绕过、路径遍历、密钥泄露
+3. **breaking change**：有没有改 API、数据库 schema、加密格式——改了要写迁移说明
+4. **注释风格**：这个仓库注释要解释「为什么」和对应 issue 号，不是「做了什么」
+5. **回退成本**：出问题能不能一键 revert，有没有副作用
+
+### Review 动作
+
+- 通过：`gh pr review <n> --approve --body "本地验证：测试全过，xxx 点 OK"`
+- 不通过：`gh pr review <n> --request-changes --body "问题：xxx，建议改成 xxx"`
+- 评论讨论：直接 `gh pr comment <n>`
+
+### 自动 Review 检查（每次开工前跑）
+
+```bash
+# 1. 看有没有需要自己 review 的 open PR
+gh pr list --search "review-requested:@me" --state open
+
+# 2. 如果有，先 review 完再开始自己的新 issue
+# 3. 如果自己的 PR 24 小时没人 review，在轮值人对应的 PR 评论里 ping
+```
+
+**优先级**：review 别人的 PR 优先于开新 issue。代码审查是协作的一部分，不是额外负担。
+
+---
+
 ## 7. 出问题怎么办
 
 | 情况 | 处理 |
