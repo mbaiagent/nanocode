@@ -27,6 +27,19 @@ class ToolError(Exception):
     """工具执行失败。错误信息会原样交给模型 —— 写清楚原因，模型才能自己纠正。"""
 
 
+def norm_rel(path: str) -> str:
+    """规则匹配用的规范化路径：统一分隔符 + Windows 上大小写不敏感。
+
+    没有这个函数，Windows 上 `os.path.relpath` 给出 `secrets\\a.txt`，而规则一般写成
+    `secrets/*`，fnmatchcase 匹配不上 —— 模型只要把 / 换成 \\ 就能绕过 deny，
+    而 bypass 模式下 deny 是唯一防线（#35）。POSIX 上 normcase 是恒等变换。
+
+    放在 tools/base.py 是因为 permissions / subcheck / review / agent 都要用它，
+    而这几层之间互相引用会成环。
+    """
+    return os.path.normcase(path).replace(os.sep, "/")
+
+
 def resolve_path(cwd: str, path: str) -> str:
     """把工具参数里的路径变成磁盘上真实的绝对路径。
 
@@ -41,7 +54,16 @@ def resolve_path(cwd: str, path: str) -> str:
 
 
 def is_inside(root: str, path: str) -> bool:
+    """path 是否在 root 目录内（含 root 本身）。两侧都先 realpath，消掉 `..` 和软链接。
+
+    Windows 上还要 normcase：盘符和路径大小写不敏感（`c:\\x` 和 `C:\\x` 是同一个地方），
+    不做的话同一条路径会被判成"项目外"，触发大量无谓确认（#35）。
+    """
     root = os.path.realpath(root)
+    if os.name == "nt":
+        root, path = os.path.normcase(root), os.path.normcase(os.path.realpath(path))
+    else:
+        path = os.path.realpath(path)
     return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
 

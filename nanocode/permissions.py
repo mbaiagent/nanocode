@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from . import risk
-from .tools.base import is_inside, resolve_path
+from .tools.base import is_inside, norm_rel, resolve_path
 
 MODES = ("default", "accept_edits", "plan", "review", "bypass")
 EDIT_TOOLS = {"write_file", "edit_file"}
@@ -81,11 +81,15 @@ class PermissionManager:
             # 防止 `~/x`、软链接、`src/../../etc/x` 这类写法绕过检查
             full = resolve_path(self.cwd, target or ".")
             inside = is_inside(self.cwd, full)
-            norm = os.path.relpath(full, os.path.realpath(self.cwd)) if inside else full
+            norm = norm_rel(os.path.relpath(full, os.path.realpath(self.cwd))) if inside else norm_rel(full)
             allow_forms = [norm]                 # allow 只认规范化路径：宁可多问一次
             deny_forms = [target, norm, full]    # deny 任一写法命中都拒绝：宁可多拦一次
+        redirects = redirect_targets(target) if tool.name == "bash" else []
         if tool.name == "bash":
-            if _bash_matches(self.deny, target, deny=True):
+            # 重定向目标也参与 deny 匹配：`echo x > ~/.bashrc` 里的 `~/.bashrc`
+            # 以前整个串只跟 `bash(...)` 模式比，deny 里写 `bash(*.bashrc*)` 也拦不住（#34）
+            extra = [os.path.expanduser(t) for t in redirects]
+            if _bash_matches(self.deny, target, deny=True, extra=extra):
                 return Decision("deny", "命中 deny 规则（复合命令里任何一段命中都算）")
         elif _matches_any(self.deny, tool.name, *deny_forms):
             return Decision("deny", "命中 deny 规则")
@@ -93,9 +97,21 @@ class PermissionManager:
             return Decision("deny", "当前处于 plan（只读规划）模式，不能执行修改类操作。请先给出方案，等用户切换模式后再执行。")
         if self.mode == "review":
             why = self._high_risk(tool, target, inside, allow_forms[0] if getattr(tool, "path_target", False) else "")
+            if not why and redirects:
+                # 写项目外的文件是终审模式的高风险动作，重定向是它的另一种写法（#34）
+                for t in redirects:
+                    if not is_inside(self.cwd, resolve_path(self.cwd, os.path.expanduser(t))):
+                        why = f"命令要把输出写到项目外：{t}"
+                        break
             if why:
                 return Decision("ask", f"高风险操作（{why}），终审模式下无论 allow 规则如何都必须确认", high_risk=True)
         if tool.name == "bash":
+            # 含"写项目外文件"的重定向时，allow 规则不许放行：`bash(git status*)`
+            # 会把 `git status > ~/.bashrc` 一起放开，而文档承诺写项目外路径必须确认（#34）。
+            # 项目内的重定向（`pytest > out.log`）不受影响。
+            if any(not is_inside(self.cwd, resolve_path(self.cwd, os.path.expanduser(t))) for t in redirects):
+                if self.mode != "bypass":
+                    return Decision("ask", "命令要把输出写到项目以外的路径，需要确认")
             if _bash_matches(self.allow, target, cwd=self.cwd, exact=self.session_allow):
                 return Decision("allow", "命中 allow 规则")
         elif _matches_any(self.allow + self.session_allow, tool.name, *allow_forms):
@@ -134,13 +150,38 @@ class PermissionManager:
                 hint = "这是复合命令（含 && ; | 等），allow 规则要每一段都命中才放行。"
             return Decision("deny", "需要确认，但当前没有可以询问的用户（非交互模式）。可用 --mode 或 allow 规则放行。" + hint)
         target = tool.permission_target(input) or ""
-        answer = self.ask_fn(tool.name, input, target)
+        shown = target
+        if getattr(tool, "path_target", False) and target:
+            # 提示里要显示真实位置。软链接 `link/secret -> ~/.ssh/id_rsa` 也会触发询问，
+            # 但只显示原始写法的话用户看到的是 `link/secret`，看着像项目内文件 ——
+            # 等于让用户在不知情的情况下批准一次外部读写（#42）。
+            full = resolve_path(self.cwd, target)
+            inside = is_inside(self.cwd, full)
+            rel = norm_rel(os.path.relpath(full, os.path.realpath(self.cwd))) if inside else norm_rel(full)
+            if rel != target and target.replace("\\", "/") != rel:
+                shown = f"{target} → {full}" + ("" if inside else "（项目外）")
+        answer = self.ask_fn(tool.name, input, shown)
         if answer == "always" and decision.high_risk:
             return Decision("allow", "用户允许这一次（高风险操作不支持「总是允许」）")
         if answer == "always":
-            rule = f"bash({target})" if tool.name == "bash" else tool.name
+            # 「总是允许」必须绑定到具体的目标，不能把整类工具放开。
+            # 以前非 bash 工具只记 `write_file`，之后同一个工具的任意路径都免确认 ——
+            # 一次外部写入授权就变成了全路径放行，提示词注入可以顺着它读
+            # ~/.ssh/id_rsa、改 ~/.bashrc（#37）。
+            note = ""
+            if tool.name == "bash":
+                rule = f"bash({target})"
+            elif getattr(tool, "path_target", False) and target:
+                full = resolve_path(self.cwd, target)
+                inside = is_inside(self.cwd, full)
+                norm = norm_rel(os.path.relpath(full, os.path.realpath(self.cwd))) if inside else norm_rel(full)
+                rule = f"{tool.name}({norm})"
+                note = "，仅限这个路径" if inside else "，仅限这个文件（项目外）"
+            else:
+                rule = tool.name
+                note = "，仅限这个工具"
             self.session_allow.append(rule)
-            return Decision("allow", f"用户选择总是允许（已添加规则 {rule}）")
+            return Decision("allow", f"用户选择总是允许（已添加规则 {rule}{note}）")
         if answer == "yes":
             return Decision("allow", "用户允许")
         return Decision("deny", "用户拒绝了这次操作。请询问用户希望怎么做，不要换个方式绕过。")
@@ -242,6 +283,63 @@ def split_command(command: str, deep: bool = False) -> tuple[list[str], bool]:
     return segs, opaque
 
 
+_REDIRECT_OPS = "<>|&0123456789"
+
+
+def redirect_targets(command: str) -> list[str]:
+    """命令里 `>` `>>` `<` 后面跟的路径。
+
+    `split_command` 只把 `&& || ; | 换行 &` 当分隔符，重定向既不拆段也不标记，
+    于是 `git status > ~/.bashrc` 整串还能命中 `bash(git status*)`（#34）。
+    这里把重定向目标单独取出来，让调用方按路径处理。
+
+    不算目标的：`2>&1` `>&2` `<&-` 这类文件描述符复制、`/dev/null`、
+    here-doc 的 `<<`（后面跟的是分隔词不是路径）。引号里的内容不提取 ——
+    宁可不完整，也不要误判。
+    """
+    out: list[str] = []
+    i, n = 0, len(command)
+    quote = ""
+    while i < n:
+        c = command[i]
+        if quote:
+            if c == quote:
+                quote = ""
+            i += 1
+            continue
+        if c in "'\"":
+            quote = c
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if c in "<>":
+            j = i
+            while j < n and command[j] in _REDIRECT_OPS:
+                j += 1
+            op = command[i:j]
+            if "&" in op or op.strip("<>") == "-" or op.startswith("<<"):
+                i = j                      # 文件描述符复制 / 关闭 / here-doc
+                continue
+            k = j
+            while k < n and command[k] in " \t":
+                k += 1
+            if k < n and command[k] not in ";|&<>":
+                m = k
+                while m < n and command[m] not in " \t;|&<>":
+                    m += 1
+                target = command[k:m]
+                if target and target != "/dev/null":
+                    out.append(target)
+                i = m
+            else:
+                i = j
+            continue
+        i += 1
+    return out
+
+
 def _is_harmless_cd(segment: str, cwd: str) -> bool:
     """`cd 项目内的目录` 只改变后面命令的工作目录，不算一个需要规则放行的动作。"""
     try:
@@ -253,16 +351,19 @@ def _is_harmless_cd(segment: str, cwd: str) -> bool:
     return is_inside(cwd, resolve_path(cwd, tokens[1]))
 
 
-def _bash_matches(rules: list[str], command: str, deny: bool = False, cwd: str = "", exact: list[str] | None = None) -> bool:
+def _bash_matches(rules: list[str], command: str, deny: bool = False, cwd: str = "",
+                  exact: list[str] | None = None, extra: list[str] | None = None) -> bool:
     patterns: list[str | None] = []
     for rule in rules:
         m = _RULE.match(rule.strip())
         if m and m.group(1) == "bash":
             patterns.append(m.group(2))
     if deny:
-        # 整串匹配保留原有行为（如 `bash(*sudo*)`）；再逐段匹配，堵住 `cd x && rm -rf y`
+        # 整串匹配保留原有行为（如 `bash(*sudo*)`）；再逐段匹配，堵住 `cd x && rm -rf y`；
+        # 重定向目标（> >> < 后面的路径）也算一份，堵住 `echo x > ~/.bashrc`（#34）
         segments, _ = split_command(command, deep=True)
-        return any(p is None or fnmatch.fnmatchcase(t, p) for p in patterns for t in [command.strip(), *segments])
+        candidates = [command.strip(), *segments, *(extra or [])]
+        return any(p is None or fnmatch.fnmatchcase(t, p) for p in patterns for t in candidates)
     # allow：「总是允许」记下的是整条命令的原文，只认逐字相同的那一条（不当作通配）
     if any(r.strip() == f"bash({command})" for r in exact or []):
         return True

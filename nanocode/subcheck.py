@@ -19,6 +19,8 @@ import hashlib
 import os
 from dataclasses import dataclass, field
 
+from .tools.base import norm_rel
+
 SKIP_DIRS = {".git", ".nanocode", "__pycache__", "node_modules", ".venv", "venv", ".mypy_cache", ".pytest_cache",
              ".ruff_cache", ".tox"}
 MAX_FILES = 20000
@@ -48,7 +50,7 @@ def parse_scope(patterns) -> list[str] | None:
 
 def in_scope(rel: str, patterns: list[str]) -> bool:
     """rel 是否在允许范围内。模式可以是文件、目录（前缀）或通配符（* 可以跨目录）。"""
-    rel = rel.replace(os.sep, "/")
+    rel = norm_rel(rel)
     for p in patterns:
         base = p.rstrip("/")
         if rel == base or rel.startswith(base + "/") or fnmatch.fnmatchcase(rel, p):
