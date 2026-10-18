@@ -86,6 +86,7 @@ class Renderer:
             n = "未统计" if r.get("changed") is None else f"改动 {len(r['changed'])} 个文件"
             check = {"pass": "检查通过", "fail": "检查未通过", "skipped": "检查未执行", "none": "未验证"}.get(r.get("check_status"), "")
             scope = f" · 越界 {len(r['out_of_scope'])} 个" if r.get("out_of_scope") else ""
+            scope += f" · 统计范围外改动 {len(r['external'])} 处" if r.get("external") else ""
             bad = bool(r) and not r.get("ok", True)
             self.w(paint(f"── 子 Agent 完成：{e['description']}（{n} · {check}{scope}）──", "red" if bad else "magenta") + "\n", err=True)
         elif t == "compact":
@@ -119,6 +120,8 @@ class Renderer:
                 self.w(paint(f"✗ 自动验证未通过（第 {e['attempt']} 次，退出码 {e['exit_code']}）\n{tail}", "red") + "\n", err=True)
         elif t == "error":
             self.w(paint(f"✗ {e['message']}", "red") + "\n", err=True)
+        elif t == "warning":
+            self.w(paint(f"⚠ {e['message']}", "yellow") + "\n", err=True)
         elif t == "turn_end" and not sub:
             u = e["usage"]
             self.w(paint(f"[tokens 输入 {u['input_tokens']} / 输出 {u['output_tokens']}{' 估算' if u['estimated'] else ''}]", "dim") + "\n", err=True)
