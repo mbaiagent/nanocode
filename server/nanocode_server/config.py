@@ -103,7 +103,7 @@ class Config:
     platform_models: list[str] = field(default_factory=list)
     platform_label: str = "平台模型"
     enable_mock_model: bool = True          # 提供不需要 Key 的演示模型
-    allow_private_upstreams: bool = False   # 允许用户把自己的 Key 指向内网 / 本机地址（如本机 Ollama）。多用户部署要关
+    allow_private_upstreams: bool = False   # 只允许 dev 模式下把用户自己的 Key 指向内网 / 本机地址（如本机 Ollama）
     daily_tokens: int = 2_000_000           # 每人每天平台模型的 token 上限；用户自己的 Key 不受限
     requests_per_minute: int = 30
     max_output_tokens: int = 8192
@@ -191,6 +191,8 @@ class Config:
             raise ValueError("NCS_AUTH 只能是 dev 或 proxy")
         if self.auth == "proxy" and len(self.proxy_secret) < 16:
             raise ValueError("proxy 认证必须设置 NCS_PROXY_SECRET（至少 16 个字符），否则谁都能伪造身份请求头")
+        if self.allow_private_upstreams and self.auth != "dev":
+            raise ValueError("NCS_ALLOW_PRIVATE_UPSTREAMS 仅限 dev 认证模式")
         if self.auth == "dev" and self.host not in LOOPBACK:
             raise ValueError("dev 认证（输入任意用户名登录）只能在只监听本机时使用，对外服务请用 NCS_AUTH=proxy")
         if self.sandbox_mode not in self.sandbox_modes:
