@@ -1,14 +1,18 @@
 """签名令牌、API Key 加密、身份认证。"""
 
 import base64
+import socket
 import unittest
+from unittest import mock
 
 import support  # noqa: F401
 
 from nanocode_server.security.auth import COOKIE, Authenticator, AuthError, host_name
+from nanocode_server.models import Upstream
 from nanocode_server.security.secretbox import SecretBox, SecretBoxError, hint
+from nanocode_server.services.upstream import UpstreamError, check_base_url, open_request
 from nanocode_server.security.tokens import Signer
-from support import SECRET, make_config
+from support import FakeServer, SECRET, make_config
 
 
 class SignerTest(unittest.TestCase):
@@ -102,6 +106,7 @@ class ConfigTest(unittest.TestCase):
         for kw in ({"secret_key": "short"},
                    {"auth": "proxy", "proxy_secret": ""},           # 谁都能伪造身份请求头
                    {"auth": "dev", "host": "0.0.0.0"},             # 开发模式登录不能对外
+                   {"auth": "proxy", "proxy_secret": "p" * 20, "allow_private_upstreams": True},
                    {"sandbox_mode": "bypass"},                      # 不在允许的模式里
                    {"auth": "nope"}):
             with self.subTest(**kw), self.assertRaises(ValueError):
@@ -118,6 +123,46 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(again.secret_key, first)     # 重启后还能解密用户的 Key
         with self.assertRaises(ValueError):
             make_config(secret_key="", auth="proxy", proxy_secret="p" * 20).ensure_secret()
+
+
+class UpstreamSecurityTest(unittest.TestCase):
+    def test_private_mode_rejects_link_local_metadata(self):
+        with self.assertRaises(UpstreamError):
+            check_base_url("http://169.254.169.254/latest/meta-data/", allow_private=True)
+
+    def test_private_mode_resolves_and_pins_private_https(self):
+        def private_dns(host, port, **kw):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", port))]
+
+        with mock.patch("socket.getaddrinfo", side_effect=private_dns):
+            self.assertEqual(check_base_url("https://model.internal/v1", allow_private=True), "10.0.0.5")
+
+    def test_private_http_request_uses_resolved_ip(self):
+        server = FakeServer(lambda method, path, headers, body: (200, {}, b"ok"))
+        connected_to = []
+        original_create_connection = socket.create_connection
+
+        def private_dns(host, port, *args, **kw):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))]
+
+        def record_connection(address, *args, **kw):
+            connected_to.append(address)
+            return original_create_connection(address, *args, **kw)
+
+        try:
+            upstream = Upstream("openai", f"http://model.internal:{server.port}/v1", "key", "model", billable=False)
+            with mock.patch("socket.getaddrinfo", side_effect=private_dns), \
+                    mock.patch("socket.create_connection", side_effect=record_connection):
+                conn, response = open_request(upstream, {}, allow_private=True, timeout=5)
+                try:
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(response.read(), b"ok")
+                finally:
+                    conn.close()
+            self.assertEqual(connected_to[0][0], "127.0.0.1")
+            self.assertEqual(server.requests[0]["headers"]["Host"], f"model.internal:{server.port}")
+        finally:
+            server.close()
 
 
 if __name__ == "__main__":

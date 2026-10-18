@@ -6,10 +6,12 @@ import socket
 import threading
 import time
 import unittest
+from unittest import mock
 
 import support  # noqa: F401
 
 from nanocode.llm.base import quota_exhausted_message
+from nanocode_server.models import Upstream
 from nanocode_server.security.keys import internal_key
 from nanocode_server.security.secretbox import SecretBox
 from nanocode_server.security.tokens import Signer
@@ -124,6 +126,35 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(self.post(body, token="nope", path="/internal/probe")[0], 401)
         status, _, data = self.post(body, token=internal_key(SECRET), path="/internal/probe")
         self.assertEqual((status, json.loads(data)["ok"]), (200, True))
+
+    def test_probe_error_does_not_echo_upstream_body(self):
+        self.status = 503
+        body = {"protocol": "openai", "base_url": self.upstream.url + "/v1", "api_key": "k", "model": "m"}
+        status, _, data = self.post(body, token=internal_key(SECRET), path="/internal/probe")
+        result = json.loads(data)
+        self.assertEqual(status, 200)
+        self.assertEqual(result, {"ok": False, "error": "HTTP 503"})
+        self.assertNotIn("upstream boom", data.decode())
+
+    def test_completion_blocks_link_local_before_connecting(self):
+        upstream = Upstream("openai", "http://169.254.169.254/v1", "key", "model", billable=False)
+        body = {"messages": [{"role": "user", "content": "test"}]}
+        connected_to = []
+        original_create_connection = socket.create_connection
+
+        def loopback_only(address, *args, **kw):
+            connected_to.append(address)
+            if address[0] != "127.0.0.1":
+                raise OSError("network access forbidden in test")
+            return original_create_connection(address, *args, **kw)
+
+        with mock.patch.object(self.catalog, "resolve", return_value=upstream), \
+                mock.patch("socket.create_connection", side_effect=loopback_only):
+            status, _, data = self.post(body, token=self.token(self.own))
+        self.assertEqual(status, 502)
+        self.assertIn("链路本地", data.decode())
+        self.assertEqual([address[0] for address in connected_to], ["127.0.0.1"])
+        self.assertEqual(self.upstream.requests, [])
 
 
 class ChunkedKeepAliveTest(unittest.TestCase):

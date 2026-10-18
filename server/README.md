@@ -93,7 +93,7 @@ nanocode_server/
 |---|---|
 | 沙箱里的 Agent 读到真实 Key 并外传 | 真实 Key 只在网关；沙箱只有网关令牌（HMAC 签名、有过期时间、只能调网关） |
 | Agent 改沙箱里的配置，把请求发到别处 | 平台策略只读挂载，优先级最高；网关还会按会话强制模型 |
-| 用户把自己的 Key 指向内网地址（SSRF） | 自定义地址必须是 https 公网地址，保存时和每次请求前都检查解析结果；本机开发可用 `NCS_ALLOW_PRIVATE_UPSTREAMS=1` 放开 |
+| 用户把自己的 Key 指向内网地址（SSRF） | 默认只允许 https 公网地址并固定已检查的解析 IP；`NCS_ALLOW_PRIVATE_UPSTREAMS=1` 仅限本机 `dev` 模式，仍拒绝链路本地、组播和保留地址；公网地址只能走 https，本机或 RFC1918 / ULA 私网地址可用 http |
 | 数据库泄露 | 用户的 Key 加密保存（HMAC-SHA256 流加密 + 认证标签，只用标准库） |
 | 访问别人的会话、Key | 一律按"不存在"处理；有专门的端到端测试 |
 | 绕过认证代理伪造身份 | 代理必须带共享密钥；没配密钥拒绝启动 |
@@ -164,7 +164,7 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 | `NCS_GATEWAY_HOST` / `NCS_GATEWAY_PORT` / `NCS_GATEWAY_URL` | 网关监听地址 / 端口 / 沙箱访问网关的地址（单独部署时必填） | `127.0.0.1` / `8701` / — |
 | `NCS_PLATFORM_BASE_URL` / `NCS_PLATFORM_API_KEY` / `NCS_PLATFORM_PROTOCOL` / `NCS_PLATFORM_MODELS` / `NCS_PLATFORM_LABEL` | 平台提供的模型 | — / — / `openai` / — / `平台模型` |
 | `NCS_ENABLE_MOCK_MODEL` | 提供演示模型 | `true` |
-| `NCS_ALLOW_PRIVATE_UPSTREAMS` | 允许用户的 Key 指向内网 / 本机（如本机 Ollama）。多用户部署要关 | `false` |
+| `NCS_ALLOW_PRIVATE_UPSTREAMS` | 允许 dev 模式下用户的 Key 指向内网 / 本机（如本机 Ollama）；与代理认证模式互斥 | `false` |
 | `NCS_DAILY_TOKENS` / `NCS_RPM` / `NCS_MAX_OUTPUT_TOKENS` | 每人每日平台模型 token 上限 / 每分钟请求上限 / 单次输出上限 | 2000000 / 30 / 8192 |
 
 ## 局限（如实说明）

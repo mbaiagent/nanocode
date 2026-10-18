@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import http.client
+import ipaddress
 import json
 import socket
 from urllib.parse import urlparse
@@ -14,12 +15,21 @@ from nanocode.tools.web import is_public_ip
 
 from ..models import Upstream
 
+_PRIVATE_UPSTREAM_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("::1/128"),
+)
+
 
 class UpstreamError(Exception):
     pass
 
 
-def check_base_url(url: str, allow_private: bool) -> str | None:
+def check_base_url(url: str, allow_private: bool) -> str:
     """用户填写的上游地址必须指向公网（除非明确允许内网，例如本机开发时用 Ollama）。
 
     网关在内网里，如果让用户把地址指向 http://内网服务/ 或云厂商元数据地址，网关就会替他去访问，
@@ -28,16 +38,34 @@ def check_base_url(url: str, allow_private: bool) -> str | None:
     u = urlparse(url)
     if u.scheme not in ("https", "http") or not u.hostname or u.username or u.password:
         raise UpstreamError("地址必须是 http(s)://主机名/路径，不能带用户名密码")
-    if allow_private:
-        return None
-    if u.scheme != "https":
+    if not allow_private and u.scheme != "https":
         raise UpstreamError("只允许 https 地址")
     try:
+        port = u.port or (443 if u.scheme == "https" else 80)
+    except ValueError:
+        raise UpstreamError("地址端口无效") from None
+    try:
         ips = list(dict.fromkeys(i[4][0] for i in socket.getaddrinfo(
-            u.hostname, u.port or 443, type=socket.SOCK_STREAM)))
+            u.hostname, port, type=socket.SOCK_STREAM)))
     except socket.gaierror as e:
         raise UpstreamError(f"无法解析域名 {u.hostname}：{e}") from None
-    if not ips or not all(is_public_ip(ip) for ip in ips):
+    if not ips:
+        raise UpstreamError(f"{u.hostname} 没有可用地址")
+    public_ips = [is_public_ip(ip) for ip in ips]
+    if allow_private:
+        for ip, is_public in zip(ips, public_ips):
+            addr = ipaddress.ip_address(ip.split("%", 1)[0])
+            if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+                addr = addr.ipv4_mapped
+            if addr.is_link_local or addr.is_multicast or addr.is_unspecified or addr.is_reserved:
+                raise UpstreamError(f"{u.hostname} 解析到了链路本地、组播或保留地址，不允许")
+            is_private = any(addr.version == network.version and addr in network
+                             for network in _PRIVATE_UPSTREAM_NETWORKS)
+            if not is_public and not is_private:
+                raise UpstreamError(f"{u.hostname} 解析到了不允许的地址")
+            if u.scheme == "http" and is_public:
+                raise UpstreamError("http 明文地址只允许指向内网或本机上游")
+    elif not all(public_ips):
         raise UpstreamError(f"{u.hostname} 解析到了内网或保留地址，不允许")
     # 把本次校验得到的 IP 返回给连接层固定使用，避免连接时再次解析域名。
     return ips[0]
@@ -53,6 +81,17 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     def connect(self) -> None:
         sock = socket.create_connection((self._pinned_ip, self.port), self.timeout, self.source_address)
         self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """连接到已校验的 IP，同时按原始域名发送 Host。"""
+
+    def __init__(self, host: str, port: int | None, ip: str, timeout: float):
+        super().__init__(host, port, timeout=timeout)
+        self._pinned_ip = ip
+
+    def connect(self) -> None:
+        self.sock = socket.create_connection((self._pinned_ip, self.port), self.timeout, self.source_address)
 
 
 def endpoint_path(up: Upstream) -> str:
@@ -78,11 +117,10 @@ def open_request(up: Upstream, body: dict, incoming=None, allow_private: bool = 
     """发出请求，返回 (连接, 响应)。调用方负责关闭连接。"""
     pinned_ip = check_base_url(up.base_url, allow_private)
     u = urlparse(up.base_url)
-    if pinned_ip:
+    if u.scheme == "https":
         conn = _PinnedHTTPSConnection(u.hostname, u.port, pinned_ip, timeout)
     else:
-        cls = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
-        conn = cls(u.hostname, u.port, timeout=timeout)
+        conn = _PinnedHTTPConnection(u.hostname, u.port, pinned_ip, timeout)
     try:
         conn.request("POST", endpoint_path(up), body=json.dumps(body).encode(), headers=request_headers(up, incoming))
         return conn, conn.getresponse()
@@ -99,12 +137,11 @@ def probe(up: Upstream, allow_private: bool = False) -> dict:
     except UpstreamError as e:
         return {"ok": False, "error": str(e)}
     try:
-        data = resp.read()[:2000].decode("utf-8", "replace")
+        if resp.status == 200:
+            return {"ok": True}
+        return {"ok": False, "error": f"HTTP {resp.status}"}
     finally:
         conn.close()
-    if resp.status == 200:
-        return {"ok": True}
-    return {"ok": False, "error": f"HTTP {resp.status}：{data[:300]}"}
 
 
 class UsageMeter:

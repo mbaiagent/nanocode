@@ -76,8 +76,23 @@ class CatalogTest(unittest.TestCase):
 
     def test_private_allowed_when_configured(self):
         self.cfg.allow_private_upstreams = True
-        c = self.add(provider="custom", base_url="http://127.0.0.1:11434/v1")
+        loopback_dns = lambda host, port, **kw: [(2, 1, 6, "", ("127.0.0.1", port))]  # noqa: E731
+        with mock.patch("socket.getaddrinfo", loopback_dns):
+            c = self.cat.add_credential("alice", "custom", "sk-alice-123456", ["deepseek-chat"],
+                                        base_url="http://127.0.0.1:11434/v1")
         self.assertEqual(c.base_url, "http://127.0.0.1:11434/v1")
+
+    def test_private_mode_rejects_link_local_metadata_target(self):
+        self.cfg.allow_private_upstreams = True
+        with self.assertRaises(CatalogError):
+            self.cat.add_credential("alice", "custom", "sk-x-123456", ["m"],
+                                    base_url="http://169.254.169.254/latest/meta-data/")
+
+    def test_private_mode_rejects_cleartext_http_to_public_ip(self):
+        self.cfg.allow_private_upstreams = True
+        with mock.patch("socket.getaddrinfo", public_dns), self.assertRaises(CatalogError):
+            self.cat.add_credential("alice", "custom", "sk-x-123456", ["m"],
+                                    base_url="http://api.example/v1")
 
     def test_input_validation(self):
         for kw in ({"api_key": ""}, {"api_key": "has space"}, {"models": []}, {"models": ["bad model!"]},
