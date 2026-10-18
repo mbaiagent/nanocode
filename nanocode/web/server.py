@@ -281,6 +281,7 @@ class WebApp:
             if message.startswith("#"):
                 return {"ok": True, "output": s.add_memory(message.lstrip("#"))}
             prompt = message
+            output = ""
             if message.startswith("/"):
                 # 先取命令名、先判忙，再执行。反过来（先 handle_command 后判忙）会让
                 # /clear、/mode、/resume、/compact 在 Agent 正在跑的时候改掉它脚下的状态：
@@ -316,6 +317,12 @@ class WebApp:
             if not self.limits.daily_runs.take():
                 raise RateLimited("daily_budget", "今天的调用预算已用完，明天再来（或调大 NANOCODE_WEB_DAILY_RUNS）",
                                   DailyCounter.seconds_to_midnight())
+            if prompt is None:
+                # /compact 已经把事做完了（它自己调过一次模型做总结），这里只补记一次
+                # 每日预算，然后结束 —— 不能把 None 当 prompt 起一轮 Agent：
+                # 那会往对话里塞一条 text=None 的消息（真实接口直接 400），
+                # 还会多发一次模型请求、多扣一次预算（#73）。
+                return {"ok": True, "output": output}
             # 两个标志一起置位：_turn_active 是本层的权威判定，agent.busy 让界面立刻反应过来
             self._turn_active = True
             s.agent.busy = True

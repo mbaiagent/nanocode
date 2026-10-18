@@ -2,10 +2,12 @@
 
 import json
 import os
+import tempfile
 import threading
 import unittest
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 
 import support  # noqa: F401
 
@@ -241,6 +243,36 @@ class LocalLauncherTest(unittest.TestCase):
         spec = SandboxSpec("0" * 16, "a", "w" * 32, "", {**POLICY, "allowed_modes": ["default", "bypass"]})
         with self.assertRaises(LaunchError):
             LocalLauncher(make_config().data_dir).start(spec)
+
+    def _fake_proc(self):
+        proc = mock.Mock(pid=4321)
+        proc.poll.return_value = None
+        proc.wait.return_value = 0
+        return proc
+
+    def test_stop_kills_the_process_group_on_posix(self):
+        """#75：沙箱是 start_new_session=True 起的，POSIX 上必须杀整个进程组。"""
+        launcher = LocalLauncher(tempfile.mkdtemp(prefix="ncs-stop-"))
+        proc = self._fake_proc()
+        launcher.procs["s"] = proc
+        with mock.patch("os.name", "posix"), \
+                mock.patch("signal.SIGKILL", 9, create=True), \
+                mock.patch("os.killpg", create=True) as killpg, \
+                mock.patch("os.getpgid", return_value=4321, create=True):
+            launcher.stop("s")
+        killpg.assert_called_once()
+        self.assertEqual(killpg.call_args[0][0], 4321)
+        proc.terminate.assert_not_called()
+
+    def test_stop_uses_terminate_on_windows(self):
+        """Windows 没有 SIGKILL / killpg：退回 terminate/kill。"""
+        launcher = LocalLauncher(tempfile.mkdtemp(prefix="ncs-stop-"))
+        proc = self._fake_proc()
+        launcher.procs["s"] = proc
+        with mock.patch("os.name", "nt"):
+            launcher.stop("s")
+        proc.terminate.assert_called_once()
+        proc.kill.assert_not_called()
 
 
 if __name__ == "__main__":
