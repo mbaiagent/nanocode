@@ -314,6 +314,7 @@ function onEvent(e) {
       }
       break;
     }
+    case "warning": add("note", "⚠ " + esc(e.message), a); break;
     case "queued":
       queueCount = e.position; updateQueuebar(); break;
     case "dequeue":

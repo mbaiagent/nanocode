@@ -119,6 +119,12 @@ class Agent:
             self._verify_status = None
             self._lesson = None
             self._review_before = subcheck.snapshot(self.cwd) if self.permissions.mode == "review" else None
+            if self._review_before is None and self.permissions.mode == "review":
+                # 文件数超过上限时快照失败。_review_before=None 同时表示"本轮不做终审"，
+                # 以前这里静默跳过，_finish_review 直接 return：整轮既不汇总也不警告，
+                # 用户以为终审覆盖了本轮，实际一处都没核对（#39）。立刻明说。
+                self.emit("warning", message=f"工作区文件超过 {subcheck.MAX_FILES} 个，本轮终审无法统计改动，"
+                                             "改动不会被汇总、也核对不到，请用 git 之类的工具自行核对")
             self._review_originals = {}
 
         # Hook：UserPromptSubmit —— 可以拦截请求，或附加额外上下文
@@ -434,6 +440,9 @@ class Agent:
         sub._review_before, sub._review_originals = self._review_before, self._review_originals   # 子 Agent 的改动也进终审汇总
         self.emit("subagent_start", description=description, prompt=prompt, check=check, allowed_paths=scope)
         before = subcheck.snapshot(self.cwd)
+        # 盲区监测和快照分开取：快照看不见 .git / .nanocode / 家目录，而那些位置
+        # 恰好最容易被用来留后门（#39）。见 subcheck.external_snapshot 的说明。
+        before_external = subcheck.external_snapshot(self.cwd)
         report = subcheck.Report(scope=scope, check=check.strip())
         result = sub._run(prompt)  # 用 _run：不能 clear 共享的 cancel 事件
         for attempt in range(1, subcheck.RETRIES + 2):
@@ -446,6 +455,9 @@ class Agent:
                 report.gave_up = True
                 break
             result = sub._run(subcheck.feedback(report, output))   # 子 Agent 保留上下文，接着修
+        # 盲区改动不触发重做（还原 ~/.bashrc 不是验收循环能安全核实的事），但必须写进
+        # 报告并让 ok 为 False，主 Agent 才会停下来让人确认，而不是当"哪都没动"（#39）
+        report.external = subcheck.external_violations(before_external, subcheck.external_snapshot(self.cwd), scope)
         self._dirty = self._dirty or sub._dirty   # 子 Agent 改了东西，也算本轮有改动
         # merge 而不是 add：这里动的是父 Agent 自己的 usage。task 已经标成
         # parallel_safe=False（#46）所以正常情况下就在主线程，但累加共享计数器
