@@ -10,6 +10,7 @@ import unittest
 from helpers import Workspace
 
 from nanocode.llm.base import LLMError, QuotaExhausted
+from nanocode.messages import text_block
 from nanocode.session import Options, Session
 from nanocode.web.server import WebApp, friendly_error, make_server
 
@@ -72,6 +73,27 @@ class WebUxTest(unittest.TestCase):
         finally:
             self.session.agent.busy = False
             self.app.queue.clear()
+
+    def test_compact_does_not_start_a_turn(self):
+        """#73：/compact 自己已经调过一次模型做总结，不能再把 None 当 prompt 起一轮。
+
+        以前这里会把 prompt=None 传给 _run，往对话里塞一条 text=None 的消息
+        （真实接口直接 400），还多扣一次每日预算。
+        """
+        self.session.agent.messages = [
+            {"role": "user", "content": [text_block("第一轮")]},
+            {"role": "assistant", "content": [text_block("第一轮回答")]},
+            {"role": "user", "content": [text_block("第二轮")]},
+            {"role": "assistant", "content": [text_block("第二轮回答")]},
+        ]
+        calls = []
+        self.app._run = lambda p: calls.append(p)
+        r = self.post("/api/chat", {"message": "/compact"})
+        self.assertTrue(r["ok"])
+        self.assertEqual(calls, [], "把 None 当 prompt 起了一轮")
+        texts = [b.get("text") for m in self.session.agent.messages
+                 for b in m["content"] if b.get("type") == "text"]
+        self.assertNotIn(None, texts, "对话里留下了 text=None 的消息")
 
     def test_handoff_window_queues_instead_of_starting_a_second_agent(self):
         """#29：Agent.run() 一返回就把 agent.busy 清掉了，而 _run 还没处理完队列。
