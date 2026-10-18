@@ -1,4 +1,5 @@
 __pycache__/
+*.pyc
 *.egg-info/
 .nanocode/sessions/
 .nanocode/traces/
@@ -6,3 +7,13 @@ nanocode_demo/
 notes.txt
 evals/polyglot/tasks/
 build/
+
+# macOS
+.DS_Store
+
+# 虚拟环境与工具缓存
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+uv.lock

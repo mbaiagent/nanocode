@@ -35,7 +35,7 @@ class SplitTest(unittest.TestCase):
     def test_hidden_commands_make_the_command_opaque(self):
         for cmd in ["echo $(rm x)", "echo `rm x`", 'echo "$(rm x)"', "cat <(rm x)", "(rm x)", "{ rm x; }"]:
             self.assertTrue(split_command(cmd)[1], cmd)
-        for cmd in ["echo '$(rm x)'", "echo ${HOME}", "find . -exec ls {} \;", "echo a-b"]:
+        for cmd in ["echo '$(rm x)'", "echo ${HOME}", r"find . -exec ls {} \;", "echo a-b"]:
             self.assertFalse(split_command(cmd)[1], cmd)
 
     def test_deep_mode_looks_inside_hidden_commands(self):
