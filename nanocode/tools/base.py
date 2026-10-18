@@ -67,6 +67,18 @@ def is_inside(root: str, path: str) -> bool:
     return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
 
+def symlink_escapes(root: str, path: str) -> bool:
+    """path 是一个指向 root 之外的软链接吗。
+
+    项目里的 `NANOCODE.md -> ~/.ssh/id_rsa`：os.path.isfile 和 open 都会跟随软链接，
+    不检查的话，顺着它就能把项目外的文件读进上下文 —— 记忆文件会进入每一次请求的
+    system prompt，grep / search_docs 会把内容搜出来，全程不需要任何工具调用、
+    不需要用户批准，打开陌生仓库就可能把本机私钥发给模型服务商（#38）。
+    硬链接在路径层识别不了，这个检查防不住它，只能靠"不打开陌生仓库"兜底。
+    """
+    return os.path.islink(path) and not is_inside(root, path)
+
+
 @dataclass
 class ToolContext:
     """工具运行时能拿到的环境。"""

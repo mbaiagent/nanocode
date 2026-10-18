@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import fnmatch
+import ntpath
 import os
 import re
 import shlex
@@ -25,13 +26,18 @@ PROTECTED = (".git/*", ".nanocode/*", ".github/*", ".ssh/*", ".env", ".env.*", "
 
 
 def is_protected_path(rel: str) -> bool:
-    """配置、密钥、版本库内部：改动它们属于高风险。rel 是相对项目根的路径。"""
+    """配置、密钥、版本库内部：改动它们属于高风险。rel 是相对项目根的路径。
+
+    Windows 上大小写不敏感：磁盘上的 `.ENV` 就是 `.env`，大小写敏感匹配等于放过它（#43）。
+    """
     rel = rel.replace(os.sep, "/")
     if rel.startswith("./"):
         rel = rel[2:]
     parts = rel.split("/")
     for i in range(len(parts)):
         sub = "/".join(parts[i:])
+        if os.name == "nt":
+            sub = sub.lower()
         if any(fnmatch.fnmatchcase(sub, p) for p in PROTECTED):
             return True
     return False
@@ -69,9 +75,20 @@ _GIT_READ = {"status", "diff", "log", "show"}
 _BAD_FLAGS = ("--output", "--ext-diff", "--textconv", "--exec", "--fix", "--write", "--unsafe-fixes")
 
 
+def _is_absolute(p: str) -> bool:
+    """绝对路径（POSIX / Windows 盘符 / UNC）或家目录。
+
+    分类跑在任意平台上，但命令最终是在用户的机器上执行的：Windows 上
+    `cat C:/Users/me/.aws/credentials` 完全合法，只认 `/` 开头就等于放行（#43）。
+    ntpath 在 POSIX 上也认得盘符和 UNC，所以不需要按平台分支。
+    """
+    return p.startswith(("/", "~", "\\")) or ntpath.isabs(p) or bool(ntpath.splitdrive(p)[0])
+
+
 def _arg_is_unsafe(arg: str) -> bool:
     """参数里出现项目外路径、上级目录、家目录、敏感文件，都不能自动放行。"""
-    if arg.startswith(("/", "~")) or "=/" in arg or "=~" in arg or ".." in re.split(r"[/=\\]", arg):
+    # 按 = 拆开：`--rootdir=C:/Windows` 整体不以 / 或盘符开头，只看整个参数会漏掉（#43）
+    if any(_is_absolute(p) for p in arg.split("=")) or ".." in re.split(r"[/=\\]", arg):
         return True        # 绝对路径、家目录、上级目录（注意 HEAD~1 和 ./... 是正常写法）
     if any(arg == f or arg.startswith(f + "=") for f in _BAD_FLAGS):
         return True

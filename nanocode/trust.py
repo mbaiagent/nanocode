@@ -66,6 +66,11 @@ def describe(sensitive: dict) -> list[str]:
             lines.append(f"hook {event}{'（' + h['matcher'] + '）' if h.get('matcher') else ''} 会执行：{h.get('command')}")
     for name, spec in (sensitive.get("mcpServers") or {}).items():
         lines.append(f"MCP 服务器 {name} 会执行：{' '.join([spec.get('command', '')] + list(spec.get('args', [])))}")
+        # 子进程默认还会拿到 PATH / HOME 等基础变量；env 里显式写了什么也要说清楚，
+        # 它足以覆盖 PATH、PYTHONPATH 把服务器换成别的程序（#41）
+        if spec.get("env"):
+            lines.append(f"  并覆盖环境变量：{', '.join(spec['env'])}")
+        lines.append("  （子进程默认继承 PATH / HOME 等基础变量，不继承各家 API Key）")
     if "verify" in sensitive:
         v = sensitive["verify"]
         lines.append(f"Agent 结束前会自动执行检查命令：{v.get('command') if isinstance(v, dict) else v}")

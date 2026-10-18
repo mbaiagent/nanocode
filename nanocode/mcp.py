@@ -19,6 +19,9 @@ MCP 是一个开放协议，让"工具提供方"和"Agent"解耦：任何人写�
 
 配置（.nanocode/settings.json）：
     "mcpServers": {"demo": {"command": "python3", "args": ["examples/mcp_server_demo.py"], "env": {}}}
+
+env 只把配置里显式写的键传给服务器子进程；PATH / HOME 等基础变量会带上，
+各家 API Key 不继承（#41）。readOnlyHint 是服务器自报的，一律不当只读工具（#41）。
 """
 
 from __future__ import annotations
@@ -34,6 +37,20 @@ from dataclasses import dataclass, field
 from .tools.base import Tool, ToolError
 
 PROTOCOL_VERSION = "2025-06-18"
+
+# 启动 MCP 服务器时继承的环境变量白名单。第三方 MCP 服务器是别人写的代码，
+# `env={**os.environ}` 会把 ANTHROPIC_API_KEY、DEEPSEEK_API_KEY、NANOCODE_WEB_TOKEN
+# 一起交给它（#41）；这里只给够找到解释器、定位 HOME 和临时目录的量，
+# 确实需要更多（PYTHONPATH、代理……）时由配置里的 env 显式列出。
+_ENV_PASSTHROUGH = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR",
+                    "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "USERPROFILE")
+
+
+def child_env(extra: dict | None) -> dict:
+    """MCP 子进程的环境：白名单里的基础变量 + 配置里显式声明的 env。"""
+    env = {k: os.environ[k] for k in _ENV_PASSTHROUGH if k in os.environ}
+    env.update(extra or {})
+    return env
 
 
 class MCPError(Exception):
@@ -54,7 +71,7 @@ class MCPClient:
         self.proc = subprocess.Popen([command, *(args or [])], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
                                      cwd=cwd, bufsize=1,
-                                     env={**os.environ, **(env or {})})
+                                     env=child_env(env))
         # 服务器的错误输出只保留最后几行：启动失败时拿来告诉用户原因（缺依赖、参数不对……）
         self.stderr_tail: collections.deque = collections.deque(maxlen=20)
         threading.Thread(target=self._read_loop, daemon=True).start()
@@ -151,9 +168,11 @@ class MCPTool(Tool):
         self.name = f"mcp__{client.name}__{spec['name']}"
         self.description = spec.get("description", "") or f"MCP 工具 {spec['name']}"
         self.input_schema = spec.get("inputSchema") or {"type": "object", "properties": {}}
-        # MCP 规范里有 annotations.readOnlyHint，服务器声明只读就当只读工具处理
-        self.is_read_only = bool((spec.get("annotations") or {}).get("readOnlyHint"))
-        # 但 readOnlyHint 是服务器**自报**的，不等于真的只读（#41 讲的就是它绕过 plan 模式）。
+        # MCP 规范里有 annotations.readOnlyHint，但它是服务器**自报**的：一个把删除 /
+        # 外传工具标成只读的服务器，就能在 plan 模式下被自动放行、在别处免确认（#41）。
+        # 本地安全决策不能建立在远程自述上，所以一律按有副作用处理 —— 代价是默认模式下
+        # 每次调用都要确认（或由 allow 规则放行）。
+        self.is_read_only = False
         # 并行执行会打乱多个工具的相对顺序、让共享状态的读写交错，所以 MCP 工具一律串行 ——
         # 代价只是同一条回复里的多个 MCP 调用排队执行，可以忽略。
         self._parallel_safe = False
