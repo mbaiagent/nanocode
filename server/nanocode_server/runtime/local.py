@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -19,6 +20,35 @@ def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def _terminate(proc: subprocess.Popen) -> None:
+    """停止沙箱进程。POSIX 杀整个进程组，Windows 只能 terminate/kill（#75）。"""
+    if os.name == "nt":
+        # Windows 没有 SIGKILL / killpg：terminate() 是 TerminateProcess，kill() 兜底
+        for attempt in (proc.terminate, proc.kill):
+            try:
+                attempt()
+                proc.wait(timeout=5)
+                return
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+        return
+    # 沙箱是 start_new_session=True 起的：只杀直接子进程会把 Agent 拉起的
+    # pytest / dev server 留下来，继续占端口、写已经删除的工作区。
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+            proc.wait(timeout=5)
+            return
+        except (ProcessLookupError, PermissionError):
+            break
+        except subprocess.TimeoutExpired:
+            continue
+    try:
+        proc.kill()
+    except OSError:
+        pass
 
 
 class LocalLauncher(Launcher):
@@ -67,15 +97,7 @@ class LocalLauncher(Launcher):
         proc = self.procs.pop(session_id, None)
         if not proc or proc.poll() is not None:
             return
-        for attempt in ("terminate", "kill"):
-            try:
-                getattr(proc, attempt)()
-                proc.wait(timeout=5)
-                return
-            except ProcessLookupError:
-                return
-            except subprocess.TimeoutExpired:
-                continue
+        _terminate(proc)
 
     def delete(self, session_id: str) -> None:
         self.stop(session_id)

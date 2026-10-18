@@ -48,8 +48,12 @@ class MCPClient:
         self._id = 0
         self._lock = threading.Lock()
         self._responses: dict[int, queue.Queue] = {}
+        # encoding 必须显式指定：text=True 在 Windows 上按本机 locale（cp936 等）解码，
+        # 而 MCP server 基本都输出 UTF-8（中文描述、中文错误信息很常见）。解码失败发生在
+        # reader 线程里，异常只进 stderr，线程静默死掉，之后每个 tools/list 都等到超时（#74）。
         self.proc = subprocess.Popen([command, *(args or [])], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.PIPE, text=True, cwd=cwd, bufsize=1,
+                                     stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+                                     cwd=cwd, bufsize=1,
                                      env={**os.environ, **(env or {})})
         # 服务器的错误输出只保留最后几行：启动失败时拿来告诉用户原因（缺依赖、参数不对……）
         self.stderr_tail: collections.deque = collections.deque(maxlen=20)
