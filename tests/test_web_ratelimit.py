@@ -176,7 +176,7 @@ class WebRateLimitTest(unittest.TestCase):
         self.assertEqual(len(self.app.queue), 1)
         self.post("/api/cancel", {})
         self.assertEqual(self.app.queue, [])
-        self.assertTrue(wait_for(lambda: not self.session.agent.busy), "中断后 busy 没有释放")
+        self.assertTrue(wait_for(lambda: not self.app.busy), "中断后 busy 没有释放")
 
     def test_daily_runs(self):
         self.start(NANOCODE_WEB_DAILY_RUNS="1")
@@ -185,7 +185,7 @@ class WebRateLimitTest(unittest.TestCase):
         self.assertEqual(self.post("/api/chat", {"message": "排队"})[2].get("queued"), True)
         # 出队时预算已用完：丢弃队列、报错、释放 busy
         self.post("/api/permission", {"id": next(iter(self.app.pending)), "decision": "no"})
-        self.assertTrue(wait_for(lambda: not self.session.agent.busy, 10), "busy 没有释放")
+        self.assertTrue(wait_for(lambda: not self.app.busy, 10), "busy 没有释放")
         self.assertEqual(self.app.queue, [])
         errors = [e for e in self.session.bus.history if e["type"] == "error"]
         self.assertTrue(any("预算" in e.get("message", "") for e in errors))

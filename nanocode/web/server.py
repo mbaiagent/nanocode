@@ -176,8 +176,22 @@ class WebApp:
         self.allowed_hosts: set[str] = set(LOCAL_HOSTS)
         self.allowed_origins: set[str] = set()
         self.queue: list[str] = []      # 忙时排队的消息，按先进先出执行
+        # 「这个会话有一轮工作在进行」（含排队中的消息），由本类独占维护。
+        # 不能用 agent.busy 代替：Agent.run() 在 finally 里会把它清零，而那时 _run
+        # 还没开始处理队列，中间的窗口会让新请求误判成「不忙」而并发起第二个 Agent。
+        self._turn_active = False
         self.limits = Limits()          # 限流与每日预算（issue #7）
         session.permissions.ask_fn = self.ask
+
+    @property
+    def busy(self) -> bool:
+        """这个会话是否还有工作没做完（含排队中的消息）。
+
+        以 _turn_active 为准：Agent.run() 一返回就把 agent.busy 清掉了，而从那一刻到
+        _run() 处理完队列之间还有一段路，只看 agent.busy 会误判成空闲并放第二个 Agent 进来。
+        agent.busy 也一起看，是为了兼容"直接把 agent.busy 置 True 表示忙"的调用方。
+        """
+        return self._turn_active or self.session.agent.busy
 
     def issue_ticket(self) -> str | None:
         """签发一张 SSE 用的一次性票据，TICKET_TTL 秒内有效、只能用一次。
@@ -271,7 +285,7 @@ class WebApp:
             if wait:
                 w = max(1, int(wait + 0.999))
                 raise RateLimited("rate_limited", f"发送太频繁，请 {w} 秒后再试", w)
-            if s.agent.busy:
+            if self.busy:
                 # 不设上限的话，连点 100 次就会排进 100 轮完整的 Agent 循环（issue #7）
                 if self.limits.max_queue and len(self.queue) >= self.limits.max_queue:
                     raise RateLimited("queue_full",
@@ -286,11 +300,35 @@ class WebApp:
             if not self.limits.daily_runs.take():
                 raise RateLimited("daily_budget", "今天的调用预算已用完，明天再来（或调大 NANOCODE_WEB_DAILY_RUNS）",
                                   DailyCounter.seconds_to_midnight())
-            s.agent.busy = True  # 先占住，避免两个请求同时启动
+            # 两个标志一起置位：_turn_active 是本层的权威判定，agent.busy 让界面立刻反应过来
+            self._turn_active = True
+            s.agent.busy = True
         threading.Thread(target=self._run, args=(prompt,), daemon=True).start()
         return {"ok": True}
 
+    def _end_turn(self) -> None:
+        """这一轮工作彻底结束（队列已空，或排队消息被丢弃）：清掉两个标志。
+
+        调用方必须持有 self.lock。先清 _turn_active 能让紧接着的 chat() 立刻看到空闲；
+        agent.busy 在 Agent.run() 结束时已被自己清零，这里再清一次是为了覆盖
+        "还没进入 session.send() 就被取消"这类没走到 Agent.run 的路径。
+        """
+        self._turn_active = False
+        self.session.agent.busy = False
+
     def _run(self, prompt: str) -> None:
+        try:
+            self._run_queue(prompt)
+        finally:
+            # 兜底：_turn_active 相当于一把会话锁，任何退出路径都必须放开。
+            # 正常收尾时 _end_turn() 已经清掉，这里不会重复发 idle；
+            # 只有被中断（BaseException）、连 _run_queue 都没走完的路径才会落到这里。
+            with self.lock:
+                if self._turn_active:
+                    self._end_turn()
+                    self.session.bus.emit("idle")
+
+    def _run_queue(self, prompt: str) -> None:
         while True:
             try:
                 self.session.send(prompt)
@@ -299,20 +337,20 @@ class WebApp:
                                       retryable=True, prompt=prompt)
             with self.lock:
                 if not self.queue:
-                    self.session.agent.busy = False
+                    self._end_turn()
                     self.session.bus.emit("idle")
                     return
                 if not self.limits.daily_runs.take():   # 排队的消息也要扣每日预算，否则能绕过去
                     dropped = len(self.queue)
                     self.queue.clear()
-                    self.session.agent.busy = False
+                    self._end_turn()
                     self.session.bus.emit("error", agent="main", retryable=False,
                                           message=f"今天的调用预算已用完，已丢弃排队中的 {dropped} 条消息")
                     self.session.bus.emit("idle")
                     return
                 prompt = self.queue.pop(0)
                 self.session.bus.emit("dequeue", remaining=len(self.queue))
-            # busy 保持 True，直接进入下一轮
+            # _turn_active 保持 True，直接进入下一轮
 
 
 def make_handler(app: WebApp):
@@ -432,6 +470,9 @@ def make_handler(app: WebApp):
                 info = s.info()
                 info["session_id"] = s.session_id
                 info["queue"] = len(app.queue)
+                # Agent 跑完一轮到出队之间 agent.busy 已经是 False，直接用它会闪一下"空闲"。
+                # 界面要的是"这一轮工作还没结束"，所以以本层标志为准。
+                info["busy"] = app.busy
                 return self._json(info)
             if path == "/api/context":
                 return self._json({"system": s.agent.system_prompt(), "messages": s.agent.messages,
@@ -483,7 +524,7 @@ def make_handler(app: WebApp):
                 return self._json({"ok": True, "ticket": ticket, "expires_in": TICKET_TTL})
             if path == "/api/session":
                 # 忙时不许切会话，等当前任务做完（或先中断）
-                if app.session.agent.busy or app.queue:
+                if app.busy or app.queue:
                     return self._json({"ok": False, "error": "Agent 正在工作，等它做完（或先中断）再切换会话"})
                 action = data.get("action", "")
                 try:

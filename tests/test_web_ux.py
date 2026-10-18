@@ -73,6 +73,42 @@ class WebUxTest(unittest.TestCase):
             self.session.agent.busy = False
             self.app.queue.clear()
 
+    def test_handoff_window_queues_instead_of_starting_a_second_agent(self):
+        """#29：Agent.run() 一返回就把 agent.busy 清掉了，而 _run 还没处理完队列。
+
+        这段窗口里如果只看 agent.busy，新请求会被当成"空闲"，绕开排队和每日预算，
+        并发起第二个 Agent。这里把窗口固定下来（agent 不忙、但这一轮还没收尾），
+        请求必须进队列。
+        """
+        self.app._turn_active = True          # 这一轮工作还没结束
+        self.session.agent.busy = False       # 但 Agent 循环已经跑完了
+        try:
+            r = self.post("/api/chat", {"message": "补一句"})
+            self.assertTrue(r["ok"])
+            self.assertTrue(r["queued"], "窗口内的请求被当成新的一轮，会并发第二个 Agent")
+            self.assertEqual(self.app.queue, ["补一句"])
+        finally:
+            self.app._turn_active = False
+            self.app.queue.clear()
+
+    def test_state_reports_busy_until_the_turn_finishes(self):
+        """窗口期 agent.busy 已经是 False，/api/state 仍要报 busy，否则界面会闪一下空闲。"""
+        self.app._turn_active = True
+        self.session.agent.busy = False
+        try:
+            self.assertTrue(self.app.busy)
+            self.assertTrue(self.get("/api/state")["busy"])
+        finally:
+            self.app._turn_active = False
+        self.assertFalse(self.get("/api/state")["busy"])
+
+    def test_state_never_gets_stuck_busy_after_a_turn(self):
+        """空闲判定不能只加不减：一轮跑完后必须回到不忙。"""
+        self.session.permissions.mode = "bypass"
+        self.assertTrue(self.post("/api/chat", {"message": "hello"})["ok"])
+        self.assertTrue(wait_for(lambda: not self.app.busy, timeout=10), "回合结束后一直显示忙")
+        self.assertFalse(self.get("/api/state")["busy"])
+
     def test_queue_is_drained_in_order_after_task(self):
         """排队消息在当前任务结束后按顺序执行。"""
         self.session.permissions.mode = "bypass"  # mock 写文件不走权限询问
@@ -87,7 +123,7 @@ class WebUxTest(unittest.TestCase):
             self.assertTrue(wait_for(lambda: self.session.agent.busy, timeout=3))
             r = self.post("/api/chat", {"message": "第二条"})
             self.assertTrue(r.get("queued"))
-            self.assertTrue(wait_for(lambda: not self.session.agent.busy, timeout=15),
+            self.assertTrue(wait_for(lambda: not self.app.busy, timeout=15),
                             f"队列没有执行完：{done}")
             self.assertEqual(done, ["第一条", "第二条"])
         finally:
@@ -116,7 +152,7 @@ class WebUxTest(unittest.TestCase):
     def test_sessions_api_lists_and_switches(self):
         self.session.permissions.mode = "bypass"
         self.assertTrue(self.post("/api/chat", {"message": "hello"})["ok"])
-        self.assertTrue(wait_for(lambda: not self.session.agent.busy, timeout=10))
+        self.assertTrue(wait_for(lambda: not self.app.busy, timeout=10))
         first_id = self.session.session_id
 
         r = self.get("/api/sessions")
