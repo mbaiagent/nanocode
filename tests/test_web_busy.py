@@ -80,7 +80,7 @@ class WebBusyTest(unittest.TestCase):
         self.app.disconnect_grace = 0.5
         self.start_task_and_wait_for_prompt()
         self.assertEqual(self.app.sse_clients, 0)
-        self.assertTrue(wait_for(lambda: not self.session.agent.busy, timeout=5), "没有浏览器连着，busy 却一直不释放")
+        self.assertTrue(wait_for(lambda: not self.app.busy, timeout=5), "没有浏览器连着，busy 却一直不释放")
         # 释放后别的请求可以进来
         self.assertTrue(self.post("/api/chat", {"message": "/help"})["ok"])
 
@@ -102,7 +102,7 @@ class WebBusyTest(unittest.TestCase):
         sse.sse_response.close()
         sse.close()
         self.conns.remove(sse)
-        self.assertTrue(wait_for(lambda: not self.session.agent.busy, timeout=6), "页面关了，busy 却一直不释放")
+        self.assertTrue(wait_for(lambda: not self.app.busy, timeout=6), "页面关了，busy 却一直不释放")
 
     def test_reconnect_within_grace_does_not_deny(self):
         """刷新页面（断开后很快重连）不能被当成"页面关了"：计数短暂归零但没超过宽限期。"""
@@ -122,7 +122,7 @@ class WebBusyTest(unittest.TestCase):
         self.open_sse()
         self.start_task_and_wait_for_prompt()
         self.post("/api/cancel", {})
-        self.assertTrue(wait_for(lambda: not self.session.agent.busy, timeout=3))
+        self.assertTrue(wait_for(lambda: not self.app.busy, timeout=3))
 
     def test_second_request_is_queued_while_busy(self):
         """忙时不再拒绝（#5 缓解）：后来的请求收下排队，当前任务做完自动执行。"""

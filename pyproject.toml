@@ -24,6 +24,6 @@ include = ["nanocode*"]
 # 只收集主仓库的单元测试；evals 下的 hidden/test_*.py 是评测运行时复制到隔离目录执行的，
 # server/ 是独立子项目（自带 pyproject.toml 和同名 test_security.py），examples/docs 不需要收集。
 testpaths = ["tests"]
-norecursedirs = ["evals" "examples" "nanocode_demo" "server" "deploy" "docs" "verification"]
-pythonpath = ["." "tests"]
+norecursedirs = ["evals", "examples", "nanocode_demo", "server", "deploy", "docs", "verification"]
+pythonpath = [".", "tests"]
 addopts = "-q"
