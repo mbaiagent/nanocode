@@ -14,10 +14,15 @@ from .base import Tool, ToolContext, ToolError
 
 class SearchDocs(Tool):
     name = "search_docs"
-    is_read_only = True
+    # 不是只读工具：执行时会切块、算向量并写入 .nanocode/index/docs.json 和 .gitignore，
+    # 配了 embedding 还会把文档内容发去向量化。标成只读会让 plan 模式放行写盘、
+    # review 模式免确认，与"非只读一律拒绝 / 确认"的承诺相反（#44）。
+    is_read_only = False
     description = ("在项目文档（默认 .md / .txt / .rst，可配置）中按含义检索，返回最相关的片段，格式为"
                    "`文件:起止行 [所在标题] 得分` 加片段开头。适合用自然语言提问、不知道文档里确切用词时使用。"
-                   "已知确切的函数名、变量名、报错文本时请改用 grep。需要完整内容再用 read_file 读对应行范围。")
+                   "已知确切的函数名、变量名、报错文本时请改用 grep。需要完整内容再用 read_file 读对应行范围。"
+                   "第一次调用会建立索引并写入 .nanocode/index/（配了 embedding 时会把文档发去向量化），"
+                   "因此需要用户确认；之后文档没有变化就只读索引。")
     input_schema = {
         "type": "object",
         "properties": {
@@ -28,7 +33,7 @@ class SearchDocs(Tool):
     }
 
     def permission_target(self, input):
-        return ""   # 只读 + 范围固定在工作目录内，不需要按参数匹配规则
+        return ""   # 范围固定在工作目录内，不需要按参数匹配规则
 
     def _index(self, ctx: ToolContext):
         index = ctx.state.get("doc_index")

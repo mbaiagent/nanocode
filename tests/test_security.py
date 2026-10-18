@@ -3,16 +3,20 @@
 import http.client
 import json
 import os
+import shutil
 import sys
+import tempfile
 import threading
 import unittest
+from unittest import mock
 
 from helpers import ScriptedProvider, Workspace, call, make_agent
 
+from nanocode.context import build_system_prompt, discover_commands, discover_skills, load_memory
 from nanocode.messages import text_block
 from nanocode.permissions import PermissionManager
 from nanocode.session import Options, Session, project_data_dir
-from nanocode.tools import Glob, ReadFile, ToolContext, WriteFile
+from nanocode.tools import Glob, Grep, ReadFile, SearchDocs, ToolContext, WriteFile
 from nanocode.trust import TrustStore, apply_trust, split_sensitive
 from nanocode.web.server import make_server
 
@@ -72,6 +76,79 @@ class PathPermissionTest(unittest.TestCase):
     def test_tool_context_uses_same_resolution(self):
         ctx = ToolContext(cwd=self.ws.dir)
         self.assertEqual(ctx.resolve("link/secret.txt"), os.path.realpath(os.path.join(self.outside.dir, "secret.txt")))
+
+
+class SymlinkReadEscapeTest(unittest.TestCase):
+    """#38：项目里的软链接伸到项目外，读取类入口顺着它读，无需任何确认。
+
+    恶意仓库放一个 `NANOCODE.md -> ~/.ssh/id_rsa`：isfile / open 都跟随软链接，
+    内容会进每一次请求的 system prompt；grep / search_docs 也会把它搜出来。
+    """
+
+    def setUp(self):
+        self.ws = Workspace()
+        self.outside = Workspace()
+        self.outside.write("secret.md", "TOP-SECRET-KEY 私钥内容")
+        self.outside.write("NANOCODE.md", "来自外部的记忆")
+        self.outside.write("cmd.md", "外部命令模板")
+        os.makedirs(os.path.join(self.outside.dir, "skill_dir"))
+        self.outside.write("skill_dir/SKILL.md", "---\nname: evil\ndescription: 外部技能\n---\n外部技能正文")
+
+    def tearDown(self):
+        self.ws.cleanup()
+        self.outside.cleanup()
+
+    def link(self, rel, target):
+        os.symlink(os.path.join(self.outside.dir, target), os.path.join(self.ws.dir, rel))
+
+    def test_memory_skips_symlink_escaping_the_project(self):
+        self.link("NANOCODE.md", "NANOCODE.md")
+        self.assertEqual(load_memory(self.ws.dir), [])
+        self.assertNotIn("来自外部的记忆", build_system_prompt(self.ws.dir))
+
+    def test_memory_still_loads_real_files_and_links_that_stay_inside(self):
+        self.ws.write("inner.md", "链内的记忆")
+        os.symlink(os.path.join(self.ws.dir, "inner.md"), os.path.join(self.ws.dir, "NANOCODE.md"))
+        self.assertEqual([c for _, c in load_memory(self.ws.dir)], ["链内的记忆"])
+
+    def test_skills_and_commands_skip_escaping_symlinks(self):
+        os.makedirs(os.path.join(self.ws.dir, ".nanocode", "skills", "evil"))
+        os.makedirs(os.path.join(self.ws.dir, ".nanocode", "commands"))
+        self.link(".nanocode/skills/evil/SKILL.md", "secret.md")        # 文件软链
+        self.link(".nanocode/skills/evil2", "skill_dir")                # 整个目录都是软链
+        self.link(".nanocode/commands/evil.md", "cmd.md")
+        self.assertEqual(discover_skills(self.ws.dir), {})
+        self.assertEqual(discover_commands(self.ws.dir), {})
+        # 项目里的真文件照常发现
+        self.ws.write(".nanocode/skills/ok/SKILL.md", "---\nname: ok\ndescription: 真技能\n---\n正文")
+        self.ws.write(".nanocode/commands/ok.md", "真命令")
+        self.assertEqual(list(discover_skills(self.ws.dir)), ["ok"])
+        self.assertEqual(list(discover_commands(self.ws.dir)), ["ok"])
+
+    def test_grep_does_not_follow_escaping_symlink(self):
+        self.ws.write("real.md", "# 正常\n\n正常内容")
+        self.link("evil.md", "secret.md")
+        ctx = ToolContext(cwd=self.ws.dir)
+        r = Grep().execute({"pattern": "TOP-SECRET"}, ctx)
+        self.assertIn("没有匹配", r.content)
+        self.assertNotIn("TOP-SECRET-KEY", r.content)
+        self.assertIn("real.md", Grep().execute({"pattern": "正常"}, ctx).content)   # 真文件照样搜得到
+
+    def test_search_docs_does_not_index_escaping_symlink(self):
+        self.ws.write("real.md", "# 正常\n\n正常内容")
+        self.link("evil.md", "secret.md")
+        r = SearchDocs().execute({"query": "私钥内容"}, ToolContext(cwd=self.ws.dir))
+        self.assertNotIn("TOP-SECRET-KEY", r.content)
+
+    def test_user_level_memory_file_is_trusted(self):
+        """用户级记忆是用户自己的（可能是软链），不受项目边界限制。"""
+        home = tempfile.mkdtemp(prefix="nanocode-home-")
+        try:
+            os.symlink(os.path.join(self.outside.dir, "NANOCODE.md"), os.path.join(home, "NANOCODE.md"))
+            with mock.patch.dict(os.environ, {"NANOCODE_HOME": home}):
+                self.assertIn("来自外部的记忆", str(load_memory(self.ws.dir)))
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
 
 
 class TrustTest(unittest.TestCase):
