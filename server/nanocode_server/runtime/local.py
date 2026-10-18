@@ -55,7 +55,13 @@ def _terminate(proc: subprocess.Popen) -> None:
 
 
 def _wait_gone(pid: int, timeout: float) -> bool:
-    """等 pid 消失。不属于我们（或者已经退出）也返回 True：kill(pid, 0) 会抛 PermissionError。"""
+    """等 pid 消失。不属于我们（或者已经退出）也返回 True：kill(pid, 0) 会抛 PermissionError。
+
+    注意 kill(pid, 0) 对僵尸也返回成功：如果 pid 恰好是当前进程没回收的子进程，这里会
+    等满宽限期、再给一具尸体补一发 SIGKILL。真沙箱不会这样（控制面重启后旧沙箱被
+    init/launchd 收养并回收），代价只是多等几秒；不要用 waitpid 去"确认"——那会把别人的
+    子进程回收掉，别人的 wait() 就永远拿不到退出码了。
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:

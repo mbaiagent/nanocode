@@ -455,6 +455,20 @@ def _dummy_process():
     return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
 
 
+def _waited(proc, timeout=20):
+    """等进程退出；等不到就带着状态自己 fail，别抛一个没上下文的 TimeoutExpired。
+
+    宽限期给得比启动器的（SIGTERM 后 5 秒升级 SIGKILL）宽：慢机器/高负载下
+    沙箱收到 SIGTERM 到真正退出之间可能要好几秒。
+    """
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise AssertionError(
+            f"pid {proc.pid} 在 {timeout} 秒内没有退出（poll={proc.poll()}）—— 停沙箱的信号没送到？") from None
+    return proc.returncode
+
+
 class LocalPidFileTest(unittest.TestCase):
     """#60：控制面重启后内存字典是空的，但沙箱进程还活着——要凭着 pid 文件找回来，
     不能判成死再起一个（旧进程就成了没人管的孤儿）。"""
@@ -478,8 +492,10 @@ class LocalPidFileTest(unittest.TestCase):
         self.assertTrue(self.launcher.is_alive(self.sid))
         self.launcher.stop(self.sid)                      # 重启后也能停掉它
         self.assertFalse(self.launcher.is_alive(self.sid))
-        self.dummy.wait(timeout=10)
-        self.assertEqual(self.dummy.returncode, -15)      # SIGTERM 正常终止
+        # 先 SIGTERM，5 秒宽限期内没退出才升级 SIGKILL。慢机器/高负载下退出可能拖到宽限
+        # 期之后，那时是 -9 而不是 -15：两种都是"被我们发的信号终止了"，断言只关心这点，
+        # 不绑定具体是哪个信号（否则断言会随机红）。
+        self.assertIn(_waited(self.dummy), (-15, -9))
 
     def test_wrong_token_means_not_ours(self):
         """pid 可能被系统复用给别的进程：令牌对不上就不是我们的沙箱，不能杀（#60）。"""
@@ -495,11 +511,12 @@ class LocalPidFileTest(unittest.TestCase):
         self.launcher._write_pid(other, dummy2.pid, self.sandbox.port, "tok-123")
         self.launcher.reconcile({self.sid})               # other 不在 keep 里：停掉
         self.assertFalse(self.launcher.is_alive(other))
-        dummy2.wait(timeout=10)
+        self.assertIsNone(self.launcher._read_pid(other))      # pid 文件也收掉了
+        _waited(dummy2)
         self.assertTrue(self.launcher.is_alive(self.sid))     # keep 里的不动
         self.launcher.shutdown()                              # 剩下的全停
         self.assertFalse(self.launcher.is_alive(self.sid))
-        self.dummy.wait(timeout=10)
+        _waited(self.dummy)
 
 
 if __name__ == "__main__":
