@@ -391,12 +391,12 @@ def make_handler(app: WebApp):
             self.end_headers()
             self.wfile.write(body)
 
-        def _file(self, name):
+        def _file(self, name, content_type="text/html; charset=utf-8"):
             path = os.path.join(STATIC, name)
             with open(path, "rb") as f:
                 body = f.read().replace(b"__NANOCODE_TOKEN__", app.token.encode())
             self.send_response(200)
-            self.send_header("content-type", "text/html; charset=utf-8")
+            self.send_header("content-type", content_type)
             self.send_header("content-length", str(len(body)))
             self.send_header("cache-control", "no-store")
             # 面板里会渲染模型输出、仓库内容、hook 输出。万一有漏转义的注入点，
@@ -500,6 +500,8 @@ def make_handler(app: WebApp):
                 return
             if path in ("/", "/index.html"):
                 return self._file("index.html")
+            if path == "/favicon.svg":
+                return self._file("favicon.svg", "image/svg+xml")
             if path in ("/learn", "/learn.html"):
                 return self._file("learn.html")
             if path == "/api/state":
