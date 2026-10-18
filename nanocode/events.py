@@ -74,7 +74,12 @@ class TraceWriter:
 
     def __init__(self, path: str):
         self.path = path
-        self._f = open(path, "a", encoding="utf-8")
+        # trace 里有完整工具输出，可能含密钥；默认 0644 会让同机其他用户读到（#51）
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, mode=0o700, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        self._f = os.fdopen(fd, "a", encoding="utf-8")
 
     def __call__(self, event: dict) -> None:
         if event["type"] == "text_delta":
@@ -108,8 +113,9 @@ class AuditWriter:
         self._lock = threading.Lock()
         d = os.path.dirname(path)
         if d:
-            os.makedirs(d, exist_ok=True)
-        self._f = open(path, "a", encoding="utf-8")
+            os.makedirs(d, mode=0o700, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        self._f = os.fdopen(fd, "a", encoding="utf-8")
 
     def __call__(self, event: dict) -> None:
         if event["type"] not in self.TYPES or self._f.closed:

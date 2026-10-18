@@ -17,7 +17,7 @@ import datetime
 import os
 import platform
 
-from .messages import Message, estimate_tokens, is_tool_result_message, text_of, user_message
+from .messages import Message, estimate_tokens, has_tool_result, is_tool_result_message, text_of, user_message
 
 MEMORY_FILE = "NANOCODE.md"
 
@@ -183,20 +183,55 @@ def find_compact_split(messages: list[Message], keep_turns: int = 1) -> int:
 
     切分点必须落在"人说的话"上（而不是工具结果上），否则会出现
     tool_result 找不到对应 tool_use 的非法对话 —— 这是实现压缩时最常见的 bug。
+
+    判据是"含有任何 tool_result 块"，不是"整条都是 tool_result"：
+    `_append_user` 会把新提问合并进上一条 user(tool_result)，得到
+    `[tool_result, text]`。它不满足 is_tool_result_message，却同样不能当切分点 ——
+    对应的 assistant(tool_use) 在它前面，切在这里就会留下悬空的 tool_result，
+    下一次请求直接被模型接口判 400（#33）。
     """
-    starts = [i for i, m in enumerate(messages) if m["role"] == "user" and not is_tool_result_message(m)]
+    starts = [i for i, m in enumerate(messages)
+              if m["role"] == "user" and not is_tool_result_message(m) and not has_tool_result(m)]
     if len(starts) <= keep_turns:
         return 0
     return starts[-keep_turns]
 
 
+def drop_dangling_tool_results(messages: list[Message]) -> tuple[list[Message], int]:
+    """摘掉找不到对应 tool_use 的 tool_result 块。返回 (新列表, 摘掉的块数)。
+
+    悬空 tool_result 会让模型接口直接 400（`unexpected tool_use_id`），
+    而它一旦进了 messages 就不会自己消失 —— 整段会话只能 /clear。
+    压缩切点（#33）已经尽量避开这种形态，这里是第二道防线：
+    万一将来又有新的合并路径漏进来，至少不会把用户的对话永久报废。
+
+    保留的消息一律仍是"块列表"形态（to_openai_messages / Anthropic 客户端都这么预期）。
+    """
+    have_use = {b["id"] for m in messages for b in m.get("content", []) if b.get("type") == "tool_use"}
+    dropped = 0
+    out: list[Message] = []
+    for m in messages:
+        content = m.get("content", [])
+        if m.get("role") == "user" and any(b.get("type") == "tool_result" for b in content):
+            kept = [b for b in content if b.get("type") != "tool_result" or b.get("tool_use_id") in have_use]
+            dropped += len(content) - len(kept)
+            if not kept:
+                continue                      # 整条只剩悬空结果：这条消息没有存在意义
+            m = {**m, "content": kept}
+        out.append(m)
+    return out, dropped
+
+
 def compact_messages(provider, messages: list[Message], keep_turns: int = 1, focus: str = "",
-                     mid_turn: bool = True) -> tuple[list[Message], str]:
-    """返回 (新的消息列表, 摘要)。
+                     mid_turn: bool = True) -> tuple[list[Message], str, dict]:
+    """返回 (新的消息列表, 摘要, 这次摘要调用的 usage)。
 
     情况 1：有多个回合 → 总结旧回合，保留最近的回合原样不动。
     情况 2：只有一个回合 → 全部总结。如果正处在任务中间（mid_turn），
             让模型在摘要基础上继续；否则补一条 assistant 确认，保持 user/assistant 交替。
+
+    usage 一并返回：摘要自己也是一次模型调用，扔掉的 token 会让 /cost 和
+    评测统计偏低，而每日调用数却已经计了它，两边对不上（#48）。
     """
     split = find_compact_split(messages, keep_turns)
     old, recent = (messages[:split], messages[split:]) if split else (messages, [])
@@ -212,7 +247,13 @@ def compact_messages(provider, messages: list[Message], keep_turns: int = 1, foc
         new = [user_message(header + "\n\n请在此基础上继续完成当前任务。")]
     else:
         new = [user_message(header), ack]
-    return new, summary
+    new, dropped = drop_dangling_tool_results(new)
+    if dropped and new and new[0]["role"] == "user":
+        # 告诉模型少了几条结果，别让它以为工具凭空消失了。只在不会破坏
+        # user/assistant 交替时加（new[0] 恰好是 user 说明有保留的回合）。
+        new[0] = {**new[0], "content": [{"type": "text", "text":
+                  f"(系统提示：压缩时有 {dropped} 条工具结果找不到对应的调用记录，已丢弃。)"}] + new[0]["content"]}
+    return new, summary, getattr(resp, "usage", None).to_dict() if getattr(resp, "usage", None) else {}
 
 
 def context_tokens(system: str, messages: list[Message], tools: list[dict]) -> int:
@@ -220,4 +261,5 @@ def context_tokens(system: str, messages: list[Message], tools: list[dict]) -> i
 
 
 __all__ = ["build_system_prompt", "load_memory", "discover_skills", "discover_commands",
-           "compact_messages", "find_compact_split", "context_tokens", "transcript_text", "text_of", "home_dir"]
+           "compact_messages", "find_compact_split", "drop_dangling_tool_results",
+           "context_tokens", "transcript_text", "text_of", "home_dir"]

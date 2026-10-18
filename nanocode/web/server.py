@@ -53,6 +53,11 @@ MAX_TICKETS = 64                # 同时存在的未使用票据上限，防止�
 SSE_QUEUE_SIZE = 256            # 每个 SSE 客户端最多缓存的事件数；慢客户端满队列后断开重连
 SSE_WRITE_TIMEOUT = 30          # 写入阻塞超过此时间就断开慢客户端
 
+# Agent 忙时仍然可以执行的斜杠命令：只读查询，不会碰正在跑的那一轮对话。
+# 其余命令（/clear /compact /resume /mode、以及会转成提示词的自定义命令）会改掉
+# Agent 脚下的状态，必须等这一轮结束 —— 见 chat() 里对 #50 的注释。
+READ_ONLY_COMMANDS = {"help", "?", "cost", "context", "tools", "todos", "mcp", "skills", "providers", "memory"}
+
 
 def normalize_host(value: str) -> str:
     """把用户写的可信公网地址规范成 Host 头里"不带端口的主机名"（小写）。
@@ -277,10 +282,21 @@ class WebApp:
                 return {"ok": True, "output": s.add_memory(message.lstrip("#"))}
             prompt = message
             if message.startswith("/"):
+                # 先取命令名、先判忙，再执行。反过来（先 handle_command 后判忙）会让
+                # /clear、/mode、/resume、/compact 在 Agent 正在跑的时候改掉它脚下的状态：
+                # /clear 清空正在使用的 messages，/resume 换掉整个对话，/compact 在全局锁里
+                # 发模型调用还把取消按钮一起堵死（#50）。
+                # 纯查询类命令不受影响，忙时照样能看。
+                name = message[1:].strip().partition(" ")[0]
+                if self.busy and name not in READ_ONLY_COMMANDS:
+                    raise RateLimited("busy", f"Agent 正在工作，等它做完或先中断再用 /{name}", 5)
                 output, prompt = s.handle_command(message)
                 s.bus.emit("command", input=message, output=output)
                 if not prompt:
-                    return {"ok": True, "output": output}
+                    # /compact 虽然不产生 prompt，但它自己会调一次模型做总结，
+                    # 必须和普通消息一样过限流与每日预算，否则是个免费刷模型的入口（#50）。
+                    if name != "compact":
+                        return {"ok": True, "output": output}
             wait = self.limits.bucket.take(client)
             if wait:
                 w = max(1, int(wait + 0.999))
@@ -376,6 +392,16 @@ def make_handler(app: WebApp):
             self.send_header("content-type", "text/html; charset=utf-8")
             self.send_header("content-length", str(len(body)))
             self.send_header("cache-control", "no-store")
+            # 面板里会渲染模型输出、仓库内容、hook 输出。万一有漏转义的注入点，
+            # 这两条响应头能把"偷到 token → 冒充用户发命令"的链条挡住：
+            # CSP 拦住 script-src 之外的脚本执行，X-Frame-Options 挡住点击劫持。
+            # 'unsafe-inline' 是给页面里已有的内联 <script> 留的口子（源码无构建步骤，改不了 nonce）。
+            self.send_header("content-security-policy",
+                             "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+                             "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+            self.send_header("x-frame-options", "DENY")
+            self.send_header("x-content-type-options", "nosniff")
+            self.send_header("referrer-policy", "no-referrer")
             self.end_headers()
             self.wfile.write(body)
 
@@ -409,8 +435,11 @@ def make_handler(app: WebApp):
 
         def _limited(self, e: RateLimited) -> None:
             headers = [("Retry-After", str(e.retry_after))] if e.retry_after else []
+            # 忙时拒绝斜杠命令用 409（冲突：当前有任务在跑），和限流类 429 区分开，
+            # 前端才能给出"等它做完"而不是"发太频繁"的提示。
+            status = 409 if e.code == "busy" else 429
             self._json({"ok": False, "error": e.message, "code": e.code, "retry_after": e.retry_after},
-                       429, headers)
+                       status, headers)
 
         def _client_key(self) -> str:
             """限流按客户端区分。X-Forwarded-For 谁都能伪造，只在 NANOCODE_TRUST_PROXY=1（确实挂了反代）时才信。"""

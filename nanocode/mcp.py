@@ -149,6 +149,14 @@ class MCPTool(Tool):
         self.input_schema = spec.get("inputSchema") or {"type": "object", "properties": {}}
         # MCP 规范里有 annotations.readOnlyHint，服务器声明只读就当只读工具处理
         self.is_read_only = bool((spec.get("annotations") or {}).get("readOnlyHint"))
+        # 但 readOnlyHint 是服务器**自报**的，不等于真的只读（#41 讲的就是它绕过 plan 模式）。
+        # 并行执行会打乱多个工具的相对顺序、让共享状态的读写交错，所以 MCP 工具一律串行 ——
+        # 代价只是同一条回复里的多个 MCP 调用排队执行，可以忽略。
+        self._parallel_safe = False
+
+    @property
+    def parallel_safe(self) -> bool:
+        return self._parallel_safe
 
     def permission_target(self, input):
         return json.dumps(input, ensure_ascii=False)

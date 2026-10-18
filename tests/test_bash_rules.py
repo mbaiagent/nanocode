@@ -11,7 +11,7 @@ import unittest
 
 from helpers import Workspace
 
-from nanocode.permissions import PermissionManager, split_command
+from nanocode.permissions import PermissionManager, redirect_targets, split_command
 from nanocode.tools import Bash
 
 
@@ -122,6 +122,62 @@ class RuleMatchingTest(unittest.TestCase):
         d = pm.resolve(self.bash, {"command": "python3 -m unittest && echo ok"})
         self.assertEqual(d.behavior, "deny")
         self.assertIn("每一段", d.reason)
+
+
+class RedirectTargetTest(unittest.TestCase):
+    """#34：输出重定向让 allow 规则失效。
+
+    `split_command` 只把 `&& || ; | 换行 &` 当分隔符，`>` / `>>` 既不拆段也不标记，
+    于是 `git status > ~/.bashrc` 整串还能命中 `bash(git status*)` 被直接放行 ——
+    而文档承诺"写项目外的路径，无论 allow 规则怎么写都要确认"。
+    """
+
+    def setUp(self):
+        self.ws = Workspace()
+        self.bash = Bash()
+
+    def check(self, command, mode="default", allow=(), deny=()):
+        pm = PermissionManager(self.ws.dir, mode=mode, allow=list(allow), deny=list(deny))
+        return pm.check(self.bash, {"command": command}).behavior
+
+    def test_redirect_targets_are_extracted(self):
+        self.assertEqual(redirect_targets("echo hi > out.txt"), ["out.txt"])
+        self.assertEqual(redirect_targets("cmd >> /var/log/x"), ["/var/log/x"])
+        self.assertEqual(redirect_targets("cmd < in.txt"), ["in.txt"])
+        self.assertEqual(redirect_targets("cmd &> both.txt"), ["both.txt"])
+        self.assertEqual(redirect_targets("cmd 2> err.log"), ["err.log"])
+        self.assertEqual(redirect_targets("a > x; b > y"), ["x", "y"])
+        # 这些不算"写了某个文件"
+        self.assertEqual(redirect_targets("cmd 2>&1 | tail"), [])
+        self.assertEqual(redirect_targets("cmd >&2"), [])
+        self.assertEqual(redirect_targets("cmd > /dev/null"), [])
+        self.assertEqual(redirect_targets("cat <<EOF > x"), ["x"])
+        # 引号里的 > 不算
+        self.assertEqual(redirect_targets("echo 'a > b'"), [])
+
+    def test_write_outside_the_project_is_not_allowed_by_a_rule(self):
+        allow = ["bash(git status*)"]
+        self.assertEqual(self.check("git status", allow=allow), "allow")
+        # 同样的命令加一个重定向，目标在项目外：allow 规则不许放行
+        for cmd in ["git status > ~/.bashrc", "git status > /etc/cron.d/x", "git status >> ~/.ssh/authorized_keys",
+                    "cat /dev/null > ~/.bashrc", "ls > ~/.profile"]:
+            self.assertEqual(self.check(cmd, allow=allow), "ask", cmd)
+
+    def test_write_inside_the_project_is_still_allowed(self):
+        # 项目内的重定向是常见写法，不能被这条改动误伤
+        allow = ["bash(python3 -m pytest*)"]
+        self.assertEqual(self.check("python3 -m pytest > out.log", allow=allow), "allow")
+        # 管道是另一段命令，本来就要各自命中；这里只关心重定向不放行
+        self.assertEqual(self.check("python3 -m pytest 2>&1 | tail -5", allow=allow + ["bash(tail*)"]), "allow")
+
+    def test_deny_rule_matches_the_redirect_target(self):
+        deny = ["bash(*.bashrc*)"]
+        for cmd in ["echo x > ~/.bashrc", "cat a > ~/.bashrc"]:
+            self.assertEqual(self.check(cmd, mode="bypass", deny=deny), "deny", cmd)
+
+    def test_review_mode_flags_redirect_to_outside(self):
+        d = self.check("echo x > ~/.bashrc", mode="review", allow=["bash(*)"])
+        self.assertEqual(d, "ask")
 
 
 if __name__ == "__main__":

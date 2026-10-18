@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import signal
 import socket
 import subprocess
 import sys
@@ -68,9 +67,9 @@ class LocalLauncher(Launcher):
         proc = self.procs.pop(session_id, None)
         if not proc or proc.poll() is not None:
             return
-        for sig in (signal.SIGTERM, signal.SIGKILL):
+        for attempt in ("terminate", "kill"):
             try:
-                os.killpg(proc.pid, sig)
+                getattr(proc, attempt)()
                 proc.wait(timeout=5)
                 return
             except ProcessLookupError:

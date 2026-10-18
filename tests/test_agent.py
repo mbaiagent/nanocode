@@ -10,7 +10,8 @@ from unittest import mock
 
 from helpers import ScriptedProvider, Workspace, call, make_agent
 
-from nanocode.context import compact_messages, context_tokens, find_compact_split, load_memory
+from nanocode.context import (compact_messages, context_tokens, drop_dangling_tool_results,
+                              find_compact_split, load_memory)
 from nanocode.mcp import connect_servers
 from nanocode.messages import is_tool_result_message, text_block, user_message
 from nanocode.session import Options, Session
@@ -175,9 +176,51 @@ class ContextTest(unittest.TestCase):
         self.assertEqual(find_compact_split(msgs, 1), 4)
         self.assertEqual(find_compact_split(msgs, 2), 0)
 
+    def test_split_never_lands_on_a_merged_tool_result_message(self):
+        """#33：`_append_user` 会把新提问合并进上一条 user(tool_result)，
+        得到 `[tool_result, text]`。它不是"纯工具结果"，却同样不能当切分点。"""
+        msgs = self._history()
+        # 模拟"一轮工具执行中用户取消 → 再提一个问题"：文本并进了 tool_result 消息
+        msgs[2]["content"].append({"type": "text", "text": "换个思路"})
+        self.assertEqual(find_compact_split(msgs, 1), 4)          # 仍然切在"第二个任务"上
+        # 极端情况：所有人话消息都带 tool_result → 宁可全总结，也不留下悬空结果
+        msgs2 = [
+            user_message("开始"),
+            {"role": "assistant", "content": [call("glob", pattern="*")]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x", "content": "a"},
+                                         {"type": "text", "text": "继续"}]},
+        ]
+        self.assertEqual(find_compact_split(msgs2, 1), 0)
+
+    def test_compact_result_has_no_dangling_tool_result(self):
+        """#33：压缩后 tool_use 和 tool_result 的 id 必须一一对应，否则下次请求 400。"""
+        msgs = self._history()
+        msgs[2]["content"].append({"type": "text", "text": "换个思路"})
+        new, _summary, _usage = compact_messages(ScriptedProvider([[text_block("摘要")]]), msgs)
+        use = {b["id"] for m in new for b in m["content"] if b.get("type") == "tool_use"}
+        res = {b["tool_use_id"] for m in new for b in m["content"] if b.get("type") == "tool_result"}
+        self.assertEqual(res - use, set())                        # 没有找不到调用的结果
+
+    def test_drop_dangling_tool_results_removes_only_orphans(self):
+        msgs = [
+            user_message("开始"),
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "glob", "input": {}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "a"},
+                                         {"type": "tool_result", "tool_use_id": "ghost", "content": "孤魂"}]},
+        ]
+        new, dropped = drop_dangling_tool_results(msgs)
+        self.assertEqual(dropped, 1)
+        self.assertEqual(len(new), 3)
+        self.assertEqual([b["tool_use_id"] for b in new[2]["content"]], ["t1"])
+        # 整条只剩悬空结果时，这条消息直接消失
+        msgs2 = [user_message("x"),
+                 {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "ghost", "content": "y"}]}]
+        new2, dropped2 = drop_dangling_tool_results(msgs2)
+        self.assertEqual((len(new2), dropped2), (1, 1))
+
     def test_compact_keeps_recent_turn(self):
         provider = ScriptedProvider([[text_block("摘要内容")]])
-        new, summary = compact_messages(provider, self._history())
+        new, summary, _usage = compact_messages(provider, self._history())
         self.assertEqual(summary, "摘要内容")
         self.assertEqual(roles(new), ["user", "assistant", "user", "assistant"])
         self.assertIn("第二个任务", str(new[2]))

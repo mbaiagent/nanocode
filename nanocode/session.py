@@ -110,7 +110,8 @@ class Session:
         )
         self.provider_name = provider_name
         self.bus = EventBus()
-        self.session_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        # 带微秒：同一秒启动两个进程（同项目、同秒）会共用一个会话文件并互相覆盖（#47）
+        self.session_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         self.data_dir = project_data_dir(self.cwd)
         if self.policy.get("audit_log"):
             self._audit = AuditWriter(self.policy["audit_log"], session=lambda: self.session_id)
@@ -169,9 +170,12 @@ class Session:
     # ------------------------------------------------------------------ 运行
 
     def send(self, prompt: str) -> str:
-        result = self.agent.run(prompt)
-        self.save()
-        return result
+        # try/finally：即使 agent.run 抛了异常（理论上不会，但 BaseException 有可能），
+        # 这一轮的对话也要落盘。反过来写在 run() 后面的话，崩溃即丢失整轮改动。
+        try:
+            return self.agent.run(prompt)
+        finally:
+            self.save()
 
     def info(self) -> dict:
         a = self.agent
@@ -236,10 +240,15 @@ class Session:
         """
         d = os.path.join(self.data_dir, "sessions")
         path = os.path.join(d, f"{self.session_id}.json")
-        tmp = path + ".tmp"
+        # 临时文件带 pid：同一个会话被两个进程同时保存（或同进程并发保存）时，
+        # 固定后缀的 .tmp 会互相覆盖，最后 os.replace 上去的可能是一半的内容。
+        tmp = f"{path}.{os.getpid()}.tmp"
         try:
-            os.makedirs(d, exist_ok=True)
-            with open(tmp, "w", encoding="utf-8") as f:
+            os.makedirs(d, mode=0o700, exist_ok=True)
+            # 会话里存着完整 messages —— 包括所有工具输出，可能含读到的密钥。
+            # 默认 0644 意味着同机其他用户能直接读走整段对话（#51）。
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump({"messages": self.agent.messages, "todos": self.agent.state.get("todos", []),
                            "usage": self.agent.usage.to_dict()}, f, ensure_ascii=False, indent=1)
                 f.flush()
@@ -308,8 +317,9 @@ class Session:
         while os.path.exists(os.path.join(d, f"{sid}.json")):
             sid += "_1"
         self.session_id = sid
-        self.agent.messages = []
-        self.agent.state["todos"] = []
+        # reset() 而不是只清 messages：usage / read_files / _compacted_at 必须一起清。
+        # 残留的 _compacted_at 最阴 —— 它会让新会话的自动压缩阈值判断失效（#47）。
+        self.agent.reset()
         self.bus.history.clear()
         return f"已开始新会话 {self.session_id}"
 
@@ -334,6 +344,12 @@ class Session:
                 continue
             self.agent.messages = data.get("messages", [])
             self.agent.state["todos"] = data.get("todos", [])
+            # 和 resume() 用同一套恢复逻辑：usage 不恢复的话，/cost 显示的会是
+            # 当前会话累计值而不是这个会话的真实用量（#47）
+            u = data.get("usage", {}) or {}
+            self.agent.usage.input_tokens = u.get("input_tokens", 0)
+            self.agent.usage.output_tokens = u.get("output_tokens", 0)
+            self.agent.usage.estimated = u.get("estimated", False)
             self.session_id = name[:-5]
             msg = f"已恢复会话 {self.session_id}（{len(self.agent.messages)} 条消息）"
             return "\n".join(notes + [msg])
@@ -377,7 +393,7 @@ class Session:
             return "\n".join(lines), None
         if name == "clear":
             a.reset()
-            self.session_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            self.session_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
             return "对话已清空", None
         if name == "compact":
             summary = a.compact(focus=arg)

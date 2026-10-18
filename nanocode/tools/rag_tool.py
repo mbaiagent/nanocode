@@ -46,10 +46,11 @@ class SearchDocs(Tool):
             raise ToolError("query 不能为空")
         k = max(1, min(int(input.get("k", 5)), 10))
         index = self._index(ctx)
-        index.refresh()   # 增量：只处理变化的文件，没变化时只是一次 stat
+        # cancel 传进去：全量向量化可能几十次 HTTP 调用，用户按停止必须能拦住（#49）
+        index.refresh(ctx.cancel)
         if not index.chunks:
             return "没有可检索的文档（默认匹配 .md / .txt / .rst，可在 settings.json 的 rag.include 里配置）"
-        hits = index.search(query, k)
+        hits = index.search(query, k, cancel=ctx.cancel)
         if not hits:
             return "没有找到相关片段。可以换几个关键词再试，或改用 grep。"
         out = []

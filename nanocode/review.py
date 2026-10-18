@@ -15,6 +15,8 @@ from __future__ import annotations
 import difflib
 import os
 
+from .tools.base import norm_rel
+
 MAX_ORIGINAL_BYTES = 200_000
 MAX_FILES = 30
 MAX_DIFF_CHARS = 6000        # 单个文件的 diff 最多保留多少字符
@@ -36,7 +38,9 @@ def read_text(path: str):
 
 def remember(originals: dict, cwd: str, path: str) -> None:
     """写文件工具动手之前调用：这个文件本轮第一次被改，就记下原文。"""
-    rel = os.path.relpath(path, cwd)
+    # 必须用和 subcheck.snapshot 相同的规范化（/ 分隔）：Windows 上 relpath 给
+    # `pkg\\a.txt`，快照给 `pkg/a.txt`，同一个文件会在终审里出现两次（#45）
+    rel = norm_rel(os.path.relpath(path, cwd))
     if rel not in originals:
         originals[rel] = read_text(path)
 

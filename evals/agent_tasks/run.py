@@ -80,8 +80,10 @@ def run_check(task: dict, work: str, answer: str) -> tuple[bool, str]:
         f.write(answer or "")
     try:
         p = subprocess.run([sys.executable, os.path.join(task["dir"], "check.py"), work, answer_file],
-                           capture_output=True, text=True, timeout=300)
-        lines = (p.stdout + p.stderr).strip().splitlines()
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+        # stdout / stderr 可能因解码失败变成 None（Windows 上 locale 不匹配 UTF-8 时会发生）
+        out = (p.stdout or "") + (p.stderr or "")
+        lines = out.strip().splitlines()
         return p.returncode == 0, (lines[-1] if lines else f"判定脚本无输出（退出码 {p.returncode}）")[:300]
     except subprocess.TimeoutExpired:
         return False, "判定超时"
@@ -132,7 +134,7 @@ def run_agent(task: dict, work: str, args) -> dict:
 def git_commit() -> str:
     try:
         return subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True,
-                              text=True, timeout=10).stdout.strip()
+                              text=True, encoding="utf-8", errors="replace", timeout=10).stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
         return ""
 

@@ -57,18 +57,26 @@ class HookRunner:
                 continue
             data = json.dumps({"event": event, "cwd": self.cwd, **payload}, ensure_ascii=False)
             try:
+                # encoding 必须显式指定：text=True 在 Windows 上按本机 locale（cp936 等）解码，
+                # 而 cmd / node / bash 常输出 UTF-8，解码失败发生在 subprocess 的 reader 线程里，
+                # 异常只进 stderr，返回的 CompletedProcess.stdout 会变成 None，后面 .strip() 直接
+                # AttributeError —— 一个 hook 打崩整轮对话（#32）。
                 p = subprocess.run(hook["command"], shell=True, input=data, capture_output=True,
-                                   text=True, cwd=self.cwd, timeout=self.timeout)
-            except subprocess.TimeoutExpired:
-                outcome.warnings.append(f"hook 超时：{hook['command']}")
+                                   text=True, encoding="utf-8", errors="replace",
+                                   cwd=self.cwd, timeout=self.timeout)
+            except (subprocess.TimeoutExpired, OSError) as e:
+                outcome.warnings.append(f"hook 没能运行（{type(e).__name__}）：{hook['command']}")
                 continue
+            # 兜底：p.stdout / p.stderr 理论上不会是 None，但不让它变成 AttributeError 打穿 _prepare
+            stdout = (p.stdout or "") if p.stdout is not None else ""
+            stderr = (p.stderr or "") if p.stderr is not None else ""
             if p.returncode == 2:
                 outcome.blocked = True
-                messages.append(p.stderr.strip() or f"被 hook 拦截：{hook['command']}")
+                messages.append(stderr.strip() or f"被 hook 拦截：{hook['command']}")
             elif p.returncode == 0:
-                if event == "UserPromptSubmit" and p.stdout.strip():
-                    messages.append(p.stdout.strip())
+                if event == "UserPromptSubmit" and stdout.strip():
+                    messages.append(stdout.strip())
             else:
-                outcome.warnings.append(f"hook 失败（退出码 {p.returncode}）：{hook['command']}\n{p.stderr.strip()}")
+                outcome.warnings.append(f"hook 失败（退出码 {p.returncode}）：{hook['command']}\n{stderr.strip()}")
         outcome.message = "\n".join(messages)
         return outcome

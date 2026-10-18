@@ -62,7 +62,11 @@ class PathPermissionTest(unittest.TestCase):
         agent, _, _ = make_agent(self.ws, [[call("read_file", path="link/secret.txt")], [text_block("ok")]],
                                  mode="default", ask=lambda n, i, t: asked.append(t) or "no")
         agent.run("x")
-        self.assertEqual(asked, ["link/secret.txt"])
+        # 提示里必须带真实路径：软链 `link/secret.txt` 看起来像项目内文件，
+        # 只显示原始写法等于让用户在不知情的情况下批准一次外部读取（#42）
+        self.assertEqual(len(asked), 1)
+        self.assertIn("link/secret.txt", asked[0])
+        self.assertIn(os.path.realpath(os.path.join(self.outside.dir, "secret.txt")), asked[0])
         self.assertNotIn("TOP SECRET", agent.messages[2]["content"][0]["content"])
 
     def test_tool_context_uses_same_resolution(self):

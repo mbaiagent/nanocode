@@ -37,7 +37,7 @@ from .messages import (Usage, assistant_message, text_block, text_of, tool_resul
 from .permissions import EDIT_TOOLS, PermissionManager
 from . import lessons, review, subcheck
 from . import verify as verify_mod
-from .tools.base import ToolContext, ToolRegistry, truncate
+from .tools.base import ToolContext, ToolRegistry, norm_rel, truncate
 
 
 LLM_FAILED_PREFIX = "模型调用失败："   # 模型接口出错（配额、网络、服务故障）导致任务中止时，最终回答的开头；评测靠它区分"模型没做好"和"根本没调通"
@@ -138,63 +138,106 @@ class Agent:
                 final = "(已中断)"
                 break
             self._maybe_compact()
-
-            # ① 调用模型
-            system, tools = self.system_prompt(), self.tools.schemas()
-            self.emit("llm_request", step=step, messages=len(self.messages),
-                      context_tokens=context_tokens(system, self.messages, tools), context_window=self.context_window)
-            started = time.time()
             try:
-                resp = self.provider.complete(system, self.messages, tools, self.max_tokens, on_text=self._on_text)
+                # ① 调用模型
+                system, tools = self.system_prompt(), self.tools.schemas()
+                self.emit("llm_request", step=step, messages=len(self.messages),
+                          context_tokens=context_tokens(system, self.messages, tools), context_window=self.context_window)
+                started = time.time()
+                try:
+                    resp = self.provider.complete(system, self.messages, tools, self.max_tokens, on_text=self._on_text)
+                except Cancelled:
+                    final = "(已中断)"
+                    break
+                except LLMError as e:
+                    self.emit("error", message=str(e))
+                    final = f"{LLM_FAILED_PREFIX}{e}"
+                    break
+                self.usage.add(resp.usage)
+                content = resp.content or [text_block("(空回复)")]
+                self.messages.append(assistant_message(content))
+                self.emit("llm_response", step=step, content=content, stop_reason=resp.stop_reason,
+                          usage=resp.usage.to_dict(), total_usage=self.usage.to_dict(),
+                          seconds=round(time.time() - started, 2))
+
+                # ② 没有工具调用 → 模型认为完成了
+                calls = tool_uses(self.messages[-1])
+                if not calls:
+                    final = text_of(self.messages[-1])
+                    if resp.stop_reason == "max_tokens":
+                        final += "\n\n(回复因达到 max_tokens 被截断)"
+                    # 自动验证 —— 做过改动的话，先过一遍检查命令；不通过就把输出交还给模型
+                    if self.verify and self._dirty and not self.cancel.is_set():
+                        verdict = self._verify()
+                        if verdict is None:          # 未通过，反馈已追加，继续循环
+                            continue
+                        if verdict:                  # 超过重试上限 / 没有进展：停下来，把失败交给用户
+                            final += verdict
+                            self.verify_failed = True
+                            self._finish_review()
+                            self.emit("turn_end", final=final, usage=self.usage.to_dict(), verify_failed=True)
+                            return final
+                    # Hook：Stop —— 可以不让它停，比如"测试没过不许结束"
+                    if self.depth == 0 and self.hooks.has("Stop"):
+                        out = self.hooks.run("Stop", {"final": final})
+                        self._report_hook("Stop", out)
+                        if out.blocked:
+                            self._append_user([text_block(f"<hook-feedback>\n{out.message}\n</hook-feedback>")])
+                            continue
+                    break
+
+                # ③ 执行工具，把结果作为 user 消息追加 → 下一轮
+                results = self._run_tools(calls)
+                self.messages.append({"role": "user", "content": results})
             except Cancelled:
                 final = "(已中断)"
                 break
-            except LLMError as e:
-                self.emit("error", message=str(e))
-                final = f"{LLM_FAILED_PREFIX}{e}"
+            except Exception as e:  # noqa: BLE001
+                # 主循环的异常边界（#31）：走到这里说明是没预料到的内部错误。
+                # 此刻 messages 很可能是「assistant 发了 tool_use、但下一条没有对应 tool_result」
+                # 的非法状态 —— 模型接口对它是直接 400，这一段会话会永久废掉，只能 /clear。
+                # 所以先补结果把对话修回合法，再走正常的收尾（turn_end / 终审汇总），
+                # 让用户看到出错原因而不是一个卡在"等待模型"的界面。
+                final = self._recover(step, e)
                 break
-            self.usage.add(resp.usage)
-            content = resp.content or [text_block("(空回复)")]
-            self.messages.append(assistant_message(content))
-            self.emit("llm_response", step=step, content=content, stop_reason=resp.stop_reason,
-                      usage=resp.usage.to_dict(), total_usage=self.usage.to_dict(),
-                      seconds=round(time.time() - started, 2))
-
-            # ② 没有工具调用 → 模型认为完成了
-            calls = tool_uses(self.messages[-1])
-            if not calls:
-                final = text_of(self.messages[-1])
-                if resp.stop_reason == "max_tokens":
-                    final += "\n\n(回复因达到 max_tokens 被截断)"
-                # 自动验证 —— 做过改动的话，先过一遍检查命令；不通过就把输出交还给模型
-                if self.verify and self._dirty and not self.cancel.is_set():
-                    verdict = self._verify()
-                    if verdict is None:          # 未通过，反馈已追加，继续循环
-                        continue
-                    if verdict:                  # 超过重试上限 / 没有进展：停下来，把失败交给用户
-                        final += verdict
-                        self.verify_failed = True
-                        self._finish_review()
-                        self.emit("turn_end", final=final, usage=self.usage.to_dict(), verify_failed=True)
-                        return final
-                # Hook：Stop —— 可以不让它停，比如"测试没过不许结束"
-                if self.depth == 0 and self.hooks.has("Stop"):
-                    out = self.hooks.run("Stop", {"final": final})
-                    self._report_hook("Stop", out)
-                    if out.blocked:
-                        self._append_user([text_block(f"<hook-feedback>\n{out.message}\n</hook-feedback>")])
-                        continue
-                break
-
-            # ③ 执行工具，把结果作为 user 消息追加 → 下一轮
-            results = self._run_tools(calls)
-            self.messages.append({"role": "user", "content": results})
         else:
             final = f"(达到最大步数 {self.max_steps}，已停止)"
 
         self._finish_review()
         self.emit("turn_end", final=final, usage=self.usage.to_dict())
         return final
+
+    def _recover(self, step: int, exc: BaseException) -> str:
+        """主循环异常后的兜底：补齐未执行的工具调用，报告原因。返回给调用方的最终回答。"""
+        repaired = self._repair_unanswered()
+        detail = f"{type(exc).__name__}: {exc}"
+        if repaired:
+            detail += (f"；已为 {len(repaired)} 个未执行的工具调用补上错误结果"
+                       f"（{', '.join(repaired)}），对话可以继续")
+        self.emit("error", message=f"第 {step} 步内部错误：{detail}", retryable=False)
+        return f"(内部错误，第 {step} 步未能完成：{detail})"
+
+    def _repair_unanswered(self) -> list[str]:
+        """给最后一条 assistant 消息里还没拿到结果的 tool_use 补一条 is_error 的 tool_result。
+
+        返回补齐的 id 列表；对话本来就合法时返回空列表、不改动任何东西。
+        """
+        if not self.messages or self.messages[-1].get("role") != "assistant":
+            return []
+        calls = tool_uses(self.messages[-1])
+        if not calls:
+            return []
+        answered = {b.get("tool_use_id")
+                    for m in self.messages if m.get("role") == "user"
+                    for b in m.get("content", [])
+                    if isinstance(b, dict) and b.get("type") == "tool_result"}
+        missing = [c["id"] for c in calls if c["id"] not in answered]
+        if not missing:
+            return []
+        self.messages.append({"role": "user",
+                              "content": [tool_result_block(i, "[nanocode] 这一步因内部错误没能执行完，工具未执行", True)
+                                          for i in missing]})
+        return missing
 
     def _on_text(self, delta: str) -> None:
         if self.cancel.is_set():
@@ -214,8 +257,9 @@ class Agent:
         # 先依次过权限（可能要问用户，必须串行），再执行
         plans = [self._prepare(call) for call in calls]
         runnable = [p for p in plans if p["result"] is None]
-        if len(runnable) > 1 and all(p["tool"].is_read_only for p in runnable):
-            # 多个只读工具互不影响 → 并行执行
+        if len(runnable) > 1 and all(p["tool"].parallel_safe for p in runnable):
+            # 多个互不影响的工具 → 并行执行。判定用 parallel_safe 而不是 is_read_only：
+            # task 是只读的（子 Agent 的调用单独走权限），但会读写父 Agent 的共享状态（#46）
             with ThreadPoolExecutor(max_workers=min(8, len(runnable))) as pool:
                 list(pool.map(self._execute, runnable))
         else:
@@ -240,7 +284,9 @@ class Agent:
             plan["result"] = self._finish(call, f"权限被拒绝：{decision.reason}", True)
             return plan
         if self.write_scope is not None and tool.name in EDIT_TOOLS:
-            rel = os.path.relpath(self.ctx.resolve(call["input"].get("path", "")), self.cwd)
+            # norm_rel 统一分隔符和大小写：Windows 上 `pkg\\a.txt` 也要能匹配
+            # `pkg/*` 这类范围，否则同一个文件会漏过范围检查（#35）
+            rel = norm_rel(os.path.relpath(self.ctx.resolve(call["input"].get("path", "")), self.cwd))
             if not subcheck.in_scope(rel, self.write_scope):
                 plan["result"] = self._finish(call, f"{rel} 不在这个子任务允许修改的范围内：{self.write_scope or '(只读，不许改任何文件)'}", True)
                 return plan
@@ -364,8 +410,12 @@ class Agent:
             # 太大的是"当前这一轮"本身（比如刚读了一个巨大的文件）。只总结更早的轮次压不下来，
             # 连当前这一轮一起总结，再让模型在摘要基础上继续。
             keep = 0
-        self.messages, summary = compact_messages(self.provider, self.messages, keep_turns=keep, focus=focus,
-                                                  mid_turn=mid_turn)
+        self.messages, summary, usage = compact_messages(self.provider, self.messages, keep_turns=keep, focus=focus,
+                                                        mid_turn=mid_turn)
+        if usage:
+            # 摘要自己也是一次模型调用。以前把 usage 扔了，/cost 和评测统计偏低，
+            # 而每日调用数却已经计了它，两边对不上（#48）。
+            self.usage.add(Usage.from_dict(usage))
         after = context_tokens(self.system_prompt(), self.messages, self.tools.schemas())
         self._compacted_at = after
         self.emit("compact", auto=auto, before=before, after=after, summary=summary)
@@ -397,7 +447,10 @@ class Agent:
                 break
             result = sub._run(subcheck.feedback(report, output))   # 子 Agent 保留上下文，接着修
         self._dirty = self._dirty or sub._dirty   # 子 Agent 改了东西，也算本轮有改动
-        self.usage.add(sub.usage)
+        # merge 而不是 add：这里动的是父 Agent 自己的 usage。task 已经标成
+        # parallel_safe=False（#46）所以正常情况下就在主线程，但累加共享计数器
+        # 用带锁的那条路，将来谁再把并行放开也不会静默丢计数（#48）。
+        self.usage.merge(sub.usage)
         self.emit("subagent_end", description=description, result=result, usage=sub.usage.to_dict(), report=report.to_dict())
         return f"{result or '(子 Agent 没有返回内容)'}\n\n{report.render()}"
 
