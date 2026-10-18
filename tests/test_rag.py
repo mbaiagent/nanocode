@@ -7,8 +7,10 @@ import unittest
 
 os.environ["no_proxy"] = os.environ["NO_PROXY"] = "127.0.0.1,localhost"
 
-from helpers import FakeSSEServer, Workspace  # noqa: E402
+from helpers import FakeSSEServer, Workspace, call, make_agent  # noqa: E402
 
+from nanocode.messages import text_block  # noqa: E402
+from nanocode.permissions import PermissionManager  # noqa: E402
 from nanocode.rag import BM25, DocIndex, Embedder, EmbeddingError, chunk_file, cosine, rrf, tokenize  # noqa: E402
 from nanocode.tools import SearchDocs, ToolContext  # noqa: E402
 
@@ -222,6 +224,21 @@ class ToolTest(unittest.TestCase):
         try:
             r = SearchDocs().execute({"query": "x"}, ToolContext(cwd=ws.dir))
             self.assertIn("没有可检索的文档", r.content)
+        finally:
+            ws.cleanup()
+
+    def test_plan_mode_refuses_search_docs(self):
+        """#44：search_docs 会写 .nanocode/index/，不是只读工具；plan 模式必须拒绝，且不落盘。"""
+        ws = Workspace()
+        try:
+            ws.write("README.md", "# 项目\n\n运行测试用 python3 -m unittest。\n")
+            self.assertFalse(SearchDocs().is_read_only)
+            self.assertEqual(PermissionManager(ws.dir, mode="plan").check(SearchDocs(), {"query": "x"}).behavior, "deny")
+            self.assertEqual(PermissionManager(ws.dir).check(SearchDocs(), {"query": "x"}).behavior, "ask")
+            agent, _, _ = make_agent(ws, [[call("search_docs", query="怎么运行测试")], [text_block("完成")]], mode="plan")
+            agent.run("搜文档")
+            self.assertTrue(any("权限被拒绝" in str(m.get("content")) for m in agent.messages))
+            self.assertFalse(os.path.exists(os.path.join(ws.dir, ".nanocode")))
         finally:
             ws.cleanup()
 

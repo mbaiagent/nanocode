@@ -12,17 +12,26 @@ import fnmatch
 import os
 import re
 
-from .base import Tool, ToolError
+from .base import Tool, ToolError, symlink_escapes
 
 IGNORED_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache",
                 "dist", "build", ".idea", ".nanocode"}
 
 
 def walk_files(root: str):
+    """遍历 root 下的文件，跳过忽略目录和指向项目外的软链接。
+
+    权限检查只认工具参数里的"根路径"，树里每个文件不再过一遍；`evil.md -> ~/.ssh/id_rsa`
+    这样的软链接会被 os.walk 列出来、被 open 跟随，把私钥内容搜进上下文（#38）。
+    指向项目内的软链接照常遍历。硬链接在路径层识别不了，防不住。
+    """
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
         for name in filenames:
-            yield os.path.join(dirpath, name)
+            full = os.path.join(dirpath, name)
+            if symlink_escapes(root, full):
+                continue
+            yield full
 
 
 def glob_to_regex(pattern: str) -> re.Pattern:

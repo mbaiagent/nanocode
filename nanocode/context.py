@@ -18,6 +18,7 @@ import os
 import platform
 
 from .messages import Message, estimate_tokens, has_tool_result, is_tool_result_message, text_of, user_message
+from .tools.base import is_inside, symlink_escapes
 
 MEMORY_FILE = "NANOCODE.md"
 
@@ -53,6 +54,11 @@ def load_memory(cwd: str) -> list[tuple[str, str]]:
     """加载记忆文件：用户级（~/.nanocode/NANOCODE.md），以及从根目录到 cwd 路径上的每个 NANOCODE.md。
 
     越具体（越靠近 cwd）的记忆越晚出现，在冲突时更有分量。
+
+    项目链条上的文件必须是真文件或在项目内的软链接：恶意仓库放一个
+    `NANOCODE.md -> ~/.ssh/id_rsa`，isfile / open 都会跟随，内容会进每一次请求的
+    system prompt，无需任何工具调用、无需用户批准（#38）。用户级文件是用户自己的，
+    可能是软链，不受此限。
     """
     found = []
     user_file = os.path.join(home_dir(), MEMORY_FILE)
@@ -67,7 +73,7 @@ def load_memory(cwd: str) -> list[tuple[str, str]]:
         path = parent
     for d in reversed(parts):
         f = os.path.join(d, MEMORY_FILE)
-        if os.path.isfile(f) and f not in found:
+        if os.path.isfile(f) and f not in found and not symlink_escapes(cwd, f):
             found.append(f)
     out = []
     for f in found:
@@ -96,35 +102,50 @@ def _ext_dirs(cwd: str, sub: str) -> list[str]:
 
 
 def discover_skills(cwd: str) -> dict[str, dict]:
-    """技能：.nanocode/skills/<名字>/SKILL.md，frontmatter 里写 name 和 description。"""
+    """技能：.nanocode/skills/<名字>/SKILL.md，frontmatter 里写 name 和 description。
+
+    项目侧的文件解析软链接后必须仍在项目内：`skills/x/SKILL.md -> ~/.ssh/id_rsa`
+    或整个 `skills/x -> ~/.ssh` 都会把项目外的文件读进提示词（#38）。
+    用户级目录是用户自己的，不查。
+    """
     skills = {}
     for source, base in zip(("user", "project"), _ext_dirs(cwd, "skills")):
         if not os.path.isdir(base):
             continue
         for name in sorted(os.listdir(base)):
             f = os.path.join(base, name, "SKILL.md")
-            if os.path.isfile(f):
-                with open(f, encoding="utf-8") as fh:
-                    meta, body = _parse_frontmatter(fh.read())
-                skill_name = meta.get("name", name)
-                skills[skill_name] = {"name": skill_name, "description": meta.get("description", ""),
-                                      "body": body, "dir": os.path.dirname(f),
-                                      "source": source}
+            if not os.path.isfile(f):
+                continue
+            if source == "project" and not is_inside(cwd, f):
+                continue
+            with open(f, encoding="utf-8") as fh:
+                meta, body = _parse_frontmatter(fh.read())
+            skill_name = meta.get("name", name)
+            skills[skill_name] = {"name": skill_name, "description": meta.get("description", ""),
+                                  "body": body, "dir": os.path.dirname(f),
+                                  "source": source}
     return skills
 
 
 def discover_commands(cwd: str) -> dict[str, dict]:
-    """自定义斜杠命令：.nanocode/commands/<名字>.md，内容是提示词模板，$ARGUMENTS 会被替换。"""
+    """自定义斜杠命令：.nanocode/commands/<名字>.md，内容是提示词模板，$ARGUMENTS 会被替换。
+
+    项目侧的文件同样必须解析后仍在项目内（软链接绕过读取边界，#38）。
+    """
     commands = {}
     for source, base in zip(("user", "project"), _ext_dirs(cwd, "commands")):
         if not os.path.isdir(base):
             continue
         for fname in sorted(os.listdir(base)):
-            if fname.endswith(".md"):
-                with open(os.path.join(base, fname), encoding="utf-8") as fh:
-                    meta, body = _parse_frontmatter(fh.read())
-                commands[fname[:-3]] = {"description": meta.get("description", body.strip().splitlines()[0][:60] if body.strip() else ""),
-                                        "template": body, "source": source}
+            f = os.path.join(base, fname)
+            if not fname.endswith(".md") or not os.path.isfile(f):
+                continue
+            if source == "project" and not is_inside(cwd, f):
+                continue
+            with open(f, encoding="utf-8") as fh:
+                meta, body = _parse_frontmatter(fh.read())
+            commands[fname[:-3]] = {"description": meta.get("description", body.strip().splitlines()[0][:60] if body.strip() else ""),
+                                    "template": body, "source": source}
     return commands
 
 
