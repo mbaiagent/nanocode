@@ -8,7 +8,7 @@ from unittest import mock
 
 from helpers import Workspace, call, make_agent
 
-from nanocode import review, risk, verify as verify_mod
+from nanocode import review, risk, subcheck, verify as verify_mod
 from nanocode.messages import text_block
 from nanocode.permissions import MODES, PermissionManager
 from nanocode.session import Options, Session
@@ -196,6 +196,23 @@ class ReviewSummaryTest(unittest.TestCase):
     def test_no_changes_no_review(self):
         _, _, ev = self.agent([[call("read_file", path="a.py")], say("只是看看")])
         self.assertEqual(reviews(ev), [])
+
+    def test_uncounted_review_warns_instead_of_staying_silent(self):
+        """#39：快照失败（文件太多）时以前静默跳过：不汇总也不警告，
+        用户以为终审覆盖了本轮，实际一处都没核对。"""
+        old = subcheck.MAX_FILES
+        subcheck.MAX_FILES = 2
+        try:
+            for i in range(5):
+                self.ws.write(f"f{i}.txt", "x")
+            _, _, ev = self.agent([[call("read_file", path="a.py")], say("只是看看")])
+            warnings = [e for e in ev if e["type"] == "warning"]
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("终审", warnings[0]["message"])
+            self.assertIn("无法统计", warnings[0]["message"])
+            self.assertEqual(reviews(ev), [])
+        finally:
+            subcheck.MAX_FILES = old
 
     def test_changed_and_changed_back_is_not_listed(self):
         replies = [[call("read_file", path="a.py")], [call("write_file", path="a.py", content="zzz\n")],
