@@ -282,8 +282,8 @@ function onEvent(e) {
       break;
     }
     case "todos": renderTodos(e.todos); break;
-    case "compact": add("note", `↻ 上下文${e.auto ? "自动" : ""}压缩：约 ${e.before} → ${e.after} tokens\n${e.summary}`); break;
-    case "hook": add("note", `⚓ hook[${e.hook}] ${e.message || e.warnings.join("\n")}`, a); break;
+    case "compact": add("note", `↻ 上下文${e.auto ? "自动" : ""}压缩：约 ${e.before} → ${e.after} tokens\n${esc(e.summary)}`); break;
+    case "hook": add("note", `⚓ hook[${esc(e.hook)}] ${esc(e.message || (e.warnings || []).join("\n"))}`, a); break;
     case "memory_pending":
       add("note", `💡 经验候选 #${e.index}（来自被自动验证打回又修好的回合，确认后才会写入项目记忆）\n${esc(e.text)}\n在输入框发送 /memory accept ${e.index} 写入，/memory reject ${e.index} 丢弃`, a);
       break;
@@ -302,7 +302,7 @@ function onEvent(e) {
       else add("error", `✗ 自动验证未通过（第 ${e.attempt} 次，退出码 ${esc(String(e.exit_code))}）\n${esc(e.output)}`, a);
       break;
     case "subagent_start": host("sub:" + e.description); break;
-    case "command": add("note", `${e.input}\n${e.output || ""}`); refreshState(); break;
+    case "command": add("note", `${esc(e.input)}\n${esc(e.output || "")}`); refreshState(); break;
     case "error": {
       const d = add("error", "✗ " + esc(e.message), a);
       // 可重试的错误（比如模型调用失败）给一键重试按钮
