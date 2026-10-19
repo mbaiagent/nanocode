@@ -44,7 +44,7 @@ docker build -f deploy/Dockerfile.sandbox -t nanocode-sandbox:latest .
 PYTHONPATH=server:. python3 -m nanocode_server        # auto 会检测到镜像，改用 Docker
 ```
 
-Docker 沙箱：非 root、只读根文件系统、去掉全部 capabilities、禁止提权、限制 CPU / 内存 / 进程数，放在一个内部网络里——**出不了外网、访问不了云元数据地址，容器之间也不通，只能访问宿主机上的模型网关**（已实测）。可以用 `NCS_DOCKER_RUNTIME=runsc` 换成 gVisor。
+Docker 沙箱：非 root、只读根文件系统、去掉全部 capabilities、禁止提权、限制 CPU / 内存 / 进程数，放在一个内部网络里——**新创建的 Docker 网络默认出不了外网、访问不了云元数据地址，容器之间也不通，只能访问宿主机上的模型网关**（已实测）。注意：如果复用已有的 Docker 网络，`Internal` 标志不会被重新校验，需要自己确认网络隔离。可以用 `NCS_DOCKER_RUNTIME=runsc` 换成 gVisor。
 
 ## 架构
 
@@ -58,7 +58,7 @@ Docker 沙箱：非 root、只读根文件系统、去掉全部 capabilities、�
 ```
 
 - **控制面**：所有浏览器请求都经过它。确认会话属于当前用户（别人的一律 404），沙箱没在运行就启动（恢复上次的对话），然后把请求和事件流转发进去。空闲的沙箱自动回收。
-- **模型网关**：沙箱调用模型的唯一出口。用户的 API Key 加密保存在数据库里，只有网关解密使用；沙箱拿到的是一个签名的网关令牌，网关据此查出是哪个会话、选了哪个模型、该用哪把 Key。平台模型受每人每日额度限制，用户自己的 Key 只计量不限额。
+- **模型网关**：沙箱调用模型的唯一出口。用户的 API Key 加密保存在数据库里，运行时由网关解密并注入上游请求；沙箱拿到的是一个签名的网关令牌，网关据此查出是哪个会话、选了哪个模型、该用哪把 Key。平台模型受每人每日额度限制，用户自己的 Key 只计量不限额。注意：控制面进程也持有解密用的 SecretBox（用于启动时校验和迁移），不是只有网关能解密——威胁模型里控制面本身是可信组件。
 - **沙箱**：一个会话一个，里面就是 nanocode。平台策略（`nanocode/policy.py`）锁定模型去向、限制可选的权限模式、删除能执行命令或改变请求去向的配置。换模型时重写策略并重启沙箱，对话会恢复。
 
 ### 代码结构
@@ -139,7 +139,7 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 5. 改 `50-control-plane.yaml`、`60-gateway.yaml` 里的镜像、平台模型、额度；按你的 SSO 改 `70-oauth2-proxy-ingress.example.yaml`；
 6. `kubectl apply -f deploy/k8s/`。
 
-控制面和网关的状态都在 PostgreSQL 和 Redis 里，都可以多副本。每个会话的平台策略由控制面创建成独立的 ConfigMap。
+配了 PostgreSQL（共享数据库）和 Redis（共享限流计数）后，控制面和网关都可以多副本横向扩展。没配这两个时，状态在进程内存和本地 SQLite 里，多副本之间不共享，会出现会话/计数不一致。每个会话的平台策略由控制面创建成独立的 ConfigMap。
 
 ## 配置
 

@@ -8,7 +8,8 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
-![Tests](https://img.shields.io/badge/tests-440%2B%20passing-brightgreen)
+![CI](https://github.com/mbaiagent/nanocode/actions/workflows/ci.yml/badge.svg)
+![Tests](https://img.shields.io/badge/tests-400%2B%20passing-brightgreen)
 ![Eval](https://img.shields.io/badge/agent%20eval-37%2F39-blue)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
