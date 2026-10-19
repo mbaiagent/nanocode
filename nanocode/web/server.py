@@ -520,7 +520,8 @@ def make_handler(app: WebApp):
                 return self._json(info)
             if path == "/api/messages":
                 # 刷新页面后恢复聊天记录：直接返回完整消息列表，不依赖 SSE 事件重放（#86）
-                return self._json({"ok": True, "messages": s.agent.messages})
+                last_seq = app.session.bus.history[-1]["seq"] if app.session.bus.history else 0
+                return self._json({"ok": True, "messages": s.agent.messages, "last_seq": last_seq})
             if path == "/api/context":
                 return self._json({"system": s.agent.system_prompt(), "messages": s.agent.messages,
                                    "tools": s.registry.schemas(), "permissions": {

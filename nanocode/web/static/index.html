@@ -800,10 +800,10 @@ function updateQueuebar() {
 
 /* ---------- event handling ---------- */
 function onEvent(e) {
-  if (e.type !== "text_delta") {
-    if (e.seq <= lastSeq) return;
-    lastSeq = e.seq; logRaw(e);
-  }
+  const isHistory = e.seq <= historySeq;
+  // 历史事件：只更新时间线/待办面板，不重复渲染聊天消息（#86）
+  if (isHistory && (e.type === "text_delta" || e.type === "message_start" || e.type === "llm_response" || e.type === "user")) return;
+  if (e.seq > lastSeq) { lastSeq = e.seq; logRaw(e); }
   const a = e.agent || "main";
   switch (e.type) {
     case "user":
@@ -1139,6 +1139,7 @@ paintTheme();
 // 重连时带上已收到的最后一个序号（after），服务端只补发之后的事件；onEvent 仍用 seq 去重兜底。
 // 接口都用相对路径（api/...），这样页面放在控制面的 /s/<会话>/ 前缀下也能用。
 let es = null;
+let historySeq = 0;  // loadHistory 返回的最新事件 seq：<= 此值的历史事件只更新时间线，不重复渲染聊天消息
 async function loadHistory() {
   // 刷新页面后恢复聊天记录：先拉完整消息列表，再连 SSE 接收新事件（#86）
   try {
@@ -1147,14 +1148,13 @@ async function loadHistory() {
     const data = await r.json();
     if (!data.messages) return;
     for (const m of data.messages) {
-      if (m.role === "user") {
-        add("user", esc(m.content));
-      } else if (m.role === "assistant") {
-        const text = (m.content || []).filter(b => b.type === "text").map(b => b.text).join("");
-        if (text) add("assistant", renderMd(text), "main");
-      }
-      // tool_result / tool_use 不单独渲染，历史消息只显示对话内容
+      let text = "";
+      if (typeof m.content === "string") text = m.content;
+      else if (Array.isArray(m.content)) text = m.content.filter(b => b.type === "text").map(b => b.text).join("");
+      if (m.role === "user" && text) add("user", esc(text));
+      else if (m.role === "assistant" && text) add("assistant", renderMd(text), "main");
     }
+    historySeq = data.last_seq || 0;
   } catch {}
 }
 async function connectEvents() {
