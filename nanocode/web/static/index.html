@@ -729,7 +729,9 @@ if (new URLSearchParams(location.search).has("embed")) document.body.classList.a
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 // marked 不过滤 javascript:/data: 链接，而模型输出是不可信的（仓库内容、网页、工具结果都可能
 // 被它复述成一条链接）。sanitizeHtml 只放行 http(s)/mailto 或相对路径（#89）。
-const renderMd = (text) => { try { return sanitizeHtml(marked.parse(esc(text))); } catch { return esc(text); } };
+// 不要再先 esc() 再交给 marked：代码块会被转义两次（#138）。markdownToHtml 让 marked
+// 把原始 HTML 当文本转义，只转义一次。
+const renderMd = (text) => { try { return sanitizeHtml(markdownToHtml(marked, text)); } catch { return esc(text); } };
 const chat = $("#chat");
 let lastSeq = 0, busy = false, currentText = {}, rawText = {}, toolCards = {}, steps = {}, rawCount = 0;
 let queueCount = 0, lastUserText = "";
