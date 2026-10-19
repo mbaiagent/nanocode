@@ -67,6 +67,8 @@ git checkout -b fix/<自己>-<topic> origin/main
 
 | （无 issue，用户直派） | Muse | `fix/muse-tool-history` | **已合并到 main（d51a05e）** | 已完成 | 刷新后恢复工具卡片：loadHistory 按块顺序交错渲染文本+tool_use 卡片（tool_result 按 id 配对）；权限卡片不恢复（无落盘数据） |
 
+| #100 /model 运行时切换模型 | Muse | `fix/muse-model-cmd` | **已合并到 main** | 已完成 | 实现 /model 斜杠命令：set_model() 重建 provider（忙时/策略锁定拒绝、失败保留原 provider、用量重置） |
+
 **空 issue 认领流程**：
 1. 先看 issue 是否被 main 覆盖（`git log --oneline | grep issue号`）
 2. 在本表加一行，写明分支和预计完成时间

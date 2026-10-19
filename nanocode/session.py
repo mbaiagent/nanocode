@@ -21,7 +21,8 @@ from .events import AuditWriter, EventBus, TraceWriter
 from . import policy as policy_mod
 from . import verify as verify_mod
 from .hooks import HookRunner
-from .llm import PRESETS, make_provider
+from .llm import PRESETS, LLMError, make_provider
+from .messages import Usage
 from .mcp import connect_servers
 from .permissions import MODES, PermissionManager
 from .tools import ToolRegistry, default_tools
@@ -377,6 +378,50 @@ class Session:
 
     # ------------------------------------------------------------------ 斜杠命令
 
+    def set_model(self, model: str = "", provider: str = "") -> str:
+        """运行时切换模型（/model，#100）。
+
+        只换模型名时，继承当前 provider 的 base_url / protocol / api_key / headers；
+        连 provider 一起换时，走预设（key 从对应环境变量读）。
+        先构造新 provider，成功后再替换 —— 失败时原 provider 原封不动。
+        """
+        locked = [k for k in ("provider", "model", "base_url", "protocol") if self.policy.get(k)]
+        if locked:
+            return f"平台策略已锁定 {', '.join(locked)}，不允许运行时切换模型"
+        new_provider_name = provider or self.provider_name
+        if provider and provider != "custom" and provider not in PRESETS:
+            return f"未知的 provider：{provider}。可用：{', '.join(sorted(PRESETS))}（或 custom，需自给 base_url）"
+        try:
+            if provider:
+                new = make_provider(new_provider_name, model=model)
+            else:
+                cur = self.provider
+                new = make_provider(self.provider_name, model=model, base_url=cur.base_url,
+                                    api_key=cur.api_key, protocol=cur.name,
+                                    timeout=cur.timeout, extra_headers=cur.extra_headers)
+        except LLMError as e:
+            return f"切换失败，已保留原模型：{e}"
+        self.provider = new
+        self.provider_name = new_provider_name
+        self.agent.provider = new  # Agent 另存了一份引用，只改 Session 的不会生效
+        self.agent.usage = Usage()  # 用量按模型分段，混在一起 /cost 就没意义了
+        return (f"已切换到 {new_provider_name} / {new.model}（protocol={new.name}）\n"
+                f"用量统计已重置；上下文窗口仍为 {self.agent.context_window}（静态配置，不跟随模型变）")
+
+    def cmd_model(self, arg: str) -> str:
+        """/model 查看；/model <模型> 只换模型；/model <provider> <模型> 连 provider 一起换。"""
+        parts = arg.split()
+        if not parts:
+            p = self.provider
+            return f"当前：{self.provider_name} / {p.model}（protocol={p.name}，{p.base_url or '无地址'}）"
+        if len(parts) == 1:
+            return self.set_model(model=parts[0])
+        if len(parts) == 2:
+            return self.set_model(provider=parts[0], model=parts[1])
+        return ("用法：/model\n"
+                "      /model <模型>             只换模型（provider 不变）\n"
+                "      /model <provider> <模型>  连 provider 一起换")
+
     def handle_command(self, line: str) -> tuple[str, str | None]:
         """处理 / 开头的输入。返回 (要显示的文字, 要发给模型的提示词或 None)。"""
         name, _, arg = line[1:].strip().partition(" ")
@@ -396,6 +441,7 @@ class Session:
                      "  /init              让 Agent 分析项目并生成 NANOCODE.md",
                      "  /resume            恢复上一次会话",
                      "  /providers         列出内置的厂商预设",
+                     "  /model [provider] [模型]  查看当前模型 / 运行时切换模型（不必重启）",
                      "  /mcp               查看 MCP 服务器的连接状态和提供的工具",
                      "  /skills            查看已安装的技能和自定义命令",
                      "  # 内容             把一句话追加到项目 NANOCODE.md（记忆）"]
@@ -448,6 +494,8 @@ class Session:
             return self._skills_report(), None
         if name == "providers":
             return "\n".join(f"  {k:<12} {v['protocol']:<10} {v['base_url']}" for k, v in PRESETS.items()), None
+        if name == "model":
+            return self.cmd_model(arg), None
         if name in self.commands:
             prompt = self.commands[name]["template"].replace("$ARGUMENTS", arg)
             return "", prompt
