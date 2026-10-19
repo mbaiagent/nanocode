@@ -138,13 +138,14 @@ AllowedIPs = 10.77.0.1/32
 - **老版本 libpq（< 14，例如 AlmaLinux 8 自带的 psql 13）**：
   - 不支持 SNI 方式识别 endpoint，要在连接串里加 `options=endpoint%3D<endpoint-id>`；
   - 不支持 `channel_binding=require`，要去掉这个参数（保留 `sslmode=require`）。
-  - 平台容器里用 psycopg 自带的较新 libpq 时一般没这个问题；主要影响在宿主机上用 `psql` 手动排查的时候。
+  - 平台容器里用 psycopg 自带的较新 libpq，**平台用的连接串里不要加 `options=endpoint...`**：新版 libpq 会发 SNI，主机名是 `-pooler` 那个时，SNI 推出的名字（带 `-pooler`）和 `options` 里的 endpoint ID 对不上，Neon 直接拒绝（`Inconsistent project name inferred from SNI ... and project option ...`）。`options` 只用在宿主机上的老 `psql` 手动排查。
+- 建议在平台的连接串里加 `connect_timeout=15`：libpq 默认不设连接超时，冷启动或网络抖动时宁可明确失败。
 
 示例（全部是占位符）：
 
 ```bash
 # 新版 libpq / psycopg
-NCS_DATABASE_URL=postgresql://<user>:<password>@<db-host>-pooler.<region>.<provider-domain>/<dbname>?sslmode=require&channel_binding=require
+NCS_DATABASE_URL=postgresql://<user>:<password>@<db-host>-pooler.<region>.<provider-domain>/<dbname>?sslmode=require&channel_binding=require&connect_timeout=15
 # 老版 psql 13 手动排查
 psql "postgresql://<user>:<password>@<db-host>-pooler.<region>.<provider-domain>/<dbname>?sslmode=require&options=endpoint%3D<endpoint-id>"
 ```

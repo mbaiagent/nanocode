@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import http.client
+import ipaddress
 import json
 import os
 import shutil
@@ -92,6 +93,11 @@ class DockerClient:
 _bytes = parse_size          # 旧名字：Ki/Mi/Gi 之外也认 Docker 的 k/m/g（#119）
 
 
+def _first_host(subnet: str) -> str:
+    """网段里第一个可用地址（Docker 默认把它当网桥 / 网关地址）。"""
+    return str(next(ipaddress.ip_network(subnet, strict=False).hosts()))
+
+
 class DockerLauncher(Launcher):
     name = "docker"
     isolated = True
@@ -129,7 +135,8 @@ class DockerLauncher(Launcher):
             if self.bridge_name:
                 body["Options"][BRIDGE_NAME_OPTION] = self.bridge_name
             if self.subnet:
-                body["IPAM"] = {"Config": [{"Subnet": self.subnet}]}
+                # 显式写上网关：Docker 26 及更早版本只给 Subnet 时，inspect 里不返回 Gateway
+                body["IPAM"] = {"Config": [{"Subnet": self.subnet, "Gateway": _first_host(self.subnet)}]}
             status, created = self.docker.request("POST", "/networks/create", body)
             if status not in (200, 201):
                 # 最常见的是网段和机器上已有的网络冲突（"Pool overlaps with other one on this address space"）：
@@ -142,6 +149,9 @@ class DockerLauncher(Launcher):
         self._check_isolation(net)
         configs = (net.get("IPAM") or {}).get("Config") or []
         gateway = next((c.get("Gateway") for c in configs if c.get("Gateway")), "")
+        if not gateway:
+            # Docker 26 及更早：自定义网段但没写 Gateway 时 inspect 里没有这个字段，实际网关是网段第一个地址
+            gateway = next((_first_host(c["Subnet"]) for c in configs if c.get("Subnet") and ":" not in c["Subnet"]), "")
         if not gateway:
             raise LaunchError(f"沙箱网络 {self.network} 没有网关地址")
         return gateway

@@ -55,11 +55,16 @@ class FixedNetworkTest(unittest.TestCase):
         d = launcher()
         self.assertEqual(d._ensure_network(), "172.30.250.1")
         self.assertEqual(d.docker.created["Options"][BRIDGE_OPT], "ncs-sbx0")
-        self.assertEqual(d.docker.created["IPAM"], {"Config": [{"Subnet": "172.30.250.0/24"}]})
+        self.assertEqual(d.docker.created["IPAM"], {"Config": [{"Subnet": "172.30.250.0/24", "Gateway": "172.30.250.1"}]})
         self.assertTrue(d.docker.created["Internal"])
 
     def test_existing_matching_network_is_accepted(self):
         self.assertEqual(launcher(self.GOOD)._ensure_network(), "172.30.250.1")
+
+    def test_network_without_gateway_field_uses_first_host(self):
+        """Docker 26 及更早：只给 Subnet 建的网络，inspect 里没有 Gateway（AlmaLinux 8 实测）。"""
+        no_gw = {**self.GOOD, "IPAM": {"Config": [{"Subnet": "172.30.250.0/24"}]}}
+        self.assertEqual(launcher(no_gw)._ensure_network(), "172.30.250.1")
 
     def test_mismatched_network_is_refused(self):
         """防火墙规则按网桥名 / 网段写：对不上就等于没配，必须拒绝启动。"""
