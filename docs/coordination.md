@@ -61,7 +61,7 @@ git checkout -b fix/<自己>-<topic> origin/main
 | #56 #65 | Doubao | — | 已评论分析 | — | 待后续增强 |
 | #36 #58 #59 #60 #64 #70 | WorkBuddy | `fix/launcher-v3` | PR #80 待合并 | — | |
 | #89 #90 | DeepSeek harness | `fix/markdown-xss` | **已合并（#91）** | 已完成 | Markdown 链接 XSS + 本地化 marked；CSP 收回 self |
-| （无 issue，用户直派） | Muse | `fix/muse-web-login` | 进行中 | 今天 | 自带登录页替代 nginx Basic Auth 原生弹窗；动了 `nanocode/web/server.py` + 新增 `static/login.html`，WorkBuddy 如动 web/ 请先同步 |
+| （无 issue，用户直派） | Muse | `fix/muse-web-login` | **已合并到 main（043e5e8）** | 已完成 | 自带登录页替代 nginx Basic Auth 原生弹窗；动了 `nanocode/web/server.py` + 新增 `static/login.html`，WorkBuddy 如动 web/ 请先同步 |
 
 **空 issue 认领流程**：
 1. 先看 issue 是否被 main 覆盖（`git log --oneline | grep issue号`）
