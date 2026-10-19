@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# nanocode 服务器端部署脚本（CD，见 docs/cd.md）。以 root 运行，只能经 sudo 由 nanocode-deploy-ssh 调用或人工执行。
+#
+#   nanocode-deploy deploy <40 位 commit sha>   下载该提交 → 新版本目录 → 切换 → 重建 → 健康检查，失败自动回滚
+#   nanocode-deploy rollback                    切回上一个版本目录并重建
+#   nanocode-deploy status                      打印当前版本和保留的版本
+#
+# 配置：/etc/nanocode-deploy.conf（root 所有，不进仓库），示例见 deploy/cd/nanocode-deploy.conf.example。
+set -euo pipefail
+umask 022
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+CONF="${NANOCODE_DEPLOY_CONF:-/etc/nanocode-deploy.conf}"
+[ "$(id -u)" = 0 ] || { echo "必须以 root 运行" >&2; exit 2; }
+[ -f "$CONF" ] && [ "$(stat -c %u "$CONF")" = 0 ] || { echo "缺少 root 所有的 $CONF" >&2; exit 2; }
+# shellcheck source=/dev/null
+. "$CONF"
+
+: "${ROLE:?}" "${LIVE:?}" "${RELEASES:?}" "${COMPOSE_DIR:?}" "${REPO:?}"
+CARRY="${CARRY:-}"            # 相对 LIVE 的文件，跨版本保留（.env、override 等）
+KEEP="${KEEP:-3}"
+BRANCH="${BRANCH:-main}"
+HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-120}"
+LOCK=/run/nanocode-deploy.lock
+
+log() { printf '[nanocode-deploy %s] %s\n' "$(date '+%F %T %Z')" "$*"; }
+die() { log "错误：$*"; exit 1; }
+
+valid_sha() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
+valid_repo() { [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; }
+valid_repo || die "REPO 格式不对"
+
+current_dir() { [ -L "$LIVE" ] && readlink -f "$LIVE" || true; }
+
+# 第一次运行：LIVE 还是普通目录（以前 git archive 解出来的），挪进 RELEASES 再换成软链接
+migrate() {
+  mkdir -p "$RELEASES"; chmod 755 "$RELEASES"
+  if [ -d "$LIVE" ] && [ ! -L "$LIVE" ]; then
+    local tag; tag="$(tr -dc '0-9a-f' < "$LIVE/DEPLOYED_COMMIT" 2>/dev/null | head -c 40 || true)"
+    local dst="$RELEASES/${tag:-unknown}-migrated-$(date +%Y%m%d%H%M%S)"
+    log "迁移现有目录 $LIVE → $dst"
+    mv "$LIVE" "$dst"; ln -s "$dst" "$LIVE"
+  fi
+}
+
+switch_to() {   # 原子换软链接
+  ln -sfn "$1" "$LIVE.tmp-link"; mv -T "$LIVE.tmp-link" "$LIVE"
+}
+
+compose() { (cd "$LIVE/$COMPOSE_DIR" && docker compose "$@"); }
+
+rebuild() {
+  case "$ROLE" in
+    platform) compose build platform && compose up -d platform ;;
+    sandbox)  compose up -d --build ;;
+    *) die "未知 ROLE=$ROLE" ;;
+  esac
+}
+
+healthz_ok() {   # $1 = url，$2.. = 必须出现的 JSON 片段
+  local url="$1" body; shift
+  body="$(curl -fsS --max-time 5 "$url" 2>/dev/null)" || return 1
+  body="${body// /}"
+  local need; for need in "$@"; do [[ "$body" == *"$need"* ]] || return 1; done
+}
+
+health() {
+  local deadline=$((SECONDS + HEALTH_TIMEOUT))
+  case "$ROLE" in
+    platform)
+      until healthz_ok "${HEALTH_URL:-http://127.0.0.1:8700/healthz}" '"ok":true' '"launcher":"remote"' '"isolated":true'; do
+        [ $SECONDS -lt $deadline ] || { log "平台 healthz 超时"; return 1; }; sleep 3; done
+      if [ -n "${AGENT_HEALTH_URL:-}" ]; then healthz_ok "$AGENT_HEALTH_URL" '"ok":true' || { log "到沙箱代理不通"; return 1; }; fi ;;
+    sandbox)
+      until healthz_ok "${HEALTH_URL:?}" '"ok":true'; do
+        [ $SECONDS -lt $deadline ] || { log "沙箱代理 healthz 超时"; return 1; }; sleep 3; done
+      bash "$LIVE/deploy/firewall/check-sandbox-isolation.sh" || { log "沙箱隔离检查没过"; return 1; } ;;
+  esac
+  log "健康检查通过"
+}
+
+prune() {
+  local cur; cur="$(current_dir)"
+  # 按修改时间新→旧，保留 KEEP 个（当前版本永远保留）
+  ls -1dt "$RELEASES"/*/ 2>/dev/null | sed 's#/$##' | tail -n +"$((KEEP + 1))" | while read -r d; do
+    [ "$d" = "$cur" ] && continue
+    log "清理旧版本 $d"; rm -rf --one-file-system -- "$d"
+  done
+}
+
+on_main() {   # sha 必须是 BRANCH 上的提交（compare: sha...BRANCH 为 ahead / identical）
+  local out
+  out="$(curl -fsS --max-time 20 -H 'Accept: application/vnd.github+json' \
+    "https://api.github.com/repos/$REPO/compare/$1...$BRANCH")" || return 2
+  grep -Eq '"status": *"(ahead|identical)"' <<<"$out"
+}
+
+do_deploy() {
+  local sha="$1"; valid_sha "$sha" || die "sha 必须是 40 位小写十六进制"
+  migrate
+  local prev; prev="$(current_dir)"
+  if [ -n "$prev" ] && [ "$(cat "$prev/DEPLOYED_COMMIT" 2>/dev/null)" = "$sha" ] && [ "${FORCE:-0}" != 1 ]; then
+    log "$sha 已经是当前版本，只做健康检查"; health; return
+  fi
+  if [ "${SKIP_BRANCH_CHECK:-0}" != 1 ]; then
+    on_main "$sha" || die "$sha 不在 $REPO 的 $BRANCH 上（或查询 GitHub 失败），拒绝部署"
+  fi
+
+  local new="$RELEASES/$sha-$(date +%Y%m%d%H%M%S)" tmp; tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  log "下载 $REPO@$sha"
+  curl -fsSL --max-time 300 --proto '=https' -o "$tmp/src.tar.gz" "https://codeload.github.com/$REPO/tar.gz/$sha"
+  mkdir -p "$new"
+  tar -xzf "$tmp/src.tar.gz" -C "$new" --strip-components=1 --no-same-owner --no-same-permissions
+  echo "$sha" > "$new/DEPLOYED_COMMIT"
+  local f
+  for f in $CARRY; do
+    if [ -n "$prev" ] && [ -e "$prev/$f" ]; then cp -a "$prev/$f" "$new/$f"; else log "警告：上一版本没有 $f"; fi
+  done
+
+  switch_to "$new"
+  log "切换到 $new，开始重建"
+  if rebuild && health; then
+    log "部署成功：$sha"; prune; return 0
+  fi
+  log "部署失败，回滚到 ${prev:-（无）}"
+  [ -n "$prev" ] || die "没有可回滚的版本"
+  switch_to "$prev"
+  rebuild && health && log "已回滚到 $prev" || log "回滚后健康检查仍失败，需要人工处理"
+  exit 1
+}
+
+do_rollback() {
+  migrate
+  local cur prev; cur="$(current_dir)"
+  prev="$(ls -1dt "$RELEASES"/*/ | sed 's#/$##' | grep -vxF "$cur" | head -1 || true)"
+  [ -n "$prev" ] || die "没有更早的版本"
+  log "回滚：$cur → $prev"
+  switch_to "$prev"; touch "$prev"
+  rebuild && health
+}
+
+do_status() {
+  echo "role=$ROLE current=$(current_dir) commit=$(cat "$LIVE/DEPLOYED_COMMIT" 2>/dev/null || echo '?')"
+  ls -1dt "$RELEASES"/*/ 2>/dev/null | sed 's#/$##'
+}
+
+exec 9>"$LOCK"; flock -n 9 || die "已有部署在跑"
+case "${1:-}" in
+  deploy)   [ $# -eq 2 ] || die "用法：deploy <sha>"; do_deploy "$2" ;;
+  rollback) [ $# -eq 1 ] || die "用法：rollback"; do_rollback ;;
+  status)   [ $# -eq 1 ] || die "用法：status"; do_status ;;
+  *) die "用法：nanocode-deploy deploy <sha> | rollback | status" ;;
+esac
