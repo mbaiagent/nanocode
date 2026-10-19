@@ -88,7 +88,7 @@ class ModelCatalog:
             _, cid, model = ref.split(":", 2)
             c = self.store.get_credential(cid)
             if c and c.owner == owner and model in c.models:
-                return Upstream(c.protocol, c.base_url, self.box.decrypt(c.secret), model, billable=False)
+                return Upstream(c.protocol, c.base_url, self.box.decrypt(c.secret, aad=c.owner.encode()), model, billable=False)
         raise CatalogError("会话选的模型已经不可用了（Key 被删除？），请换一个模型")
 
     # ------------------------------------------------------------------ 用户的 Key
@@ -122,7 +122,7 @@ class ModelCatalog:
         cred = Credential(id="", owner=owner, provider=provider,
                           label=(label or "").strip()[:40] or PROVIDER_LABELS.get(provider, provider),
                           protocol=protocol, base_url=base_url, models=list(dict.fromkeys(models)),
-                          secret=self.box.encrypt(api_key), key_hint=hint(api_key))
+                          secret=self.box.encrypt(api_key, aad=owner.encode()), key_hint=hint(api_key))
         return self.store.add_credential(cred)
 
     def draft_upstream(self, provider: str, api_key: str, model: str, base_url: str = "", protocol: str = "") -> Upstream:

@@ -39,14 +39,15 @@ class SecretBox:
             counter += 1
         return bytes(out[:n])
 
-    def encrypt(self, plaintext: str) -> str:
+    def encrypt(self, plaintext: str, aad: bytes = b"") -> str:
         data = plaintext.encode()
         nonce = os.urandom(16)
         ct = bytes(a ^ b for a, b in zip(data, self._keystream(nonce, len(data))))
-        tag = hmac.new(self.mac_key, VERSION + nonce + ct, hashlib.sha256).digest()
+        # AAD 绑定 credential_id/owner：DB 写权限者把密文搬到别的行也解不开（#62）
+        tag = hmac.new(self.mac_key, VERSION + nonce + aad + ct, hashlib.sha256).digest()
         return base64.b64encode(VERSION + nonce + tag + ct).decode()
 
-    def decrypt(self, token: str) -> str:
+    def decrypt(self, token: str, aad: bytes = b"") -> str:
         try:
             raw = base64.b64decode(token.encode(), validate=True)
         except ValueError:
@@ -54,7 +55,7 @@ class SecretBox:
         if len(raw) < 1 + 16 + 32 or raw[:1] != VERSION:
             raise SecretBoxError("密文格式不对")
         nonce, tag, ct = raw[1:17], raw[17:49], raw[49:]
-        expected = hmac.new(self.mac_key, VERSION + nonce + ct, hashlib.sha256).digest()
+        expected = hmac.new(self.mac_key, VERSION + nonce + aad + ct, hashlib.sha256).digest()
         if not hmac.compare_digest(tag, expected):
             raise SecretBoxError("密文被篡改，或者主密钥变了")
         return bytes(a ^ b for a, b in zip(ct, self._keystream(nonce, len(ct)))).decode()

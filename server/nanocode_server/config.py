@@ -176,6 +176,7 @@ class Config:
             raise ValueError("生产模式必须设置 NCS_SECRET_KEY（至少 32 个字符）")
         path = os.path.join(self.data_dir, "secret.key")
         os.makedirs(self.data_dir, exist_ok=True)
+        os.chmod(self.data_dir, 0o700)  # #62：数据目录含 secret.key 和 SQLite，只允许 owner 读写
         if os.path.isfile(path):
             with open(path, encoding="utf-8") as f:
                 self.secret_key = f.read().strip()
