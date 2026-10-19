@@ -258,8 +258,12 @@ def main(argv: list[str] | None = None) -> int:
     except LLMError as e:
         print(paint(f"配置错误：{e}", "red"), file=sys.stderr)
         return 2
-    if args.resume:
-        print(session.resume_latest(), file=sys.stderr)
+    if args.resume or args.web:
+        # web 面板默认恢复最近会话，否则刷新/重启后聊天记录全空（#86）
+        try:
+            print(session.resume_latest(), file=sys.stderr)
+        except (OSError, ValueError):
+            pass  # 没有历史会话就开新的
 
     if args.web:
         from .web.server import serve

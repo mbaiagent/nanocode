@@ -9,6 +9,7 @@
     GET  /learn             交互式架构学习页
     GET  /api/state         会话概况
     GET  /api/context       完整上下文：system、messages、tools（就是下一次要发给模型的东西）
+    GET  /api/messages      恢复页面用：完整 messages、事件缓冲的最新序号、从 messages 折出来的时间线
     GET  /api/events        SSE 事件流（连接时先补发历史事件）。浏览器用 ?ticket= 一次性票据；
                             断线重连时用 Last-Event-ID 请求头或 ?after=序号，只补发之后的事件
     POST /api/ticket        换一张 30 秒有效、只能用一次的 SSE 票据
@@ -40,6 +41,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from ..messages import steps_of_turn
 from ..session import Session
 from .limits import DailyCounter, Limits, RateLimited
 
@@ -519,8 +521,14 @@ def make_handler(app: WebApp):
                 info["busy"] = app.busy
                 return self._json(info)
             if path == "/api/messages":
-                # 刷新页面后恢复聊天记录：直接返回完整消息列表，不依赖 SSE 事件重放（#86）
-                return self._json({"ok": True, "messages": s.agent.messages})
+                # 刷新页面后恢复聊天记录（#86）。messages 是权威来源，不靠 SSE 重放拼对话：
+                #   last_seq —— 事件缓冲区里最新的序号，前端把 <= 它的事件当"历史事件"，
+                #               只用来补右侧面板，不往聊天区再加一遍；
+                #   timeline —— 进程重启后事件缓冲区是空的，时间线用 messages 折回来兜底。
+                history = s.bus.history
+                return self._json({"ok": True, "messages": s.agent.messages,
+                                   "last_seq": history[-1]["seq"] if history else 0,
+                                   "timeline": steps_of_turn(s.agent.messages)})
             if path == "/api/context":
                 return self._json({"system": s.agent.system_prompt(), "messages": s.agent.messages,
                                    "tools": s.registry.schemas(), "permissions": {
@@ -597,6 +605,11 @@ def make_handler(app: WebApp):
             self.send_header("cache-control", "no-cache")
             self.end_headers()
             after = resume_after(self.headers, urlparse(self.path).query)
+            # 进程重启后序号从 0 重新开始，而浏览器还记着上个进程的序号：这时 after 比本进程
+            # 已经发出的任何事件都大，照常过滤的话浏览器再也收不到事件 —— 界面静默卡死（#86）。
+            # 序号只会单调递增，所以"客户端比我收到的还多"只可能是换了个进程，按从头补发处理。
+            if after > app.session.bus.seq:
+                after = 0
             q: queue.Queue = queue.Queue(maxsize=app.sse_queue_size)
             overflow = threading.Event()
 

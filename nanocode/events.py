@@ -55,6 +55,11 @@ class EventBus:
             self._listeners.append(fn)
         return lambda: self._listeners.remove(fn) if fn in self._listeners else None
 
+    @property
+    def seq(self) -> int:
+        """已经发出去的最后一个序号。SSE 重连时用它判断浏览器记的是不是"上一个进程"的序号（#86）。"""
+        return self._seq
+
     def emit(self, type: str, **data) -> dict:
         with self._lock:
             self._seq += 1

@@ -324,10 +324,15 @@ class Session:
         return f"已开始新会话 {self.session_id}"
 
     def resume_latest(self) -> str:
-        """恢复最近一次会话。读到损坏的文件就改名为 .corrupt 备份、给出提示，再试更早的一个。"""
+        """恢复最近一次**有内容**的会话。读到损坏的文件就改名为 .corrupt 备份、给出提示，再试更早的一个。
+
+        空会话要跳过（#86）：切换会话、开新会话之前都会先 save()，留下一个 messages 为空的文件；
+        恢复它等于开了个白板 —— Web 面板刷新或重启后用户看到的就是"聊天记录全丢了"。
+        """
         d = os.path.join(self.data_dir, "sessions")
         files = sorted(f for f in os.listdir(d) if f.endswith(".json")) if os.path.isdir(d) else []
         notes = []
+        empty = 0
         for name in reversed(files):
             path = os.path.join(d, name)
             try:
@@ -342,7 +347,11 @@ class Session:
                 except OSError:
                     notes.append(f"会话文件 {name} 无法读取（{type(e).__name__}），已跳过")
                 continue
-            self.agent.messages = data.get("messages", [])
+            messages = data.get("messages", [])
+            if not messages:              # 空会话：恢复出来是白板，继续往前找（#86）
+                empty += 1
+                continue
+            self.agent.messages = messages
             self.agent.state["todos"] = data.get("todos", [])
             # 和 resume() 用同一套恢复逻辑：usage 不恢复的话，/cost 显示的会是
             # 当前会话累计值而不是这个会话的真实用量（#47）
@@ -351,8 +360,11 @@ class Session:
             self.agent.usage.output_tokens = u.get("output_tokens", 0)
             self.agent.usage.estimated = u.get("estimated", False)
             self.session_id = name[:-5]
-            msg = f"已恢复会话 {self.session_id}（{len(self.agent.messages)} 条消息）"
-            return "\n".join(notes + [msg])
+            if empty:
+                notes.append(f"跳过了 {empty} 个空会话")
+            return "\n".join(notes + [f"已恢复会话 {self.session_id}（{len(messages)} 条消息）"])
+        if empty:
+            notes.append(f"最近的 {empty} 个会话都是空的")
         return "\n".join(notes + ["没有可恢复的会话"])
 
     def close(self) -> None:

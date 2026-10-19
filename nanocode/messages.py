@@ -80,6 +80,31 @@ def has_tool_result(message: Message) -> bool:
     return any(b.get("type") == "tool_result" for b in message.get("content", []))
 
 
+def steps_of_turn(messages: list[Message]) -> list[dict]:
+    """把最后一轮对话折回"每一步做了些什么"，给 Web 时间线面板做兜底（#86）。
+
+    时间线本来是由事件流（llm_request / llm_response）实时画出来的，但事件缓冲区在内存里，
+    进程重启后就是空的 —— 聊天记录还在、右侧时间线却一片空白。messages 是唯一落盘的东西，
+    所以这里按 assistant 消息逐条还原：第几步、调了哪些工具、是不是以工具调用收尾。
+
+    事件流里有更精确的信息（上下文 token 数、这一步的耗时、真实的 stop_reason），
+    所以前端只在事件补不出来的地方用这份数据，并用 rebuilt=True 标明它是折出来的。
+    """
+    start = 0
+    for i, m in enumerate(messages):
+        # 一轮的起点是"人说的话"：纯 tool_result 或 tool_result+text 的混合消息都不算（#33）
+        if m.get("role") == "user" and not has_tool_result(m) and text_of(m).strip():
+            start = i
+    steps = []
+    for m in messages[start:]:
+        if m.get("role") != "assistant":
+            continue
+        calls = [str(b.get("name", "")) for b in tool_uses(m)]
+        steps.append({"agent": "main", "step": len(steps) + 1, "calls": calls,
+                      "stop": "tool_use" if calls else "end_turn", "rebuilt": True})
+    return steps
+
+
 def estimate_tokens(obj: Any) -> int:
     """粗略估算 token 数。
 
