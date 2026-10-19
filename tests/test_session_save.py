@@ -117,6 +117,36 @@ class ResumeCorruptTest(_SessionCase):
         s = self.new_session()
         self.assertEqual(s.resume_latest(), "没有可恢复的会话")
 
+    # 空会话是切换 / 新建会话时 save() 留下的空壳，恢复出来是白板（#86）
+    def test_empty_newest_session_is_skipped_for_the_last_real_one(self):
+        self.write("20260101-000000.json", json.dumps({"messages": [user("有内容")], "todos": []}))
+        self.write("20260102-000000.json", json.dumps({"messages": [], "todos": []}))
+        s = self.new_session()
+        out = s.resume_latest()
+        self.assertIn("已恢复会话 20260101-000000", out)
+        self.assertIn("跳过了 1 个空会话", out)
+        self.assertEqual(s.agent.messages, [user("有内容")])
+
+    def test_all_sessions_empty_reports_clearly_and_keeps_blank_state(self):
+        self.write("20260101-000000.json", json.dumps({"messages": [], "todos": []}))
+        s = self.new_session()
+        before = s.session_id
+        out = s.resume_latest()
+        self.assertIn("没有可恢复的会话", out)
+        self.assertIn("都是空的", out)
+        self.assertEqual(s.agent.messages, [])
+        self.assertEqual(s.session_id, before)         # 没把空会话当成"恢复成功"
+
+    def test_empty_session_does_not_hide_an_older_corrupt_one(self):
+        """空会话跳过、坏文件仍然备份，两件事不能互相干扰。"""
+        self.write("20260101-000000.json", '{"messages": [{"role": "us')
+        self.write("20260102-000000.json", json.dumps({"messages": [], "todos": []}))
+        s = self.new_session()
+        out = s.resume_latest()
+        self.assertIn("已损坏", out)
+        self.assertIn("没有可恢复的会话", out)
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "20260101-000000.json.corrupt")))
+
 
 if __name__ == "__main__":
     unittest.main()

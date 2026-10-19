@@ -27,7 +27,7 @@ nanocode 现在是一个**单用户、单进程、单工作目录**的学习项�
 | `web/server.py` `chat()` | 全局 `busy` 标志，一次只跑一个任务 | 一个进程只能服务一个人 |
 | `web/server.py` `pending`、`_tickets` | 权限请求、SSE 票据存在进程内存 | 多副本时，请求落到另一台机器就找不到了 |
 | `web/server.py` `ThreadingHTTPServer` | 每个连接一个线程，SSE 长连接一直占着线程 | 上千个浏览器长连接 = 上千个线程，标准库服务器不适合直接面向公网 |
-| `events.py` `EventBus.history` | 内存里保留最近 2000 个事件，SSE 重连时补发 | 只在本进程有效；换机器或重启后刷新页面，历史丢失 |
+| `events.py` `EventBus.history` | 内存里保留最近 2000 个事件，SSE 重连时补发 | 只在本进程有效；换机器或重启后事件没了，对话还能从 messages 恢复，时间线只能靠 `messages.py` 的 `steps_of_turn()` 折回来（丢掉每步的 token 数和耗时） |
 | `session.py` `save()` | 会话存为 `~/.nanocode/projects/<目录>/sessions/*.json`，**一轮结束后才保存** | 本地磁盘不共享；任务进行到一半进程挂了，这一轮全部丢失 |
 | `context.py` `home_dir()` | 全局 `~/.nanocode`：`settings.json`、`trusted.json`、trace 都在这里 | 所有用户共用一份配置和信任记录 |
 | `session.py` `Options.cwd` | 工作目录是进程启动参数，整个进程只有一个 | 每个用户需要自己的工作区 |

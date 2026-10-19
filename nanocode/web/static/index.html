@@ -750,6 +750,12 @@ function add(cls, html, agent) {
   if (cls === "user") scroll(true); else scroll(false);
   return d;
 }
+// 这条消息是不是已经画在聊天区末尾了：刷新页面时 loadHistory 先按 messages 渲染一遍，
+// 之后才连上事件流，同一个回合的事件可能又带着同一条消息过来（#86）
+function rendered(cls, text) {
+  const last = host("main").lastElementChild;
+  return !!last && last.classList.contains(cls) && last.dataset.text === text;
+}
 function argSummary(name, input) {
   for (const k of ["command", "path", "pattern", "description", "name"]) if (input && k in input) return String(input[k]);
   if (name === "todo_write") return (input.todos || []).length + " 项";
@@ -799,21 +805,37 @@ function updateQueuebar() {
 }
 
 /* ---------- event handling ---------- */
+function stepStart(e) {
+  const a = e.agent || "main";
+  steps[a + e.step] = { agent: a, step: e.step, tokens: e.context_tokens, window: e.context_window, tools: [] };
+  renderTimeline();
+}
+function stepEnd(e) {
+  const a = e.agent || "main";
+  const s = steps[a + e.step];
+  if (s) { s.stop = e.stop_reason; s.usage = e.usage; s.secs = e.seconds; s.calls = e.content.filter((b) => b.type === "tool_use").map((b) => b.name); }
+  renderTimeline();
+}
+// 历史事件（seq <= historySeq，都是 loadHistory 之前发生的）只用来补时间线面板：
+// 聊天区的内容已经由 messages 渲染过一遍了，再按事件渲染一遍就是重复（#86）。
+// 待办、token 用量这类当前状态走 /api/state，不需要按历史事件回放。
+function applyHistory(e) {
+  if (e.type === "llm_request") stepStart(e);
+  else if (e.type === "llm_response") stepEnd(e);
+}
 function onEvent(e) {
-  const isHistory = e.seq <= historySeq;
-  // 历史事件：只更新时间线/待办面板，不重复渲染聊天消息（#86）
-  if (isHistory && (e.type === "text_delta" || e.type === "message_start" || e.type === "llm_response" || e.type === "user")) return;
-  if (e.seq > lastSeq) { lastSeq = e.seq; logRaw(e); }
+  // 重连时服务端会从 after 之后补发，这里按序号兜底去重（text_delta 也带序号，一起记）
+  if (e.seq <= lastSeq) return;
+  lastSeq = e.seq;
+  if (e.type !== "text_delta") logRaw(e);            // 原始事件面板不放流式文字片段，太多了
+  if (e.seq <= historySeq) return applyHistory(e);
   const a = e.agent || "main";
   switch (e.type) {
     case "user":
       if (a === "main") {
-        // 去重：排队时后端已发过一次 user 事件，实际执行时 agent.run 还会再发一次
-        const h = host(a);
-        const last = h.lastElementChild;
-        if (!last || !last.classList.contains("user") || last.dataset.text !== e.text) {
-          const d = add("user", esc(e.text)); d.dataset.text = e.text;
-        }
+        // 去重：排队时后端已发过一次 user 事件，实际执行时 agent.run 还会再发一次；
+        // 另外刷新页面时 loadHistory 可能已经把这条消息画出来了
+        if (!rendered("user", e.text)) { const d = add("user", esc(e.text)); d.dataset.text = e.text; }
         lastUserText = e.text;
         setBusy(true);
       }
@@ -823,17 +845,13 @@ function onEvent(e) {
       rawText[a] = (rawText[a] || "") + e.text;
       currentText[a].textContent = rawText[a]; scroll(false); break;
     case "llm_request":
-      currentText[a] = null; rawText[a] = "";
-      steps[a + e.step] = { agent: a, step: e.step, tokens: e.context_tokens, window: e.context_window, tools: [] };
-      renderTimeline(); break;
+      currentText[a] = null; rawText[a] = ""; stepStart(e); break;
     case "llm_response": {
       const text = e.content.filter((b) => b.type === "text").map((b) => b.text).join("");
-      if (text && !currentText[a]) currentText[a] = add("assistant", "", a);
+      if (text && !currentText[a] && !rendered("assistant", text)) currentText[a] = add("assistant", "", a);
       if (currentText[a] && text) { currentText[a].classList.add("rendered"); currentText[a].innerHTML = renderMd(text); }
       currentText[a] = null; rawText[a] = "";
-      const s = steps[a + e.step];
-      if (s) { s.stop = e.stop_reason; s.usage = e.usage; s.secs = e.seconds; s.calls = e.content.filter((b) => b.type === "tool_use").map((b) => b.name); }
-      renderTimeline(); break;
+      stepEnd(e); break;
     }
     case "tool_call": {
       const d = document.createElement("details");
@@ -944,8 +962,10 @@ function renderTimeline() {
       <div>
         <div class="step-head">
           <span class="step-agent">${esc(s.agent)}</span>
-          <span class="pill">上下文 ${s.tokens} tok</span>
+          ${s.tokens != null ? `<span class="pill">上下文 ${s.tokens} tok</span>`
+            : `<span class="pill" title="进程重启后事件缓冲区是空的，这一步是从会话消息折出来的，没有精确的上下文数值">上下文 —</span>`}
           ${s.stop ? `<span class="pill ${s.stop}">${s.stop}</span>` : `<span class="pill pending">等待模型…</span>`}
+          ${s.rebuilt ? `<span class="pill pending">从消息重建</span>` : ""}
           ${s.secs != null ? `<span class="pill">${s.secs}s</span>` : ""}
         </div>
         ${s.calls && s.calls.length ? `<ul>${s.calls.map((n) => `<li>调用 ${esc(n)}</li>`).join("")}</ul>`
@@ -1139,7 +1159,8 @@ paintTheme();
 // 重连时带上已收到的最后一个序号（after），服务端只补发之后的事件；onEvent 仍用 seq 去重兜底。
 // 接口都用相对路径（api/...），这样页面放在控制面的 /s/<会话>/ 前缀下也能用。
 let es = null;
-let historySeq = 0;  // loadHistory 返回的最新事件 seq：<= 此值的历史事件只更新时间线，不重复渲染聊天消息
+let historySeq = 0;  // loadHistory 返回的最新事件 seq：<= 此值的事件只补右侧面板，不重复渲染聊天消息
+let historyLoaded = false;   // 历史只拉一次：断线重连时再拉一遍会把整段对话重复渲染（#86）
 async function loadHistory() {
   // 刷新页面后恢复聊天记录：先拉完整消息列表，再连 SSE 接收新事件（#86）
   try {
@@ -1148,18 +1169,27 @@ async function loadHistory() {
     const data = await r.json();
     if (!data.messages) return;
     for (const m of data.messages) {
+      // user 的 content 是字符串（老会话）或内容块数组，assistant 一定是内容块数组
       let text = "";
       if (typeof m.content === "string") text = m.content;
       else if (Array.isArray(m.content)) text = m.content.filter(b => b.type === "text").map(b => b.text).join("");
-      if (m.role === "user" && text) add("user", esc(text));
-      else if (m.role === "assistant" && text) add("assistant", renderMd(text), "main");
+      if (!text) continue;               // tool_use / tool_result 不单独渲染，历史只显示对话内容
+      const d = add(m.role === "user" ? "user" : "assistant", m.role === "user" ? esc(text) : renderMd(text), "main");
+      d.dataset.text = text;             // 实时事件再带着同一条消息过来时，用它能认出"已经画过了"
     }
+    // 时间线：事件缓冲区是空的（进程重启过）时，服务端把 messages 折成步骤发过来兜底。
+    // 事件流补发过来的真实事件信息更全，会按 agent+step 覆盖掉这些重建项。
+    for (const t of data.timeline || []) {
+      const k = (t.agent || "main") + t.step;
+      if (!steps[k]) steps[k] = Object.assign({ tokens: null }, t);
+    }
+    renderTimeline();
     historySeq = data.last_seq || 0;
   } catch {}
 }
 async function connectEvents() {
   try {
-    await loadHistory();
+    if (!historyLoaded) { await loadHistory(); historyLoaded = true; }
     const t = await post("api/ticket");
     if (!t.ticket) throw new Error(t.error || "no ticket");
     es = new EventSource("api/events?ticket=" + encodeURIComponent(t.ticket) + "&after=" + lastSeq);
