@@ -515,7 +515,8 @@ class LocalPidFileTest(unittest.TestCase):
         # 先 SIGTERM，5 秒宽限期内没退出才升级 SIGKILL。慢机器/高负载下退出可能拖到宽限
         # 期之后，那时是 -9 而不是 -15：两种都是"被我们发的信号终止了"，断言只关心这点，
         # 不绑定具体是哪个信号（否则断言会随机红）。
-        self.assertIn(_waited(self.dummy), (-15, -9))
+        # Windows 没有信号：os.kill(pid, SIGTERM) 是 TerminateProcess，退出码就是 15（正数）。
+        self.assertIn(_waited(self.dummy), (15, 9, 1) if os.name == "nt" else (-15, -9))
 
     def test_wrong_token_means_not_ours(self):
         """pid 可能被系统复用给别的进程：令牌对不上就不是我们的沙箱，不能杀（#60）。"""

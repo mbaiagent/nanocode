@@ -63,9 +63,10 @@ jobs:
           os.makedirs(d, exist_ok=True)
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
               f.write(f"TMPDIR={d}\n")
+              # PYTHONPATH 的分隔符 Windows 是 `;`，写死 `:` 在 Windows 上会变成一条不存在的路径
+              f.write("PYTHONPATH=" + os.pathsep.join(["server", os.path.join("server", "tests"), "."]) + "\n")
       - name: Run server tests
         env:
-          PYTHONPATH: server:server/tests:.
           PYTHONUNBUFFERED: "1"
         run: python -m unittest discover -s server/tests -v
       - name: Show sandbox logs on failure

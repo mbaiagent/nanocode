@@ -165,7 +165,7 @@ class CliExitCodeTest(unittest.TestCase):
                                encoding="utf-8", errors="replace", timeout=60)
 
     def test_single_shot_exits_nonzero_when_verification_fails(self):
-        r = self.run_cli("echo 报错内容; exit 1")
+        r = self.run_cli(py("print('报错内容'); raise SystemExit(1)"))   # Windows 的 cmd 不认 `;`
         self.assertEqual(r.returncode, 1, r.stderr[-500:])
         self.assertIn("自动验证未通过", r.stderr)
         self.assertIn("报错内容", r.stderr)

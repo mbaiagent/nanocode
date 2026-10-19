@@ -35,6 +35,9 @@ def sandbox_ids() -> tuple[int, int]:
     而 chown 需要 root 权限、非 root 下只会失败。uid 不一致时容器连 /data 都写不了，
     nanocode 写不了会话和配置、Agent 写不了文件，wait_ready 超时后变成一个难查的 502（#58）。
     """
+    if not hasattr(os, "geteuid"):
+        # Windows 上的控制面（Docker Desktop）没有 POSIX uid：容器里用镜像自带的 10001
+        return UID, UID
     if os.geteuid() == 0:
         return UID, UID
     return os.geteuid(), os.getegid()
