@@ -16,6 +16,7 @@
 
 ### 单机 nanocode / Web 面板
 
+- **安全 工具子进程不继承凭据**（[#146](https://github.com/mbaiagent/nanocode/pull/146)，Fixes [#134](https://github.com/mbaiagent/nanocode/issues/134)）：bash / verify / hook 子进程拿不到 `NANOCODE_*`、`NCS_*`（行为变化：本地模式下 `NANOCODE_API_KEY` 也不再传给子进程，厂商 Key 照常传）；平台模式下另外去掉厂商 Key 和像密钥的变量，Web 进程设为不可 dump。新增 `NANOCODE_TOOL_ENV_KEEP` 放行。
 - **新增 多会话并行运行**（[#112](https://github.com/mbaiagent/nanocode/pull/112)）：`NANOCODE_WEB_MAX_RUNS`、`NANOCODE_WEB_MAX_RUNS_PER_CLIENT`、`NANOCODE_WEB_MAX_LIVE_SESSIONS`。
 - **新增** 自带登录页（`NANOCODE_HTPASSWD`）代替 Basic Auth 弹窗；`/model` 运行时切换模型；`web_search` 支持多个搜索源，默认 DuckDuckGo（[#94](https://github.com/mbaiagent/nanocode/pull/94)）。
 - **修复** 刷新 / 重启后恢复聊天记录和工具卡片（[#88](https://github.com/mbaiagent/nanocode/pull/88)）；聊天中切换权限模式（[#87](https://github.com/mbaiagent/nanocode/pull/87)）；本地加载 marked 并过滤 `javascript:` 链接（[#91](https://github.com/mbaiagent/nanocode/pull/91)）；斜杠命令不再显示两次；macOS 本机绑定跳过反向 DNS（[#97](https://github.com/mbaiagent/nanocode/pull/97)）。

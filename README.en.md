@@ -167,7 +167,7 @@ Read it alongside [Chapter 01](docs/01-agent-loop.md): understand this file firs
 | Local Ollama | `nanocode --provider ollama --model qwen2.5-coder` | none |
 | Any compatible endpoint | `nanocode --provider custom --protocol openai --base-url https://xxx/v1 --model <model>` | `NANOCODE_API_KEY` |
 
-Model names change frequently; refer to each vendor's docs. You can also set config via env vars (`NANOCODE_PROVIDER`, `NANOCODE_MODEL`, `NANOCODE_BASE_URL`, `NANOCODE_API_KEY`) or `.nanocode/settings.json`.
+Model names change frequently; refer to each vendor's docs. You can also set config via env vars (`NANOCODE_PROVIDER`, `NANOCODE_MODEL`, `NANOCODE_BASE_URL`, `NANOCODE_API_KEY`) or `.nanocode/settings.json`. Note: bash / verify / hook subprocesses run by the agent do not see `NANOCODE_*` variables (including `NANOCODE_API_KEY`); vendor keys such as `OPENAI_API_KEY` still pass through in local mode, see `NANOCODE_TOOL_ENV_KEEP` below.
 
 **Model selection note**: Agents depend heavily on tool-calling ability. Small models (especially local 7B and below) often fail to call tools or format parameters incorrectly — you'll see lots of errors in the debug panel. That itself is useful learning material.
 
@@ -271,6 +271,7 @@ Environment variables:
 | `NANOCODE_PUBLIC_HOST` `NANOCODE_PUBLIC_ORIGIN` | trusted external addresses when behind a reverse proxy, see Security below |
 | `NANOCODE_POLICY` | platform policy file (read-only mounted by platform in multi-user deployments): locks model endpoint, restricts allowed permission modes, strips specified keys from user/project config, enables audit log; highest priority over all config and CLI args; refuses to start if unreadable. See `policy.py` and [Chapter 12](docs/12-distributed-deployment.md#nine-implementation-status) |
 | `NANOCODE_WEB_TOKEN` | Web UI API token; randomly generated each start if unset; injected by control plane in multi-user deployments (min 16 chars) |
+| `NANOCODE_TOOL_ENV_KEEP` | Comma-separated variable names to pass through to bash / verify / hook subprocesses. Those subprocesses **never** get `NANOCODE_*` / `NCS_*` (not allowable); in platform mode (`NANOCODE_WEB_TOKEN` set) they also lose vendor keys and variables ending in `_TOKEN`, `_SECRET`, `_PASSWORD`, `_API_KEY` etc. unless listed here. In local mode vendor keys are passed through as before (#134) |
 | `NANOCODE_WEB_RATE_PER_MIN` `NANOCODE_WEB_RATE_BURST` | `/api/chat` rate limit by client IP (token bucket): refill 10/min, burst 5 (default). `#` memory and model-free `/commands` don't count; exceeded returns 429 + `Retry-After`. Set `0` to disable |
 | `NANOCODE_WEB_MAX_QUEUE` | max queued messages while Agent is busy, default 3; full returns 429 (`code: queue_full`). "Stop" also clears the queue. Set `0` for unlimited |
 | `NANOCODE_WEB_DAILY_RUNS` | max Agent runs per calendar day (including queued), default 200; exhausted returns 429 (`code: daily_budget`). Set `0` for unlimited |
