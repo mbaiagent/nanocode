@@ -716,12 +716,15 @@ body.embed .inspector { border-radius: 0; }
   </aside>
 </main>
 
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="marked.umd.js"></script>
+<script src="markdown-safe.js"></script>
 <script>
 const $ = (s) => document.querySelector(s);
 if (new URLSearchParams(location.search).has("embed")) document.body.classList.add("embed");
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const renderMd = (text) => { try { return marked.parse(esc(text)); } catch { return esc(text); } };
+// marked 不过滤 javascript:/data: 链接，而模型输出是不可信的（仓库内容、网页、工具结果都可能
+// 被它复述成一条链接）。sanitizeHtml 只放行 http(s)/mailto 或相对路径（#89）。
+const renderMd = (text) => { try { return sanitizeHtml(marked.parse(esc(text))); } catch { return esc(text); } };
 const chat = $("#chat");
 let lastSeq = 0, busy = false, currentText = {}, rawText = {}, toolCards = {}, steps = {}, rawCount = 0;
 let queueCount = 0, lastUserText = "";

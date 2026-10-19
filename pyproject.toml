@@ -18,7 +18,7 @@ nanocode = "nanocode.cli:main"
 include = ["nanocode*"]
 
 [tool.setuptools.package-data]
-"nanocode.web" = ["static/*.html", "static/*.svg"]
+"nanocode.web" = ["static/*.html", "static/*.svg", "static/*.js"]
 
 [tool.pytest.ini_options]
 # 只收集主仓库的单元测试；evals 下的 hidden/test_*.py 是评测运行时复制到隔离目录执行的，
