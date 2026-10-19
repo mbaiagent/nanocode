@@ -23,7 +23,7 @@ nanocode 是一个**从零实现的编程 Agent**（对标 Claude Code 的核心
 |---|---|
 | Agent 核心约 5500 行 Python，**只用标准库**，零第三方依赖 | `nanocode/` |
 | 平台约 3100 行，同样只用标准库（PostgreSQL / Redis 驱动可选） | `server/nanocode_server/` |
-| 核心 370+ 个单元测试，平台 70+ 个测试 | `tests/`、`server/tests/` |
+| 核心 500+ 个单元测试，平台 120+ 个测试 | `tests/`、`server/tests/` |
 | 两种协议（Anthropic、OpenAI 兼容）覆盖 9 家厂商预设，外加任意兼容服务 | `nanocode/llm/`、README「接入真实模型」 |
 | 13 个编程任务 × 3 次重复，真实模型通过率 **37/39（95%）** | `evals/agent_tasks/results/` |
 | 5 种权限模式；项目配置里能执行命令的项需要用户信任 | `nanocode/permissions.py`、`nanocode/trust.py` |
