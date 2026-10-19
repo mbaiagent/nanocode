@@ -15,11 +15,14 @@
 
 **中文** | [English](README.en.md)
 
+[在线使用](#在线使用) ·
 [30 秒跑起来](#30-秒跑起来不需要-api-key) ·
 [截图](#截图) ·
 [架构](#架构) ·
 [怎么学](#怎么学) ·
 [多用户部署](server/README.md) ·
+[文档索引](docs/README.md) ·
+[更新日志](CHANGELOG.md) ·
 [开发历程](docs/journey.md) ·
 [写进简历](docs/resume.md)
 
@@ -42,6 +45,34 @@
 - **600+ 个自动化测试**：核心 500+ 个、平台 120+ 个，覆盖循环、两种协议的流式解析、检索管线、安全回归和评测框架自检
 
 > nanocode 是依据 Claude Code 的公开文档和可观察行为，从零写的教学实现，不包含也不来自 Claude Code 的源代码。它追求的是"把原理讲清楚"，不是"功能一样多"。
+
+## 在线使用
+
+不想自己部署，可以直接用托管的多用户平台：**<https://nanocode.aipulse.lol>**
+
+- **用 GitHub 登录**：只申请读取公开资料和邮箱的权限，不读你的仓库。
+- **注册需要邀请码**：第一次登录时在登录页填管理员发的邀请码，以后再登录不用。
+- **模型 Key 自带**：在"模型与密钥"里添加自己的 API Key（DeepSeek、OpenAI、Anthropic 等，或任意 OpenAI / Anthropic 兼容地址）。Key 加密保存，只在平台的模型网关里使用，不会进沙箱。不加 Key 也能用内置的**演示模型**走一遍完整流程。
+- 每个会话一个独立沙箱（自己的工作区、没有外网）。平台的设计和局限见 [docs/auth-and-admin.md](docs/auth-and-admin.md) 和 [docs/security-model.md](docs/security-model.md)。
+
+<table>
+<tr>
+<td width="50%"><b>新建会话：选模型，演示模型不需要 Key</b><br><img src="docs/images/platform/02-home-panel.png" alt="平台首页：会话列表和新建会话表单"></td>
+<td width="50%"><b>Agent 调用工具：每一步都能看到，执行前请求确认</b><br><img src="docs/images/platform/06-agent-tool-calls.png" alt="会话页：bash 和 write_file 工具调用，右侧是循环时间线"></td>
+</tr>
+</table>
+
+<details>
+<summary>更多平台截图</summary>
+
+| | |
+|---|---|
+| **新建会话对话框**<br><img src="docs/images/platform/03-new-session-dialog.png" alt="新建会话对话框"> | **空会话：沙箱已启动，等待输入**<br><img src="docs/images/platform/04-session-empty.png" alt="空会话"> |
+| **权限确认：允许 / 拒绝这次工具调用**<br><img src="docs/images/platform/05-permission-prompt.png" alt="权限确认"> | **展开工具卡片：看参数和输出**<br><img src="docs/images/platform/07-file-view.png" alt="展开 write_file 工具卡片"> |
+| **`/help`：内置斜杠命令**<br><img src="docs/images/platform/08-help.png" alt="/help 输出"> | **切换权限模式**<br><img src="docs/images/platform/09-mode-selector.png" alt="权限模式选择"> |
+| **随时切换模型，对话保留**<br><img src="docs/images/platform/10-model-selector.png" alt="模型选择"> | |
+
+</details>
 
 ## 截图
 
@@ -99,11 +130,11 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    B([浏览器]) --> AP[认证代理<br/>OIDC / SSO]
+    B([浏览器]) --> AP[登录<br/>GitHub OAuth + 邀请码 / 认证代理]
     AP --> CP[控制面<br/>会话 · 用户 · 模型目录 · 反向代理]
     CP --> DB[(SQLite / PostgreSQL)]
     CP --> RL[(内存 / Redis 限流)]
-    CP -->|启动 / 回收| L{{启动器<br/>本机进程 · Docker · K8s}}
+    CP -->|启动 / 回收| L{{启动器<br/>本机进程 · Docker · K8s · 远程沙箱主机}}
     L --> SB1[沙箱：nanocode --web]
     L --> SB2[沙箱：nanocode --web]
     SB1 -->|短期签名令牌| GW[模型网关<br/>限额 · 计量 · 强制模型]
@@ -112,7 +143,7 @@ flowchart LR
 ```
 
 每个会话一个沙箱，用户的 API Key 加密存在库里、只在网关解密，**沙箱里永远没有真密钥**；Docker / K8s 沙箱没有外网，只能访问网关。
-设计见 [第 12 章](docs/12-distributed-deployment.md)，代码和运行方式见 [server/README.md](server/README.md)。
+设计见 [第 12 章](docs/12-distributed-deployment.md)，代码和运行方式见 [server/README.md](server/README.md)；部署形态（单机 / 平台机 + 沙箱机 + 托管库）见 [docs/deployment-topology.md](docs/deployment-topology.md)，全部 `NCS_*` 变量见 [docs/configuration.md](docs/configuration.md)，登录和邀请码见 [docs/auth-and-admin.md](docs/auth-and-admin.md)，安全边界和已知问题见 [docs/security-model.md](docs/security-model.md)。
 
 ---
 
@@ -322,12 +353,12 @@ nanocode/
 ├── session.py         组装各部件、斜杠命令、会话保存（每一步自动保存）
 ├── cli.py             终端界面
 └── web/               Web 界面：server.py（HTTP 服务 + SSE + 安全校验）、runtime.py（多会话并行运行）、limits.py（/api/chat 限流与每日预算）、static/（调试面板 + 架构学习页）
-docs/                  分章节的架构讲解（建议按顺序读）
+docs/                  分章节的架构讲解（建议按顺序读）和平台 / 部署文档，入口是 docs/README.md
 examples/              MCP 服务器示例、最小 Agent（minimal_agent.py）、扩展示例（extensions/：4 个 MCP 服务器 + 3 个技能 + 1 个命令）、RAG 评测（rag_eval/）
 evals/agent_tasks/     Agent 任务评测：13 个任务、隐藏测试、参考答案、运行器
 verification/          真实环境验证清单与结果（连真实模型、浏览器实操）
 server/                多用户部署的控制面和模型网关（独立的包，见 server/README.md 和第 12 章）
-deploy/                沙箱和控制面的镜像、Kubernetes 清单（gVisor、网络出口白名单）
+deploy/                沙箱和控制面的镜像；compose/（单机平台）、sandbox-host/（远程沙箱主机）、firewall/（宿主机防火墙脚本）、k8s/（gVisor、网络出口白名单）
 tests/                 单元测试
 ```
 
