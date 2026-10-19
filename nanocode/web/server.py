@@ -404,7 +404,7 @@ def make_handler(app: WebApp):
             # CSP 拦住 script-src 之外的脚本执行，X-Frame-Options 挡住点击劫持。
             # 'unsafe-inline' 是给页面里已有的内联 <script> 留的口子（源码无构建步骤，改不了 nonce）。
             self.send_header("content-security-policy",
-                             "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+                             "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; "
                              "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
             self.send_header("x-frame-options", "DENY")
             self.send_header("x-content-type-options", "nosniff")
