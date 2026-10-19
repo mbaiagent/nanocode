@@ -1,6 +1,6 @@
 # 维护交接手册（Agent Playbook）
 
-> **English summary.** This is the operational handoff playbook for maintaining `mbaiagent/nanocode`. It is written for an AI agent or a human taking over. It covers: (1) permission boundaries: the agent may review and merge clean PRs, open and evaluate issues, and open fix PRs, but must ask the owner before force-pushing or rewriting history, deleting things, changing repo settings, or merging anything with architecture risk; (2) four automations: a weekday code-quality patrol, new-issue triage and fixing, PR review and squash-merge, and a weekly managed-Redis keepalive check; (3) the fix-PR workflow, with exact test commands, CI matrix quirks and gh quirks; (4) deployment and CD (in progress, PR #148); (5) reporting conventions; (6) a dated snapshot of open work; (7) lessons learned. **The repo is public: use placeholders only, never print secrets, and commit with a noreply email. Docs change in the same PR as code.**
+> **English summary.** This is the operational handoff playbook for maintaining `mbaiagent/nanocode`. It is written for an AI agent or a human taking over. It covers: (1) permission boundaries: the agent may review and merge clean PRs, open and evaluate issues, and open fix PRs, but must ask the owner before force-pushing or rewriting history, deleting anything (except deleting a PR's head branch after merging it), changing repo settings, or merging anything with architecture risk; (2) four automations: a weekday code-quality patrol, new-issue triage and fixing, PR review and squash-merge, and a weekly managed-Redis keepalive check; (3) the fix-PR workflow, with exact test commands, CI matrix quirks and gh quirks; (4) deployment and CD (in progress, PR #148); (5) reporting conventions; (6) a dated snapshot of open work; (7) lessons learned. **The repo is public: use placeholders only, never print secrets, and commit with a noreply email. Docs change in the same PR as code.**
 
 本仓库是**公开仓库**。本文只用占位符：`nanocode.example.com`、`<platform-host>`、`<sandbox-host>`、`10.77.0.x`、`<db-host>`。真实主机、凭据和账号信息只放在服务器上的运维笔记里（root-only），不进仓库。
 
@@ -15,10 +15,10 @@
 - 在 issue / PR 下评论，请求 Copilot review。
 
 ### 1.2 必须先问 owner 的事
-- 删除仓库、分支以外的任何资源（release、tag、secrets、环境）。
+- 删除任何东西之前先问（仓库、其他分支、release、tag、secrets、环境等），唯一例外：合并 PR 后删除该 PR 的 head 分支。
 - `git push --force`、`--force-with-lease`、rebase 已推送的提交、改写历史（包括为清理隐私去改写历史，#121）。
 - 改仓库设置：分支保护、Actions 权限、environments、secrets、可见性、协作者。
-- 合并带架构风险的 PR，或标了「需要人工决定 / 不要合并 / WIP」的 PR。
+- 合并带架构风险的 PR，或带「需要人工决策」PR 标签，或标了「不要合并 / WIP」的 PR。
 - 在生产上打开有安全前置条件的开关（例如出站代理要等 #134）。
 - 一切对外可见、不可逆的操作：发消息、对外发帖等。
 
@@ -91,10 +91,10 @@ WORK=/tmp/nc-$(date +%s); gh repo clone mbaiagent/nanocode "$WORK" -- -q && cd "
    3. 跑全量 core + server 测试（§3.3）。
    4. 正常 push，开中文 PR，正文写 `Fixes #<N>`、改了什么、为什么、测试结果。
    5. 在 issue 下评论 PR 链接，请求 Copilot review（§3.6），记录 CI 结果。
-5. 不合并，不关 issue。改动大的（跨模块、改协议 / 数据结构、改安全边界）在 PR 里标「需要人工决定」。
+5. 不合并，不关 issue。改动大的（跨模块、改协议 / 数据结构、改安全边界）给 PR 加上「需要人工决策」标签（这是仓库里的 PR label）。
 
 ### 2.3 PR 审查与合并（PR 打开时触发）
-1. **跳过**：draft、已关闭、标了「需要人工决定 / 不要合并 / WIP」的 PR（这类只评论，不合并）。
+1. **跳过**：draft、已关闭、带「需要人工决策」PR 标签或标了「不要合并 / WIP」的 PR（这类只评论，不合并）。
 2. **代码质量**：可读性、重复、错误处理、边界条件、测试覆盖、是否符合现有架构（零第三方依赖、注释写「为什么」）。
 3. **安全**：命令 / SQL 注入、路径穿越和符号链接、SSRF、鉴权绕过、密钥泄露（日志、错误信息、子进程环境）、XSS / CSP、CSRF、不安全的默认值、新增依赖。
 4. **文档同步**（缺文档算问题）和**公开仓库隐私**（§1.4）。
@@ -124,7 +124,7 @@ WORK=/tmp/nc-$(date +%s); gh repo clone mbaiagent/nanocode "$WORK" -- -q && cd "
 ### 2.4 每周托管 Redis 保活检查（周一）
 托管 Redis（Valkey）免费档长期没有访问会被停用，所以服务器上有一个 systemd 保活定时器。检查方法：
 ```bash
-ssh <platform-host> 'systemctl list-timers "*keepalive*"; journalctl -u "<keepalive-unit>" --since "8 days ago" --no-pager | tail -n 50'
+ssh <platform-host> 'systemctl list-timers "*keepalive*"; journalctl -u "ncs-redis-keepalive.service" --since "8 days ago" --no-pager | tail -n 50'
 ```
 最近 7 天每次都成功、没有失败就不出声；有失败或定时器没在跑，就汇报给 owner，附上日志摘要（去掉主机名和连接串）。托管 Postgres **不做**保活，它要能缩到零省额度。
 
