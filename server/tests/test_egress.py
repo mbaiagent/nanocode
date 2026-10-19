@@ -73,14 +73,17 @@ class Base(unittest.TestCase):
     def raw(self, p, data: bytes, read=True, timeout=5) -> bytes:
         s = socket.create_connection(p.address, timeout=timeout)
         try:
-            s.sendall(data)
+            try:
+                s.sendall(data)
+            except ConnectionError:                     # 被拒的连接可能已经关了（Windows 上是 10053）
+                return b""
             if not read:
                 return b""
             out = b""
             while True:
                 try:
                     chunk = s.recv(65536)
-                except (socket.timeout, ConnectionResetError):
+                except (socket.timeout, ConnectionError):
                     break
                 if not chunk:
                     break
