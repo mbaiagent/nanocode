@@ -58,6 +58,12 @@ SSE_WRITE_TIMEOUT = 30          # 写入阻塞超过此时间就断开慢客户�
 # Agent 脚下的状态，必须等这一轮结束 —— 见 chat() 里对 #50 的注释。
 READ_ONLY_COMMANDS = {"help", "?", "cost", "context", "tools", "todos", "mcp", "skills", "providers", "memory"}
 
+# 忙时还能改的配置项。/mode 不是只读查询，但它只改权限模式这一个配置：正在跑的那一轮
+# 已经判过的工具不会回退重判，新模式从下一次工具调用开始生效，不会动 messages / usage
+# 这些 Agent 脚下的状态。以前它和 /clear 一起被 429 拒掉，而前端又不显示这个错误，
+# 用户以为切换成功了（#78）。
+BUSY_ALLOWED = READ_ONLY_COMMANDS | {"mode"}
+
 
 def normalize_host(value: str) -> str:
     """把用户写的可信公网地址规范成 Host 头里"不带端口的主机名"（小写）。
@@ -284,12 +290,12 @@ class WebApp:
             output = ""
             if message.startswith("/"):
                 # 先取命令名、先判忙，再执行。反过来（先 handle_command 后判忙）会让
-                # /clear、/mode、/resume、/compact 在 Agent 正在跑的时候改掉它脚下的状态：
+                # /clear、/resume、/compact 在 Agent 正在跑的时候改掉它脚下的状态：
                 # /clear 清空正在使用的 messages，/resume 换掉整个对话，/compact 在全局锁里
                 # 发模型调用还把取消按钮一起堵死（#50）。
-                # 纯查询类命令不受影响，忙时照样能看。
+                # 纯查询类命令和 /mode 不受影响，忙时照样能用（#78）。
                 name = message[1:].strip().partition(" ")[0]
-                if self.busy and name not in READ_ONLY_COMMANDS:
+                if self.busy and name not in BUSY_ALLOWED:
                     raise RateLimited("busy", f"Agent 正在工作，等它做完或先中断再用 /{name}", 5)
                 output, prompt = s.handle_command(message)
                 s.bus.emit("command", input=message, output=output)

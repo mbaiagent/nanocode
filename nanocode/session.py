@@ -413,6 +413,10 @@ class Session:
                     self.permissions.set_mode(arg)
                 except ValueError as e:
                     return str(e), None
+                # 正在跑的那一轮已经判过的工具不会回退重判：新模式从下一次工具调用开始
+                # 生效。不说清楚的话，用户切完立刻去看当前这轮的行为，会以为没生效（#78）。
+                return (f"已切换到 {self.permissions.mode} 模式"
+                        + ("，当前回合仍在运行，从下一次工具调用开始生效" if a.busy else ""), None)
             return f"当前权限模式：{self.permissions.mode}", None
         if name == "tools":
             return "\n".join(f"  {t.name}{'  (只读)' if t.is_read_only else ''}" for t in self.registry.all()), None

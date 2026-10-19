@@ -725,6 +725,7 @@ const renderMd = (text) => { try { return marked.parse(esc(text)); } catch { ret
 const chat = $("#chat");
 let lastSeq = 0, busy = false, currentText = {}, rawText = {}, toolCards = {}, steps = {}, rawCount = 0;
 let queueCount = 0, lastUserText = "";
+let serverMode = "";   // 服务端当前的权限模式：切换失败时把下拉框拨回它（#78）
 let stick = true;
 const nearBottom = () => chat.scrollHeight - chat.scrollTop - chat.clientHeight < 120;
 chat.addEventListener("scroll", () => { stick = nearBottom(); });
@@ -985,7 +986,7 @@ async function refreshState(sync = false) {
   $("#meta").title = `${s.provider}/${s.model}\n${s.cwd}`;
   $("#status").title = `${s.provider}/${s.model}\n${s.cwd}`;
   $("#status").setAttribute("aria-label", `模型 ${s.provider}/${s.model}，工作目录 ${s.cwd}`);
-  $("#mode").value = s.mode;
+  $("#mode").value = serverMode = s.mode;
   if (sync) { setBusy(!!s.busy); queueCount = s.queue || 0; updateQueuebar(); }
   else if (!s.busy) setBusy(false);
   renderTodos(s.todos);
@@ -1054,7 +1055,17 @@ input.addEventListener("input", autosize);
 $("#input").onkeydown = (ev) => { if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) $("#form").requestSubmit(); };
 $("#stop").onclick = () => post("api/cancel");
 $("#refresh").onclick = refreshContext;
-$("#mode").onchange = () => post("api/chat", { message: "/mode " + $("#mode").value });
+// 切换权限模式：后端可能拒绝（忙时的非只读命令、限流、模式名不合法……），
+// 不把错误显示出来的话，下拉框已经变了而服务端没变，用户会以为切换成功了（#78）。
+$("#mode").onchange = async () => {
+  const r = await post("api/chat", { message: "/mode " + $("#mode").value });
+  if (!r.ok) {
+    add("error", esc(r.error || "切换权限模式失败"));
+    $("#mode").value = serverMode;        // 下拉框已经变了而服务端没变：拨回去
+  } else if (r.output) {
+    add("note", esc(r.output));           // 成功：说清楚什么时候生效
+  }
+};
 
 // 会话列表：下拉切换历史会话，＋开新会话。切换后整页重载，SSE 重放历史事件恢复界面。
 async function refreshSessions() {
