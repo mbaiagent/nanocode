@@ -11,12 +11,14 @@
 - **新增 多用户 P1**（[#118](https://github.com/mbaiagent/nanocode/pull/118)）：`NCS_AUTH=github`，用 GitHub OAuth 登录（state + PKCE，按 GitHub 数字 id 绑定）；邀请码注册；服务端登录会话（库里只存哈希，可立即吊销）；`/admin` 管理页（邀请码、账号停用 / 启用）；引导管理员 `NCS_ADMIN_GITHUB_LOGINS`；可选 Caddy 自动 HTTPS。模型 Key 由用户自带（BYO），加密存库、只在网关解密。见 [docs/auth-and-admin.md](docs/auth-and-admin.md)。
 - **安全 沙箱宿主机隔离**（[#124](https://github.com/mbaiagent/nanocode/pull/124)，Fixes [#123](https://github.com/mbaiagent/nanocode/issues/123)）：沙箱网桥名 / 网段固定（`NCS_DOCKER_BRIDGE`、`NCS_DOCKER_SUBNET`），新增 `deploy/firewall/` 的 firewalld / nftables 脚本和 `check-sandbox-isolation.sh`，沙箱只能连宿主机的网关端口。
 - **新增 远程沙箱**（[#126](https://github.com/mbaiagent/nanocode/pull/126)）：`NCS_LAUNCHER=remote`，沙箱跑在另一台机器上，经 WireGuard 等内网隧道连接；新增 `python -m nanocode_server sandbox-agent`（只听内网地址、共享密钥认证、不暴露 Docker API）和网关中继（全局 / 每沙箱连接上限、空闲超时，`NCS_AGENT_RELAY_*`）；新增 `deploy/sandbox-host/`。
+- **新增 沙箱出站代理**（[#137](https://github.com/mbaiagent/nanocode/pull/137)，**默认关**）：`NCS_EGRESS_PROXY=1` 时，沙箱代理里会起一个只放行 HTTP/HTTPS 的正向代理。DNS 由代理解析；拒绝内网、元数据、本机、沙箱网段和 WireGuard 网段；防 DNS 重绑定；有每沙箱连接上限和空闲超时，可选域名白名单 / 黑名单；访问日志只记域名和字节数。防火墙脚本新增 `NCS_EGRESS_PORT`，`check-sandbox-isolation.sh` 会验证代理。前置条件 [#134](https://github.com/mbaiagent/nanocode/issues/134) 已由 #146 修复；生产打开前确认镜像版本。相关 [#135](https://github.com/mbaiagent/nanocode/issues/135)、[#136](https://github.com/mbaiagent/nanocode/issues/136)。见 [docs/distributed-deploy.md](docs/distributed-deploy.md#35-出站代理沙箱上网默认关)。
 - **修复 老版本 Docker 网络没有 Gateway 字段**（[#130](https://github.com/mbaiagent/nanocode/pull/130)）：建网络时显式写网关，已有网络按网段第一个地址兜底；Docker 26 上沙箱代理不再反复重启。
 - **安全 平台页面加 CSP / 防点击劫持**（Fixes #113）：控制面页面默认带 CSP、`frame-ancestors 'none'`、`X-Frame-Options: DENY`；`/s/<id>/` 转发的沙箱面板由平台统一加 CSP（`frame-ancestors 'self'`）和 `X-Frame-Options: SAMEORIGIN`，不再依赖沙箱自己发的头。
 - **调参 小机器资源**（#119）：`NCS_SANDBOX_TMPFS`、`NCS_SANDBOX_PIDS`、PG / Redis / 容器内存上限；大小同时认 `384Mi` 和 `384m` 写法。
 
 ### 单机 nanocode / Web 面板
 
+- **变化 `web_fetch` / `web_search` 遵守 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`**（[#137](https://github.com/mbaiagent/nanocode/pull/137)）：以前一律直连，现在设了代理就走代理（https 走 CONNECT，证书仍按域名校验）。本地仍会先解析并拦住内网地址；不过经你自己配的上游代理时，代理会再解析一次域名，防 DNS 重绑定就取决于那个代理。设了 `NANOCODE_EGRESS_PROXY=1`（平台沙箱）时，域名直接交给代理解析。
 - **安全 读取敏感文件默认需要确认**（[#147](https://github.com/mbaiagent/nanocode/pull/147)，Fixes [#136](https://github.com/mbaiagent/nanocode/issues/136)）：`.env`、私钥、`.netrc`、云凭据等读取时询问，非交互时拒绝；宽泛 allow 规则不放行；bash 常见读法启发式识别。新配置 `permissions.sensitive_read` / `permissions.sensitive_read_exclude`。
 - **安全 工具子进程不继承凭据**（[#146](https://github.com/mbaiagent/nanocode/pull/146)，Fixes [#134](https://github.com/mbaiagent/nanocode/issues/134)）：bash / verify / hook 子进程拿不到 `NANOCODE_*`、`NCS_*`（行为变化：本地模式下 `NANOCODE_API_KEY` 也不再传给子进程，厂商 Key 照常传）；平台模式下另外去掉厂商 Key 和像密钥的变量，Web 进程设为不可 dump。新增 `NANOCODE_TOOL_ENV_KEEP` 放行。
 - **新增 多会话并行运行**（[#112](https://github.com/mbaiagent/nanocode/pull/112)）：`NANOCODE_WEB_MAX_RUNS`、`NANOCODE_WEB_MAX_RUNS_PER_CLIENT`、`NANOCODE_WEB_MAX_LIVE_SESSIONS`。
@@ -44,7 +46,7 @@
 
 - [PR #128](https://github.com/mbaiagent/nanocode/pull/128)：本地单机模式和平台部署分成两个入口，测试保证本地零依赖。
 - [PR #133](https://github.com/mbaiagent/nanocode/pull/133)（Fixes [#131](https://github.com/mbaiagent/nanocode/issues/131)）：回收线程空闲时不查数据库，托管 Postgres 能缩到零；`NCS_REAP_INTERVAL`；启动连库退避重试。
-- 计划中：沙箱出站代理（只放行 HTTP/HTTPS，默认关闭，依赖 [#134](https://github.com/mbaiagent/nanocode/issues/134)）；工作区快照到 S3 兼容对象存储（B2）。
+- 计划中：工作区快照到 S3 兼容对象存储（B2）。
 
 ### 已知问题
 

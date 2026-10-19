@@ -53,9 +53,10 @@ flowchart LR
 
     WGP <-->|WireGuard UDP<br/>只允许对端| WGS
     CP -->|起停沙箱 / 转发 /s/&lt;id&gt;/<br/>共享密钥认证| AG
-    SB1 -.->|只能连网关 relay 端口| AG
-    SB2 -.->|只能连网关 relay 端口| AG
+    SB1 -.->|只能连 relay 端口<br/>和出站代理端口| AG
+    SB2 -.->|只能连 relay 端口<br/>和出站代理端口| AG
     AG -.->|经 wg 转发到网关| GW
+    AG -.->|出站代理（可选，默认关）<br/>只放 HTTP/HTTPS，拦内网| NET[公网网站 / 包仓库]
 
     CP -->|TLS, pooled| PG[(托管 Postgres<br/>Neon)]
     CP -->|rediss://| R[(托管 Valkey<br/>Aiven)]
@@ -67,7 +68,8 @@ flowchart LR
 1. 浏览器 → 平台机 nginx（TLS 终止）→ 控制面（只听 `127.0.0.1:8700`）。
 2. 新建会话：控制面经 WireGuard 调沙箱代理 `http://10.77.0.2:<agent-port>`，带共享密钥；代理在本机 Docker 里起沙箱容器。
 3. 打开会话页面 `/s/<id>/`：控制面经 WireGuard 把请求转发给代理，代理再转给沙箱容器。
-4. 沙箱里的 Agent 调模型：沙箱只能连代理暴露在沙箱网桥上的 relay 端口，代理经 WireGuard 转到平台机网关，网关再带上用户自己的 Key 去调模型 API。沙箱里**没有**模型 Key。
+4. 沙箱里的 Agent 调模型：沙箱只能连代理暴露在沙箱网桥上的 relay 端口，代理经 WireGuard 转到平台机网关，网关再带上用户自己的 Key 去调模型 API。模型调用**不经过**出站代理（`NO_PROXY` 里有 relay 地址）。
+5. 沙箱上网（可选，`NCS_EGRESS_PROXY=1`，默认关）：沙箱里的 `web_fetch`、`web_search`、`pip`、`git`、`curl` 经 `HTTP(S)_PROXY` 连沙箱代理里的出站代理，由它解析域名、拦内网后再连公网。见 [3.5 出站代理](#35-出站代理沙箱上网默认关)。
 
 ## 三、安全边界
 
@@ -116,8 +118,9 @@ AllowedIPs = 10.77.0.1/32
 ### 3.3 沙箱网络（依赖 #123 / PR #124）
 
 - 沙箱网络是 Docker `internal` 网络，固定网桥名和网段（PR #124：`NCS_DOCKER_BRIDGE`，默认 `ncs-sbx0`；`NCS_DOCKER_SUBNET`，默认 `172.30.250.0/24`），防火墙规则按它们写。
-- 沙箱**只能**连网关 relay 端口；宿主机上的 sshd、代理管理端口、其它服务一律不通。
-- 用 `deploy/firewall/check-sandbox-isolation.sh`（PR #124）在真机上验证：relay 端口 open，其它端口 timeout。
+- 沙箱**只能**连网关 relay 端口（打开出站代理时再加上代理端口）；宿主机上的 sshd、代理管理端口、其它服务一律不通。
+- 沙箱里没有 DNS，也没有直连公网的路由。
+- 用 `deploy/firewall/check-sandbox-isolation.sh`（PR #124）在真机上验证：relay 端口 open，其它端口 timeout；带 `NCS_EGRESS_PORT` 时还验证出站代理（见 3.5）。
 
 ### 3.4 firewalld zone（AlmaLinux / RHEL 系）
 
@@ -125,9 +128,100 @@ AllowedIPs = 10.77.0.1/32
 |---|---|---|---|
 | `public` | 公网网卡 | default | SSH；沙箱机另加 WireGuard UDP 端口（rich rule 限定来源为平台机公网 IP）；平台机加 80/443 |
 | `wg` | `wg0` | DROP | 沙箱机：只允许来源 `10.77.0.1` 访问代理端口；平台机：只允许来源 `10.77.0.2` 访问网关端口 |
-| `ncs-sandbox` | 来源 = 沙箱网段 | DROP | 只开 relay 端口（由 PR #124 的 `ncs-sandbox-firewalld.sh` 创建） |
+| `ncs-sandbox` | 来源 = 沙箱网段 | DROP | 只开 relay 端口；打开出站代理时再开代理端口（`ncs-sandbox-firewalld.sh`，带 `NCS_EGRESS_PORT`） |
 
 注意：不要把沙箱网段或 `wg0` 放进 `trusted` zone；Docker 默认的 `docker` zone 是 `ACCEPT`，正是 #123 的成因。
+
+### 3.5 出站代理（沙箱上网，默认关）
+
+> **默认关，生产打开前先确认前置条件。** 能上网之后，一次提示词注入（`env` + `curl`）就可能把沙箱里的令牌带出去，所以前提是沙箱里的令牌拿不到：[#134](https://github.com/mbaiagent/nanocode/issues/134) 已经由 [PR #146](https://github.com/mbaiagent/nanocode/pull/146) 修复（bash / verify / hook 子进程不继承 `NANOCODE_*` 和像密钥的变量，Web 进程不可 dump，读不到父进程的 environ）。生产上打开之前，**确认沙箱镜像已经是包含 #146 的版本**，并接受剩下的残留风险：同一个进程里的 Python 工具、沙箱里读得到的文件。相关：[#135](https://github.com/mbaiagent/nanocode/issues/135)（审计日志可被沙箱篡改，已关闭）、[#136](https://github.com/mbaiagent/nanocode/issues/136)（读敏感文件默认要确认，已由 [PR #147](https://github.com/mbaiagent/nanocode/pull/147) 修复）。HTTP 代理变量不算密钥，#146 之后照样会传给 bash，所以 `pip` 和 `curl` 能走代理。
+
+**架构**：
+
+```
+沙箱容器 ──HTTP(S)_PROXY──▶ 出站代理 172.30.250.1:3128（沙箱代理进程里，沙箱机网桥地址）──▶ 公网 80/443
+沙箱容器 ──NO_PROXY──────▶ 网关 relay 172.30.250.1:8701 ──WireGuard──▶ 平台机网关 ──▶ 模型 API
+```
+
+- 代理是沙箱代理进程里的一个线程（`server/nanocode_server/egress.py`），只用标准库，和 relay 共用连接上限和超时的逻辑。不选 tinyproxy，是因为它只能按域名和客户端做 ACL，解析完之后没法按目标 IP 拦，做不到下面的 SSRF 和重绑定检查。squid 倒是能做（dst ACL），但常驻就要几十 MB，在 1 GB 的沙箱机上不划算，而且多一个要单独升级、单独配防火墙的组件。
+- **只做两件事**：`CONNECT host:port`（HTTPS 隧道，代理看不到内容，证书仍由沙箱里的客户端按域名校验），以及绝对地址的明文 HTTP 转发（`GET http://…`）。目标端口必须在 `NCS_EGRESS_ALLOWED_PORTS` 里（默认 `80,443`），其它协议和端口一律 403。
+- **DNS 由代理解析**，沙箱里仍然没有 DNS，也就没法把 DNS 当隧道用。沙箱代理会往沙箱里注入 `NANOCODE_EGRESS_PROXY=1`，告诉 `web_fetch` 和 `web_search` 不要先在本地解析域名，交给代理去检查。URL 里直接写 IP 的，沙箱里会先拦一次。
+- 沙箱代理会往每个沙箱容器注入这些环境变量：`HTTP_PROXY`、`HTTPS_PROXY`、`http_proxy`、`https_proxy`（大小写都给，curl 只认小写），以及 `NO_PROXY`/`no_proxy`，内容是 `localhost`、`127.0.0.1`、`::1`、relay 地址，再加上沙箱策略里网关地址的主机名。
+
+**SSRF 拦截表**：域名解析出的**每一个**地址都要过检查，有一个不合格就整个拒绝。混合应答是重绑定的常见手法。
+
+| 拦住的目标 | 网段 |
+|---|---|
+| 私网（RFC 1918） | `10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16` |
+| CGNAT | `100.64.0.0/10` |
+| 本机 | `127.0.0.0/8`、`::1`、`0.0.0.0/8`、`::` |
+| 链路本地，含云元数据 `169.254.169.254` | `169.254.0.0/16`、`fe80::/10` |
+| IPv6 ULA | `fc00::/7` |
+| 组播、保留、基准测试网段等 | `224.0.0.0/3`、`ff00::/8`、`192.0.0.0/24`、`198.18.0.0/15`，以及其它所有 `is_global` 为假的地址 |
+| 嵌着 IPv4 的 IPv6 | `::ffff:a.b.c.d`、NAT64 `64:ff9b::/96`、6to4 `2002::/16`，按里面的 IPv4 判断 |
+| 沙箱网段 | `NCS_DOCKER_SUBNET`（自动加入） |
+| WireGuard 网段等 | `NCS_EGRESS_BLOCK_NETWORKS`（建议写上 `10.77.0.0/24`，私网本来就拦，写上是防以后换成别的网段） |
+| 沙箱机自己的地址，含公网 IP | 从 `/proc/net/fib_trie` 和 `/proc/net/if_inet6` 读，每分钟刷新一次。经 NAT 或浮动 IP 进来、本机网卡上看不到的公网 IP，要写进 `NCS_EGRESS_BLOCK_NETWORKS` |
+
+**防 DNS 重绑定**：每个请求只解析一次，检查过哪个 IP 就连哪个 IP，不交给系统再解析一次。连上之后再按对端地址复核一遍。明文 HTTP 的 `Host` 头由代理按 URL 里的域名重写，同时去掉 `Proxy-Authorization` 等逐跳头，并改成 `Connection: close`，一条连接只做一个请求。
+
+**名额和时限**，按 #126 审查时 relay 的做法：
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `NCS_EGRESS_MAX_CONNECTIONS` | `64` | 全局并发连接上限 |
+| `NCS_EGRESS_PER_SANDBOX` | `8` | 每个沙箱（按来源 IP）的上限，超出直接回 503，一个沙箱占不满别人的名额 |
+| `NCS_EGRESS_IDLE_TIMEOUT` | `120` | 两个方向都没有数据超过这么多秒就断开；写不出去也按这个超时 |
+| （固定） | 10 秒 / 16 KB | 请求头读取有总时限（防慢速请求头），请求头最大 16 KB；连接上游超时 10 秒；一头 EOF 后另一头停顿 30 秒断开 |
+
+**全部变量**（沙箱机 `deploy/sandbox-host/.env`）：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `NCS_EGRESS_PROXY` | `0` | 开关。打开前先放行防火墙端口；生产上要确认镜像已包含 #134 的修复（PR #146） |
+| `NCS_EGRESS_BIND` | 空 | 监听地址，空就和 relay 用同一个（沙箱网桥地址）。不能是 `0.0.0.0` / `::` |
+| `NCS_EGRESS_PORT` | `3128` | 监听端口，不能和 `NCS_GATEWAY_PORT` 相同 |
+| `NCS_EGRESS_ALLOWED_PORTS` | `80,443` | 允许的目标端口，CONNECT 和明文 HTTP 共用 |
+| `NCS_EGRESS_ALLOW_DOMAINS` | 空 | 非空时只放行这些域名，按后缀匹配（`example.com` 也匹配 `a.example.com`，`*.` 前缀可写可不写）。直接写 IP 的一律拒绝 |
+| `NCS_EGRESS_DENY_DOMAINS` | 空 | 一律拒绝这些域名，先于 allow 判断 |
+| `NCS_EGRESS_BLOCK_NETWORKS` | 空 | 额外拦住的网段，逗号分隔 |
+| `NCS_EGRESS_MAX_CONNECTIONS` / `NCS_EGRESS_PER_SANDBOX` / `NCS_EGRESS_IDLE_TIMEOUT` | `64` / `8` / `120` | 见上表 |
+
+沙箱里由沙箱代理注入、不用手配的变量：`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`（大小写两套），以及 `NANOCODE_EGRESS_PROXY=1`。
+
+**访问日志**：每条连接写一行 JSON 到沙箱代理的标准输出（`docker compose logs agent`；compose 里给日志限了 10 MB × 3），字段有 `egress`（会话编号）、`src`、`method`（`CONNECT` / `HTTP`）、`host`、`port`、`ip`、`result`（`ok` / `denied:…` / `error:…`）、`up`/`down`（字节数）和 `ms`。**URL 路径、查询串、请求头、请求体和响应都不记**，因为路径和头里常带令牌。
+
+**打开**（沙箱机；生产上先确认镜像已包含 PR #146）：
+
+```bash
+cd deploy/sandbox-host
+# .env：NCS_EGRESS_PROXY=1，NCS_EGRESS_BLOCK_NETWORKS=10.77.0.0/24，按需填 NCS_EGRESS_ALLOW_DOMAINS
+cd ../firewall
+NCS_DOCKER_SUBNET=172.30.250.0/24 NCS_GATEWAY_PORT=8701 NCS_EGRESS_PORT=3128 ./ncs-sandbox-firewalld.sh
+#   没有 firewalld：NCS_DOCKER_BRIDGE=ncs-sbx0 ... NCS_EGRESS_PORT=3128 ./ncs-sandbox-nftables.sh
+cd ../sandbox-host && docker compose up -d --build agent
+docker compose logs agent | grep 出站代理            # 启动行里应显示 出站代理 http://172.30.250.1:3128
+```
+
+已经在跑的沙箱拿不到新的环境变量，要停掉会话再开，或者重启平台。平台机这边不用改配置。
+
+**验证**：
+
+```bash
+cd deploy/firewall
+NCS_GATEWAY_PORT=8701 NCS_EGRESS_PORT=3128 ./check-sandbox-isolation.sh
+```
+
+要看到这几项：relay 和代理端口 `open`；其它宿主机端口 `timeout`；沙箱里 DNS 解析不了；直连公网连不上；经代理能取到 `PROBE_URL`（默认 `https://example.com/`）；`CONNECT 10.0.0.1:443`、`169.254.169.254:80`、`127.0.0.1:443`、`<网桥地址>:22`、`example.com:22` 和明文 `GET http://169.254.169.254/` 都回 `403`。最后在面板里让 Agent 调一次 `web_fetch`，再看 `docker compose logs agent` 里有对应的一行。
+
+**威胁说明**（打开之后还剩下的风险）：
+
+- **数据外传**：能上网就能往外发数据，这是允许上网的代价，域名白名单也只能缩小范围。所以前提是沙箱里的令牌拿不到（#134，PR #146 已修；同进程 Python 工具和读得到的文件仍是残留风险）。日志能事后追查发到了哪个域名、发了多少字节，但看不到内容。
+- **滥用出口 IP**：别的用户可以拿沙箱机的公网 IP 去爬站、刷接口。只放 80/443、每个沙箱 8 条连接，挡得住扫端口和发邮件（25），挡不住 HTTP 层的滥用。必要时用 `NCS_EGRESS_ALLOW_DOMAINS` 收紧成包仓库加代码托管平台。
+- **沙箱机自己的 DNS**：代理用的是系统解析器。宿主机要是装了 fake-ip 之类的透明代理（解析结果落在 `198.18.0.0/15`），所有请求都会被当作内网拒绝，这是安全的那一侧。
+- **CONNECT 里跑的不一定是 TLS**：到 443 的隧道里装什么协议，代理不检查。端口限制和地址检查照样生效。
+- **沙箱外的上游代理**：如果沙箱机本身还要经公司代理之类的上游代理出网（不在本项目里），出站代理检查过的 IP 不一定就是上游代理最终连的地址，防重绑定就取决于那个上游代理。本机直接用 `nanocode` 并设了 `HTTP(S)_PROXY` 时也一样。
+- 单机 Docker 和 Kubernetes 模式还没有这个代理，那里的沙箱仍然完全断网。
 
 ## 四、托管 PostgreSQL（以 Neon 免费版为例）
 
@@ -232,6 +326,7 @@ journalctl -u ncs-redis-keepalive.service --since -1d   # 看最近的结果
 | 数据库连不上（持续） | 免费额度用完、凭据轮换、服务端故障 | 登录、建会话都失败 | 看托管控制台；必要时临时切回单机 compose 自带的 PostgreSQL |
 | 限流 / 事件异常，Redis 报连接错误 | Aiven 因不活跃关机，或保活 timer 停了 | 限流计数失效 | 保活失败应先收到 `OnFailure` 告警；控制台开机；查 `ncs-redis-keepalive` 日志 |
 | 沙箱能连到宿主机其它端口 | 防火墙没配或被 Docker 重置 | 安全事故 | 重跑 `ncs-sandbox-firewalld.sh` 和 `check-sandbox-isolation.sh` |
+| `web_fetch` 报 `Tunnel connection failed: 403 …` / `Could not resolve host` | 前者：代理拒绝了，原因写在状态行里（内网地址、端口、名单）。后者：出站代理没开（`NCS_EGRESS_PROXY=0`），或者沙箱是开代理之前启动的 | 只影响上网 | 看 `docker compose logs agent` 里的 `egress` 行；开代理后重启会话 |
 
 ## 八、1 GB 小机器的内存预算（估算）
 
@@ -253,7 +348,7 @@ journalctl -u ncs-redis-keepalive.service --since -1d   # 看最近的结果
 | 项 | 约占用 |
 |---|---|
 | 系统 + sshd + Docker 引擎 | 200～300 MB |
-| 沙箱代理 | 50～100 MB |
+| 沙箱代理（含 relay；出站代理空闲时不额外占内存，64 条并发隧道约多 5 MB，本地实测） | 50～100 MB |
 | 每个沙箱容器（含 Agent 进程，`--memory` 限制） | 250～400 MB |
 
 → 同时 **1～2 个会话**。用并发上限（全局 / 每用户）卡住，超出排队或报"满了"，不要让 OOM killer 随机杀进程。可调的资源参数见 #119。
@@ -273,7 +368,8 @@ journalctl -u ncs-redis-keepalive.service --since -1d   # 看最近的结果
 - [ ] 9. 平台机 `.env`：`NCS_LAUNCHER=remote`、`NCS_REMOTE_AGENT_URL`、`NCS_REMOTE_AGENT_SECRET`、`NCS_GATEWAY_HOST=10.77.0.1`（可选 `NCS_REMOTE_GATEWAY_URL`）；数据库和 Redis 地址目前要经本机 `docker-compose.override.yml` 传入（#132，见 [deployment-topology.md](deployment-topology.md#托管-postgres--redis)）；启动平台。
 - [ ] 10. 配 Redis 保活 timer 和 `OnFailure=` 告警 unit；`systemd-analyze verify` 通过，手动触发一次告警**确认能收到**；**不要**给 Postgres 配保活。
 - [ ] 11. 验证：`curl http://127.0.0.1:8700/healthz`；登录、建会话、打开 `/s/<id>/`、调一次模型；沙箱里跑 `check-sandbox-isolation.sh`；从公网扫沙箱机，确认只开 SSH 和 WireGuard。
-- [ ] 12. 演练回退：停掉 WireGuard，确认控制面报错清楚；恢复后新会话正常。
+- [ ] 12. （可选，确认已部署包含 #134 修复的版本后）打开出站代理：`NCS_EGRESS_PROXY=1`，防火墙脚本带 `NCS_EGRESS_PORT`，用 `check-sandbox-isolation.sh` 验证，见 3.5。
+- [ ] 13. 演练回退：停掉 WireGuard，确认控制面报错清楚；恢复后新会话正常。
 
 ## 十、隐私提醒（本仓库是公开的）
 

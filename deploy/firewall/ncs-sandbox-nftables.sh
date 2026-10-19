@@ -6,8 +6,11 @@
 # nftables 里任何一个 base chain 丢弃就是最终结果，所以这张表的 drop 不会被别处的 accept 盖掉。
 # 已建立的连接（控制面主动连沙箱的回包）放行。
 #
+# 出站代理（NCS_EGRESS_PROXY=1）：再设 NCS_EGRESS_PORT=3128，这个端口也放行；不设 = 只放行网关端口。
+# 代理自己往外连是宿主机发出的流量（output 链），不受这张表影响。
+#
 # 用法（root）：
-#   NCS_DOCKER_BRIDGE=ncs-sbx0 NCS_DOCKER_SUBNET=172.30.250.0/24 NCS_GATEWAY_PORT=8701 ./ncs-sandbox-nftables.sh
+#   NCS_DOCKER_BRIDGE=ncs-sbx0 NCS_DOCKER_SUBNET=172.30.250.0/24 NCS_GATEWAY_PORT=8701 [NCS_EGRESS_PORT=3128] ./ncs-sandbox-nftables.sh
 # 规则写到 ${NFT_FILE}（默认 /etc/nanocode/ncs-sandbox.nft）并立即加载；要开机生效，
 # 在发行版的 nftables 主配置里 include 这个文件（RHEL 系：/etc/sysconfig/nftables.conf；
 # Debian 系：/etc/nftables.conf），并 systemctl enable nftables。
@@ -16,10 +19,17 @@ set -euo pipefail
 BRIDGE="${NCS_DOCKER_BRIDGE:-ncs-sbx0}"
 SUBNET="${NCS_DOCKER_SUBNET:-172.30.250.0/24}"
 PORT="${NCS_GATEWAY_PORT:-8701}"
+EGRESS_PORT="${NCS_EGRESS_PORT:-}"
 NFT="${NFT_CMD:-nft}"
 NFT_FILE="${NFT_FILE:-/etc/nanocode/ncs-sandbox.nft}"
 
 case "${PORT}" in ''|*[!0-9]*) echo "NCS_GATEWAY_PORT 必须是端口号：${PORT}" >&2; exit 2 ;; esac
+case "${EGRESS_PORT}" in *[!0-9]*) echo "NCS_EGRESS_PORT 必须是端口号：${EGRESS_PORT}" >&2; exit 2 ;; esac
+PORTS="${PORT}"
+if [ -n "${EGRESS_PORT}" ]; then
+  [ "${EGRESS_PORT}" != "${PORT}" ] || { echo "NCS_EGRESS_PORT 不能和 NCS_GATEWAY_PORT 相同：${PORT}" >&2; exit 2; }
+  PORTS="${PORT}, ${EGRESS_PORT}"
+fi
 if ! [[ "${SUBNET}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]]; then
   echo "NCS_DOCKER_SUBNET 必须是 IPv4 网段：${SUBNET}" >&2; exit 2
 fi
@@ -36,13 +46,13 @@ table inet ncs_sandbox {
   chain input {
     type filter hook input priority -5; policy accept;
     iifname "${BRIDGE}" ct state established,related accept
-    iifname "${BRIDGE}" tcp dport ${PORT} accept
+    iifname "${BRIDGE}" tcp dport { ${PORTS} } accept
     iifname "${BRIDGE}" counter drop
     ip saddr ${SUBNET} ct state established,related accept
-    ip saddr ${SUBNET} tcp dport ${PORT} accept
+    ip saddr ${SUBNET} tcp dport { ${PORTS} } accept
     ip saddr ${SUBNET} counter drop
   }
 }
 NFT
 "${NFT}" -f "${NFT_FILE}"
-echo "完成：${BRIDGE} / ${SUBNET} 进来的连接只放行到本机 ${PORT}/tcp（规则文件 ${NFT_FILE}）。"
+echo "完成：${BRIDGE} / ${SUBNET} 进来的连接只放行到本机 tcp { ${PORTS} }（规则文件 ${NFT_FILE}）。"

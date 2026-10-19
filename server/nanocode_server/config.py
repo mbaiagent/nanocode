@@ -72,6 +72,17 @@ def _list(name: str, default: list[str]) -> list[str]:
     return [x.strip() for x in raw.split(",") if x.strip()] if raw else list(default)
 
 
+def _ports(name: str, default: list[int]) -> list[int]:
+    raw = _list(name, [str(p) for p in default])
+    try:
+        ports = [int(p) for p in raw]
+    except ValueError:
+        raise ValueError(f"{name} 必须是逗号分隔的端口号，例如 80,443：{_env(name)!r}") from None
+    if not ports or not all(0 < p < 65536 for p in ports):
+        raise ValueError(f"{name} 必须是 1-65535 的端口号，例如 80,443：{_env(name)!r}")
+    return ports
+
+
 def _json_dict(name: str) -> dict:
     """JSON 对象：直接写在环境变量里，或者写一个文件路径（适合挂载 ConfigMap / Secret）。"""
     raw = _env(name)
@@ -160,6 +171,17 @@ class Config:
     agent_relay_max_connections: int = 128  # 中继全局连接上限（所有沙箱共用）
     agent_relay_per_sandbox: int = 16       # 每个沙箱（按来源 IP）最多几条中继连接：一个沙箱占不满全局名额
     agent_relay_idle_timeout: int = 300     # 中继连接两个方向都没数据超过这么多秒就断开
+    # 出站代理（沙箱代理里，egress.py）：沙箱经它访问公网 HTTP/HTTPS。默认关：打开前先配好防火墙
+    egress_proxy: bool = False
+    egress_bind: str = ""                   # 监听地址；空 = 和网关中继同一个（沙箱网桥地址）
+    egress_port: int = 3128
+    egress_allowed_ports: list[int] = field(default_factory=lambda: [80, 443])
+    egress_max_connections: int = 64        # 全局上限
+    egress_per_sandbox: int = 8             # 每个沙箱（按来源 IP）上限
+    egress_idle_timeout: int = 120          # 两个方向都没数据超过这么多秒就断开
+    egress_allow_domains: list[str] = field(default_factory=list)   # 非空 = 只放行这些域名（含子域名）
+    egress_deny_domains: list[str] = field(default_factory=list)    # 先于 allow 生效
+    egress_block_networks: list[str] = field(default_factory=list)  # 额外拦住的网段（WireGuard 网段等）
 
     gateway_host: str = "127.0.0.1"
     gateway_port: int = 8701
@@ -228,6 +250,16 @@ class Config:
             agent_relay_max_connections=_int("NCS_AGENT_RELAY_MAX_CONNECTIONS", d.agent_relay_max_connections),
             agent_relay_per_sandbox=_int("NCS_AGENT_RELAY_PER_SANDBOX", d.agent_relay_per_sandbox),
             agent_relay_idle_timeout=_int("NCS_AGENT_RELAY_IDLE_TIMEOUT", d.agent_relay_idle_timeout),
+            egress_proxy=_bool("NCS_EGRESS_PROXY", False),
+            egress_bind=_env("NCS_EGRESS_BIND"),
+            egress_port=_int("NCS_EGRESS_PORT", d.egress_port),
+            egress_allowed_ports=_ports("NCS_EGRESS_ALLOWED_PORTS", d.egress_allowed_ports),
+            egress_max_connections=_int("NCS_EGRESS_MAX_CONNECTIONS", d.egress_max_connections),
+            egress_per_sandbox=_int("NCS_EGRESS_PER_SANDBOX", d.egress_per_sandbox),
+            egress_idle_timeout=_int("NCS_EGRESS_IDLE_TIMEOUT", d.egress_idle_timeout),
+            egress_allow_domains=_list("NCS_EGRESS_ALLOW_DOMAINS", []),
+            egress_deny_domains=_list("NCS_EGRESS_DENY_DOMAINS", []),
+            egress_block_networks=_list("NCS_EGRESS_BLOCK_NETWORKS", []),
             sandbox_mcp_servers=_json_dict("NCS_SANDBOX_MCP_SERVERS"),
             k8s_api=_env("NCS_K8S_API", d.k8s_api),
             k8s_namespace=_env("NCS_K8S_NAMESPACE", d.k8s_namespace),
@@ -304,6 +336,27 @@ class Config:
             raise ValueError("要求 1 <= NCS_AGENT_RELAY_PER_SANDBOX <= NCS_AGENT_RELAY_MAX_CONNECTIONS")
         if self.agent_relay_idle_timeout < 10:
             raise ValueError("NCS_AGENT_RELAY_IDLE_TIMEOUT 至少 10 秒（模型首个 token 前可能有停顿）")
+        if self.egress_proxy:
+            self._validate_egress()
+
+    def _validate_egress(self) -> None:
+        if self.egress_bind.strip("[]") in ("0.0.0.0", "::", "*"):
+            raise ValueError("NCS_EGRESS_BIND 不能监听所有地址：出站代理只给沙箱用，留空就是沙箱网桥地址")
+        if not 0 < self.egress_port < 65536:
+            raise ValueError("NCS_EGRESS_PORT 必须是 1-65535 的端口号")
+        if self.egress_port == self.gateway_port:
+            raise ValueError("NCS_EGRESS_PORT 不能和 NCS_GATEWAY_PORT 相同")
+        if not self.egress_allowed_ports or not all(0 < p < 65536 for p in self.egress_allowed_ports):
+            raise ValueError("NCS_EGRESS_ALLOWED_PORTS 必须是 1-65535 的端口号，例如 80,443")
+        if not (1 <= self.egress_per_sandbox <= self.egress_max_connections):
+            raise ValueError("要求 1 <= NCS_EGRESS_PER_SANDBOX <= NCS_EGRESS_MAX_CONNECTIONS")
+        if self.egress_idle_timeout < 10:
+            raise ValueError("NCS_EGRESS_IDLE_TIMEOUT 至少 10 秒")
+        for n in self.egress_block_networks:
+            try:
+                ipaddress.ip_network(n, strict=False)
+            except ValueError:
+                raise ValueError(f"NCS_EGRESS_BLOCK_NETWORKS 里有不合法的网段：{n!r}") from None
 
     @property
     def sandbox_gateway_url(self) -> str:

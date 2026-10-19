@@ -202,7 +202,7 @@ class DockerLauncher(Launcher):
         return base, os.path.join(base, "data"), os.path.join(base, "policy")
 
     def container_config(self, spec: SandboxSpec, data_dir: str, policy_dir: str) -> dict:
-        env = spec.env("/data/home", "/etc/nanocode/policy.json")
+        env = {**self.sandbox_extra_env(spec), **spec.env("/data/home", "/etc/nanocode/policy.json")}
         host = {
             "Binds": [f"{data_dir}:/data", f"{policy_dir}:/etc/nanocode:ro"],
             "NetworkMode": self.network,

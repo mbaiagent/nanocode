@@ -13,6 +13,7 @@ AlmaLinux / RHEL 上更明显：Docker 会把自己建的网桥放进 firewalld 
 | `NCS_DOCKER_BRIDGE` | `ncs-sbx0` | 沙箱网桥的网卡名（`com.docker.network.bridge.name`） |
 | `NCS_DOCKER_SUBNET` | `172.30.250.0/24` | 沙箱网段，宿主机网桥地址是其中第一个（`.1`） |
 | `NCS_GATEWAY_PORT` | `8701` | 模型网关端口，沙箱唯一允许连的宿主机端口 |
+| `NCS_EGRESS_PORT` | 不设 | 只在打开出站代理（`NCS_EGRESS_PROXY=1`，沙箱主机）时设，例如 `3128`：这个端口也放行。不设就只放行网关端口 |
 
 平台第一次启动时按这两个值创建沙箱网络。网络已经存在但网桥名或网段对不上时，**平台拒绝启动**：防火墙规则按它们写，对不上就等于没配。这时删掉旧网络（`docker network rm ncs-sandboxes`，先停掉所有沙箱），让平台重建即可。网段如果和机器上已有的网络冲突，换一个网段，防火墙脚本用同一个值。
 
@@ -40,6 +41,14 @@ sudo NCS_DOCKER_BRIDGE=ncs-sbx0 NCS_DOCKER_SUBNET=172.30.250.0/24 NCS_GATEWAY_PO
 
 它用一张独立的 nftables 表（`inet ncs_sandbox`），按网卡名和来源网段丢弃，只放行网关端口和已建立连接。规则写在 `/etc/nanocode/ncs-sandbox.nft`；要开机生效，在发行版的 nftables 主配置里 `include` 这个文件，并 `systemctl enable nftables`。
 
+## 出站代理端口（可选）
+
+沙箱主机打开出站代理时，两个脚本都加上 `NCS_EGRESS_PORT=3128`。沙箱就只能连网关中继和出站代理这两个端口，其余照样丢弃。代理自己往公网连，是宿主机发出去的流量（output 链），不受这两条规则影响。拦不拦内网，由代理在应用层按目标地址判断（见 [distributed-deploy.md 3.5](../../docs/distributed-deploy.md#35-出站代理沙箱上网默认关)）。
+
+```bash
+sudo NCS_DOCKER_SUBNET=172.30.250.0/24 NCS_GATEWAY_PORT=8701 NCS_EGRESS_PORT=3128 ./ncs-sandbox-firewalld.sh
+```
+
 ## 验证
 
 平台启动过一次（沙箱网络已经建好）、沙箱镜像在本机时：
@@ -49,6 +58,8 @@ sudo NCS_DOCKER_BRIDGE=ncs-sbx0 NCS_DOCKER_SUBNET=172.30.250.0/24 NCS_GATEWAY_PO
 ```
 
 它在沙箱网络里起一个和真实沙箱同样受限的临时容器，去连宿主机网桥地址上的端口。网关端口应该连得上，其它端口应该**超时**（被丢弃）。「拒绝」也算没拦住：包到了宿主机协议栈，换个端口就可能有服务。
+
+带上 `NCS_EGRESS_PORT=3128` 时，它还会检查出站代理：代理端口连得上；沙箱里没有 DNS，也直连不了公网（`PROBE_DIRECT`，默认 `1.1.1.1:443`）；经代理能取到 `PROBE_URL`（默认 `https://example.com/`）；代理拒绝 `10.0.0.1:443`、`169.254.169.254:80`、`127.0.0.1:443`、网桥地址的 22 端口、公网域名的 22 端口，以及明文 `GET http://169.254.169.254/`，这些都要回 403。
 
 ## 沙箱放在另一台机器上时
 

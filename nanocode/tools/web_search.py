@@ -4,7 +4,7 @@
   build(query, count) -> Request    生成 HTTP 请求（方法、URL、头、体）
   parse(text) -> list[SearchResult] 把响应解析成统一结构
 HTTP 由 WebSearch 统一发：强制 https（除非显式允许 http）、解析后固定已校验 IP
-再连接（防 DNS rebinding）、限制响应大小。
+再连接（防 DNS rebinding）、限制响应大小；遵守 HTTP(S)_PROXY / NO_PROXY（见 web.py）。
 
 内置 provider：
   duckduckgo  零配置，抓 html.duckduckgo.com 的 HTML。没有官方 API，可能被限流/改版。
@@ -38,7 +38,7 @@ from html.parser import HTMLParser
 from urllib.parse import parse_qs, urlencode, urlsplit, unquote
 
 from .base import Tool, ToolContext, ToolError
-from .web import _PinnedHTTP, _PinnedHTTPS, _resolve, USER_AGENT, is_public_ip
+from .web import _ip_literal, _resolve, USER_AGENT, is_public_ip, open_connection, proxy_for, proxy_resolves
 
 TIMEOUT = 15.0
 MAX_RESULTS = 10
@@ -393,23 +393,27 @@ class WebSearch(Tool):
         if parts.scheme == "http" and not self.allow_http:
             raise ToolError("搜索 API 必须是 https（自建 SearXNG 等确需 http 时设 NANOCODE_SEARCH_ALLOW_HTTP=1）")
         host, port = parts.hostname, parts.port or (443 if parts.scheme == "https" else 80)
-        ips = self.resolver(host)
-        if not ips:
-            raise ToolError(f"搜索 API {host} 没有可用地址")
-        if not self.allow_private:
-            for ip in ips:
-                if ip not in self.allow_ips and not is_public_ip(ip):
-                    raise ToolError(f"搜索 API {host} 解析到内网地址 {ip}，拒绝访问")
+        # 代理：和 web_fetch 一样（见 web.py）。平台沙箱里域名交给出站代理解析和检查
+        proxy = proxy_for(parts.scheme, host)
+        literal = _ip_literal(host)
+        if proxy and proxy_resolves() and literal is None:
+            ips = [""]
+        else:
+            ips = [literal] if literal else self.resolver(host)
+            if not ips:
+                raise ToolError(f"搜索 API {host} 没有可用地址")
+            if not self.allow_private:
+                for ip in ips:
+                    if ip not in self.allow_ips and not is_public_ip(ip):
+                        raise ToolError(f"搜索 API {host} 解析到内网地址 {ip}，拒绝访问")
         pinned = next((ip for ip in ips if ip in self.allow_ips), ips[0])
         path = parts.path or "/"
         if parts.query:
             path += "?" + parts.query
-        if parts.scheme == "https":
-            conn = _PinnedHTTPS(host, port, pinned, self.timeout, ssl.create_default_context())
-        else:
-            conn = _PinnedHTTP(host, port, pinned, self.timeout)
+        ctx = ssl.create_default_context() if parts.scheme == "https" else None
+        conn, request_target = open_connection(parts.scheme, host, port, pinned, self.timeout, ctx, proxy)
         try:
-            conn.request(request.method, path, body=request.body, headers=request.headers)
+            conn.request(request.method, request_target(path), body=request.body, headers=request.headers)
             resp = conn.getresponse()
             raw = resp.read(MAX_BYTES)
             if resp.status >= 400:
