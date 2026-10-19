@@ -31,6 +31,7 @@ nanocode 的文档分三类：**学习章节**（看懂一个编程 Agent 怎么
 | [configuration.md](configuration.md) | 全部 `NCS_*` 环境变量：默认值、谁读、含义 |
 | [auth-and-admin.md](auth-and-admin.md) | GitHub 登录、邀请码注册、管理员和 `/admin`、用户自带 Key |
 | [security-model.md](security-model.md) | 信任边界、实测状态、已知弱点和在修的安全 issue、出站代理的前置条件 |
+| [cd.md](cd.md) | 持续部署：CI 通过后 GitHub Actions 经 SSH 部署两台机器、安全模型、回滚 |
 | [distributed-deploy.md](distributed-deploy.md) | 分布式部署实操：平台机 + 沙箱机（WireGuard）+ 托管 Postgres / Valkey、故障模式、上线清单 |
 | [deploy/compose/README.md](../deploy/compose/README.md) | 单机部署（docker compose + Caddy / nginx） |
 | [deploy/sandbox-host/README.md](../deploy/sandbox-host/README.md) | 沙箱放到另一台机器（`NCS_LAUNCHER=remote`）的逐步操作 |

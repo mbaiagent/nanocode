@@ -29,6 +29,7 @@
 
 ### CI
 
+- **新增 CD**：`.github/workflows/deploy.yml`，main 上 CI 成功后经 SSH 先部署沙箱机再部署平台机；服务器端 `deploy/cd/`（强制命令 + 受限 sudo + 版本目录 + 健康检查失败自动回滚，保留 3 个版本）。见 [docs/cd.md](docs/cd.md)。
 - 修掉 Windows / macOS 上长期失败的测试（[#93](https://github.com/mbaiagent/nanocode/pull/93)）；CI 加 concurrency、超时，PR 上缩减矩阵（[#98](https://github.com/mbaiagent/nanocode/pull/98)）。
 
 ### 文档

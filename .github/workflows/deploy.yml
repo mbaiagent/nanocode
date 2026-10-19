@@ -1,0 +1,92 @@
+name: Deploy
+
+# 生产部署（CD）。安全模型和配置步骤见 docs/cd.md。
+# 默认：CI 在 main 上的 push 跑成功后自动部署那个提交；也可以手动触发。
+# 想改成「打 tag 才部署」：删掉 workflow_run 段，打开下面的 push.tags 段（sha 取 github.sha）。
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  # push:
+  #   tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "要部署的 main 上的 40 位 commit sha（留空 = 当前 main 最新提交）"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# 同一时间只跑一个部署；新的排队等，不取消正在跑的（半截部署比慢一点更糟）
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # 只部署 main 上 push 触发、且成功的 CI；PR / 其它分支的 CI 不会触发部署
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production   # 环境只允许 main；密钥都放在这个环境里
+    steps:
+      # 不用任何第三方 action（也不 checkout 代码）：服务器端脚本自己从 GitHub 下载对应提交
+      - name: 确定要部署的提交
+        id: sha
+        env:
+          INPUT_SHA: ${{ inputs.sha }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          REF_SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = workflow_run ]; then sha="$RUN_SHA"; elif [ -n "$INPUT_SHA" ]; then sha="$INPUT_SHA"; else sha="$REF_SHA"; fi
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "非法 sha"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "部署 $sha" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 准备 SSH（严格校验主机指纹）
+        env:
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          KEY_SANDBOX: ${{ secrets.DEPLOY_SSH_KEY_SANDBOX }}
+          KEY_PLATFORM: ${{ secrets.DEPLOY_SSH_KEY_PLATFORM }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf '%s\n' "$KEY_SANDBOX" > ~/.ssh/deploy_sandbox
+          printf '%s\n' "$KEY_PLATFORM" > ~/.ssh/deploy_platform
+
+      # 先沙箱机，再平台机：平台依赖沙箱代理的接口，沙箱代理先升级（向后兼容）
+      - name: 部署沙箱机
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST_SANDBOX }}
+          SHA: ${{ steps.sha.outputs.sha }}
+        run: >-
+          ssh -i ~/.ssh/deploy_sandbox -o IdentitiesOnly=yes -o BatchMode=yes
+          -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts
+          -o ConnectTimeout=20 -o ServerAliveInterval=30
+          "deploy@$HOST" "deploy $SHA"
+
+      - name: 部署平台机
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST_PLATFORM }}
+          SHA: ${{ steps.sha.outputs.sha }}
+        run: >-
+          ssh -i ~/.ssh/deploy_platform -o IdentitiesOnly=yes -o BatchMode=yes
+          -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts
+          -o ConnectTimeout=20 -o ServerAliveInterval=30
+          "deploy@$HOST" "deploy $SHA"
+
+      - name: 清理密钥
+        if: always()
+        run: rm -f ~/.ssh/deploy_sandbox ~/.ssh/deploy_platform
