@@ -21,7 +21,7 @@
 | 服务器账号 | 专用用户 `deploy`，无密码（锁定）；`authorized_keys` 由 root 所有，`restrict,command="/usr/local/sbin/nanocode-deploy-ssh"`：无 pty、无转发，不管客户端发什么命令都只会跑强制命令 |
 | 强制命令 | `nanocode-deploy-ssh` 只接受 `deploy <40 位十六进制>`、`status`、`rollback`，其余拒绝 |
 | sudo | `/etc/sudoers.d/nanocode-deploy` 只允许以 root 跑 `/usr/local/sbin/nanocode-deploy` 的这三种参数；脚本 root 所有、0755，deploy 用户改不了 |
-| 部署脚本 | 再次校验 sha；只部署 `main` 上的提交；只从 GitHub https 下载（公开仓库，不需要凭据）；配置在 root 所有的 `/etc/nanocode-deploy.conf`；`flock` 防并发 |
+| 部署脚本 | 再次校验 sha；只部署 `main` 上的提交；只从 GitHub https 下载（公开仓库，不需要凭据）；配置在 root 所有、组 / 其他人不可写的 `/etc/nanocode-deploy.conf`（否则拒绝运行）；临时文件在任何退出路径上都清理；`flock` 防并发 |
 
 泄露 deploy 私钥的最坏情况：攻击者能把服务器重新部署成 **main 上已有的某个提交**（包括旧提交）或回滚——不能执行任意命令、不能拿 shell、不能部署 main 以外的代码。处理：删掉服务器上对应的 `authorized_keys` 行，换新 key。
 
@@ -64,8 +64,9 @@ shred -u deploy_platform deploy_sandbox
 
 ## 回滚
 
-- **自动**：新版本重建或健康检查失败时，脚本自动切回上一个版本并重建，Actions 这次 run 标红。
-- **手动（从有 deploy key 的地方）**：`ssh deploy@<host> rollback`，切到上一个保留的版本目录并重建。
+- **自动**：新版本下载 / 解包 / 重建 / 健康检查任一步失败时，脚本切回上一个版本并重建，**删除失败的版本目录**，Actions 这次 run 标红。
+- **健康历史**：`RELEASES/.healthy` 只记录健康检查通过的版本（最新在最后）。`rollback` 把当前版本移出历史、切到历史里的上一个，连续执行会一路往回退，不会来回切；`prune` 只保留历史里最近 3 个 + 当前版本。
+- **手动（从有 deploy key 的地方）**：`ssh deploy@<host> rollback`，切到上一个健康版本并重建。
 - **手动（root）**：`nanocode-deploy status` 看保留的版本；`nanocode-deploy rollback`；或者直接 `nanocode-deploy deploy <更早的 main sha>`。
 - 两台都要回时，先回平台机，再回沙箱机。
 

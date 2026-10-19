@@ -2,21 +2,21 @@
 
 # —— 平台机 ——
 ROLE=platform
-REPO=mbaiagent/nanocode
+REPO=your-org/nanocode
 LIVE=/srv/nanocode-platform/nanocode            # 软链接，指向当前版本目录（第一次运行会自动从普通目录迁移）
 RELEASES=/srv/nanocode-platform/releases
 COMPOSE_DIR=deploy/compose
 CARRY="deploy/compose/.env deploy/compose/docker-compose.override.yml"
 HEALTH_URL=http://127.0.0.1:8700/healthz        # 要求 ok/launcher=remote/isolated 都为真
-AGENT_HEALTH_URL=http://10.0.0.2:8790/healthz   # 可选：沙箱机代理（WireGuard 地址）
+AGENT_HEALTH_URL=http://10.77.0.2:8790/healthz   # 可选：沙箱机代理（WireGuard 地址）
 KEEP=3
 
 # —— 沙箱机 ——
 # ROLE=sandbox
-# REPO=mbaiagent/nanocode
+# REPO=your-org/nanocode
 # LIVE=/opt/nanocode
 # RELEASES=/opt/nanocode-releases
 # COMPOSE_DIR=deploy/sandbox-host
 # CARRY="deploy/sandbox-host/.env"
-# HEALTH_URL=http://10.0.0.2:8790/healthz
+# HEALTH_URL=http://10.77.0.2:8790/healthz
 # KEEP=3

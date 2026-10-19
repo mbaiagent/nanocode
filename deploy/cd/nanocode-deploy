@@ -12,7 +12,8 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 CONF="${NANOCODE_DEPLOY_CONF:-/etc/nanocode-deploy.conf}"
 [ "$(id -u)" = 0 ] || { echo "必须以 root 运行" >&2; exit 2; }
-[ -f "$CONF" ] && [ "$(stat -c %u "$CONF")" = 0 ] || { echo "缺少 root 所有的 $CONF" >&2; exit 2; }
+[ -f "$CONF" ] && [ ! -L "$CONF" ] && [ "$(stat -c %u "$CONF")" = 0 ] || { echo "缺少 root 所有的 $CONF" >&2; exit 2; }
+[ -z "$(find "$CONF" -perm /022)" ] || { echo "$CONF 不能是组 / 其他人可写" >&2; exit 2; }
 # shellcheck source=/dev/null
 . "$CONF"
 
@@ -22,6 +23,11 @@ KEEP="${KEEP:-3}"
 BRANCH="${BRANCH:-main}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-120}"
 LOCK=/run/nanocode-deploy.lock
+HEALTHY="$RELEASES/.healthy"   # 只记录健康检查通过的版本目录（一行一个，最新在最后）；rollback / prune 只看它
+
+tmp=""; new=""
+cleanup() { [ -n "$tmp" ] && rm -rf -- "$tmp"; return 0; }
+trap cleanup EXIT
 
 log() { printf '[nanocode-deploy %s] %s\n' "$(date '+%F %T %Z')" "$*"; }
 die() { log "错误：$*"; exit 1; }
@@ -41,6 +47,19 @@ migrate() {
     log "迁移现有目录 $LIVE → $dst"
     mv "$LIVE" "$dst"; ln -s "$dst" "$LIVE"
   fi
+  # 历史文件不存在时，把当前（正在跑、视为健康的）版本记进去
+  if [ ! -s "$HEALTHY" ] && [ -L "$LIVE" ]; then readlink -f "$LIVE" > "$HEALTHY"; fi
+}
+
+mark_healthy() {   # 追加到历史末尾（去掉旧的同名行），只保留存在的目录
+  local d="$1" t; t="$(mktemp "$RELEASES/.healthy.XXXX")"
+  { grep -vxF "$d" "$HEALTHY" 2>/dev/null || true; echo "$d"; } | while read -r l; do [ -d "$l" ] && echo "$l"; done > "$t"
+  chmod 644 "$t"; mv -f "$t" "$HEALTHY"
+}
+
+discard() {   # 删掉失败 / 半截的版本目录
+  [ -n "$1" ] && [ -d "$1" ] && [ "$1" != "$(current_dir)" ] && { log "删除失败版本 $1"; rm -rf --one-file-system -- "$1"; }
+  return 0
 }
 
 switch_to() {   # 原子换软链接
@@ -79,13 +98,15 @@ health() {
   log "健康检查通过"
 }
 
-prune() {
-  local cur; cur="$(current_dir)"
-  # 按修改时间新→旧，保留 KEEP 个（当前版本永远保留）
-  ls -1dt "$RELEASES"/*/ 2>/dev/null | sed 's#/$##' | tail -n +"$((KEEP + 1))" | while read -r d; do
-    [ "$d" = "$cur" ] && continue
+prune() {   # 保留历史里最近 KEEP 个健康版本 + 当前版本，其余目录（含不在历史里的）都删
+  local cur keep d; cur="$(current_dir)"
+  keep="$(tail -n "$KEEP" "$HEALTHY" 2>/dev/null; echo "$cur")"
+  for d in "$RELEASES"/*/; do
+    d="${d%/}"; [ -d "$d" ] || continue
+    grep -qxF "$d" <<<"$keep" && continue
     log "清理旧版本 $d"; rm -rf --one-file-system -- "$d"
   done
+  mark_healthy "$cur"   # 顺带把历史里已删除的目录去掉（cur 已在末尾时不变）
 }
 
 on_main() {   # sha 必须是 BRANCH 上的提交（compare: sha...BRANCH 为 ahead / identical）
@@ -106,12 +127,13 @@ do_deploy() {
     log "$sha 已经是当前版本，只做健康检查"; health; return
   fi
 
-  local new="$RELEASES/$sha-$(date +%Y%m%d%H%M%S)" tmp; tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
+  new="$RELEASES/$sha-$(date +%Y%m%d%H%M%S)"; tmp="$(mktemp -d)"
   log "下载 $REPO@$sha"
-  curl -fsSL --max-time 300 --proto '=https' -o "$tmp/src.tar.gz" "https://codeload.github.com/$REPO/tar.gz/$sha"
+  curl -fsSL --max-time 300 --proto '=https' -o "$tmp/src.tar.gz" "https://codeload.github.com/$REPO/tar.gz/$sha" \
+    || die "下载失败"
   mkdir -p "$new"
-  tar -xzf "$tmp/src.tar.gz" -C "$new" --strip-components=1 --no-same-owner --no-same-permissions
+  tar -xzf "$tmp/src.tar.gz" -C "$new" --strip-components=1 --no-same-owner --no-same-permissions \
+    || { discard "$new"; die "解包失败"; }
   echo "$sha" > "$new/DEPLOYED_COMMIT"
   local f
   for f in $CARRY; do
@@ -121,28 +143,33 @@ do_deploy() {
   switch_to "$new"
   log "切换到 $new，开始重建"
   if rebuild && health; then
-    log "部署成功：$sha"; prune; return 0
+    mark_healthy "$new"; log "部署成功：$sha"; prune; return 0
   fi
   log "部署失败，回滚到 ${prev:-（无）}"
   [ -n "$prev" ] || die "没有可回滚的版本"
-  switch_to "$prev"
+  switch_to "$prev"; discard "$new"
   rebuild && health && log "已回滚到 $prev" || log "回滚后健康检查仍失败，需要人工处理"
   exit 1
 }
 
-do_rollback() {
+do_rollback() {   # 当前版本出栈，切到历史里上一个健康版本；连续 rollback 会一路往回退，不会来回切
   migrate
   local cur prev; cur="$(current_dir)"
-  prev="$(ls -1dt "$RELEASES"/*/ | sed 's#/$##' | grep -vxF "$cur" | head -1 || true)"
-  [ -n "$prev" ] || die "没有更早的版本"
+  prev="$(grep -vxF "$cur" "$HEALTHY" | while read -r l; do [ -d "$l" ] && echo "$l"; done | tail -1 || true)"
+  [ -n "$prev" ] || die "历史里没有更早的健康版本"
   log "回滚：$cur → $prev"
-  switch_to "$prev"; touch "$prev"
-  rebuild && health
+  switch_to "$prev"
+  if rebuild && health; then
+    { grep -vxF "$cur" "$HEALTHY" || true; } > "$HEALTHY.new"; mv -f "$HEALTHY.new" "$HEALTHY"
+    mark_healthy "$prev"; log "回滚完成（$cur 已移出健康历史，prune 时删除）"
+  else
+    die "回滚后健康检查失败，需要人工处理"
+  fi
 }
 
 do_status() {
   echo "role=$ROLE current=$(current_dir) commit=$(cat "$LIVE/DEPLOYED_COMMIT" 2>/dev/null || echo '?')"
-  ls -1dt "$RELEASES"/*/ 2>/dev/null | sed 's#/$##'
+  echo "健康历史（旧→新）："; cat "$HEALTHY" 2>/dev/null || true
 }
 
 exec 9>"$LOCK"; flock -n 9 || die "已有部署在跑"
