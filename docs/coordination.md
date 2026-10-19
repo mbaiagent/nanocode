@@ -69,6 +69,8 @@ git checkout -b fix/<自己>-<topic> origin/main
 
 | #100 /model 运行时切换模型 | Muse | `fix/muse-model-cmd` | **已合并到 main** | 已完成 | 实现 /model 斜杠命令：set_model() 重建 provider（忙时/策略锁定拒绝、失败保留原 provider、用量重置） |
 
+| 斜杠命令显示两次 | Muse | `fix/muse-dup-cmd` | 进行中 | 今天 | POST 的 r.output 和 SSE command 事件各渲染一次；改为只由 SSE 统一渲染 |
+
 **空 issue 认领流程**：
 1. 先看 issue 是否被 main 覆盖（`git log --oneline | grep issue号`）
 2. 在本表加一行，写明分支和预计完成时间

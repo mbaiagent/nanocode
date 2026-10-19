@@ -1070,7 +1070,8 @@ $("#form").onsubmit = async (ev) => {
   }
   if (!r.ok) add("error", esc(r.error));
   else if (r.queued) add("note", `⏳ 已排队（第 ${r.position} 位），当前任务完成后自动执行`);
-  else if (r.output) add("note", esc(r.output));
+  // 斜杠命令的输出由 SSE 的 command 事件统一渲染（带命令回显），这里再画一次就重复了
+  else if (r.output && !text.startsWith("/")) add("note", esc(r.output));
 };
 const input = $("#input");
 function autosize() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 200) + "px"; }
@@ -1085,9 +1086,8 @@ $("#mode").onchange = async () => {
   if (!r.ok) {
     add("error", esc(r.error || "切换权限模式失败"));
     $("#mode").value = serverMode;        // 下拉框已经变了而服务端没变：拨回去
-  } else if (r.output) {
-    add("note", esc(r.output));           // 成功：说清楚什么时候生效
   }
+  // 成功不画 note：SSE 的 command 事件会统一渲染（带回显），画了就重复
 };
 
 // 会话列表：下拉切换历史会话，＋开新会话。切换后整页重载，SSE 重放历史事件恢复界面。
