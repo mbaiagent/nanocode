@@ -158,7 +158,7 @@ class WebHardeningTest(unittest.TestCase):
         self.assertNotIn("cdn.jsdelivr.net", html)          # #90：不再从 CDN 加载
         self.assertIn('src="marked.umd.js"', html)
         self.assertIn('src="markdown-safe.js"', html)
-        self.assertIn("sanitizeHtml(marked.parse(esc(text)))", html)   # #89：渲染后必须清洗
+        self.assertIn("sanitizeHtml(markdownToHtml(marked, text))", html)   # #89：渲染后必须清洗；#138：只转义一次
 
     def test_static_js_is_served_locally(self):
         for name in ("marked.umd.js", "markdown-safe.js"):
@@ -189,6 +189,40 @@ class WebHardeningTest(unittest.TestCase):
             "for (const u of good) if (!safeUrl(u)) { console.error('rejected: ' + JSON.stringify(u)); process.exit(1); }"
         )
         subprocess.run(["node", "-e", script, os.path.join(STATIC, "markdown-safe.js")], check=True)
+
+    @unittest.skipUnless(shutil.which("node"), "需要 node 才能跑 JS 纯函数单测")
+    def test_markdown_escapes_once_and_blocks_raw_html(self):
+        """代码块只转义一次（#138），原始 HTML 仍被当文本输出（#89 的 XSS 防护不变）。"""
+        script = r"""
+const marked = require(process.argv[1]);
+const { markdownToHtml } = require(process.argv[2]);
+const fail = (m, out) => { console.error(m + "\n" + out); process.exit(1); };
+let out = markdownToHtml(marked, '```py\nprint("hello") if a < b && c > 0 else None\n```');
+if (!out.includes('print(&quot;hello&quot;) if a &lt; b &amp;&amp; c &gt; 0')) fail("代码块转义不对", out);
+if (out.includes("&amp;quot;") || out.includes("&amp;lt;") || out.includes("&amp;amp;")) fail("代码块被转义了两次", out);
+out = markdownToHtml(marked, 'inline `x<y && "z"` ok');
+if (!out.includes('<code>x&lt;y &amp;&amp; &quot;z&quot;</code>')) fail("行内代码转义不对", out);
+out = markdownToHtml(marked, 'Tom & "Jerry" <b>bold</b> **ok**');
+if (out.includes("<b>") || !out.includes("&lt;b&gt;")) fail("行内原始 HTML 没被转义", out);
+if (!out.includes("<strong>ok</strong>") || out.includes("&amp;quot;")) fail("普通 Markdown 渲染不对", out);
+for (const evil of ['<script>alert(1)</script>', '<img src=x onerror=alert(1)>',
+                    '<div onclick="alert(1)">x</div>\n\npara', 'text <iframe src="javascript:alert(1)"></iframe>',
+                    '<!-- c --><svg onload=alert(1)>']) {
+  out = markdownToHtml(marked, evil);
+  if (/<(script|img|div|iframe|svg)\b/i.test(out)) fail("原始 HTML 被原样输出: " + evil, out);
+}
+out = markdownToHtml(marked, '[x](https://e.com/?a=1&b="2")');
+if (!out.includes('href="https://e.com/?a=1&amp;b=%222%22"') && !out.includes('href="https://e.com/?a=1&amp;b=&quot;2&quot;"')) fail("链接属性转义不对", out);
+"""
+        subprocess.run(["node", "-e", script, os.path.join(STATIC, "marked.umd.js"),
+                        os.path.join(STATIC, "markdown-safe.js")], check=True)
+
+    def test_index_does_not_pre_escape_before_marked(self):
+        """回归：先 esc() 再 marked.parse 会让代码块显示 &quot;（#138）。"""
+        with open(os.path.join(STATIC, "index.html"), encoding="utf-8") as f:
+            html = f.read()
+        self.assertNotIn("marked.parse(esc(", html)
+        self.assertIn("sanitizeHtml(markdownToHtml(marked, text))", html)
 
 
 if __name__ == "__main__":
