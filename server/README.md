@@ -185,6 +185,12 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 | `NCS_REMOTE_GATEWAY_URL` | 远程沙箱访问网关的地址（沙箱主机上的中继）；空 = 启动时问代理 | — |
 | `NCS_AGENT_BIND` / `NCS_AGENT_UPSTREAM_GATEWAY` / `NCS_AGENT_RELAY_BIND` | 沙箱代理（`python -m nanocode_server sandbox-agent`）：监听的隧道地址（不能是 0.0.0.0）/ 平台的网关 / 中继监听地址（空 = 沙箱网桥） | — |
 | `NCS_AGENT_RELAY_MAX_CONNECTIONS` / `NCS_AGENT_RELAY_PER_SANDBOX` / `NCS_AGENT_RELAY_IDLE_TIMEOUT` | 沙箱代理的网关中继：全局连接上限 / 每个沙箱上限 / 空闲断开秒数 | `128` / `16` / `300` |
+| `NCS_EGRESS_PROXY` | 沙箱代理里的出站代理：沙箱经它访问公网 HTTP/HTTPS，内网、元数据、本机地址一律拒绝，并把 `HTTP(S)_PROXY` / `NO_PROXY` / `NANOCODE_EGRESS_PROXY=1` 注入沙箱。**生产环境等 #134 落地再开**，打开前先在防火墙放行端口。见 [distributed-deploy.md 3.5](../docs/distributed-deploy.md#35-出站代理沙箱上网默认关) | `0` |
+| `NCS_EGRESS_BIND` / `NCS_EGRESS_PORT` | 出站代理的监听地址（空 = 和网关中继相同；不能是 0.0.0.0）/ 端口（不能等于网关端口） | 空 / `3128` |
+| `NCS_EGRESS_ALLOWED_PORTS` | 允许的目标端口（CONNECT 和明文 HTTP 共用） | `80,443` |
+| `NCS_EGRESS_MAX_CONNECTIONS` / `NCS_EGRESS_PER_SANDBOX` / `NCS_EGRESS_IDLE_TIMEOUT` | 出站代理：全局连接上限 / 每个沙箱上限 / 空闲断开秒数 | `64` / `8` / `120` |
+| `NCS_EGRESS_ALLOW_DOMAINS` / `NCS_EGRESS_DENY_DOMAINS` | 域名白名单（非空时只放行这些，含子域名）/ 黑名单（先于白名单） | 空 |
+| `NCS_EGRESS_BLOCK_NETWORKS` | 额外拦住的网段（WireGuard 网段等）。私网、CGNAT、链路本地、ULA、沙箱网段、本机地址都已经自动拦了 | 空 |
 | `NCS_K8S_*` | 命名空间、运行时类、存储类、工作区大小、API 地址 | 见 `config.py` |
 | `NCS_MAX_SANDBOXES` / `NCS_MAX_SESSIONS_PER_USER` | 总容量 / 每人同时运行的会话数 | 200 / 3 |
 | `NCS_IDLE_TIMEOUT` / `NCS_TOKEN_TTL` | 空闲回收秒数 / 网关令牌有效期（也是沙箱最长存活时间） | 1800 / 43200 |
@@ -200,4 +206,4 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 - 容量满时直接拒绝，没有排队。
 - 审计日志写在沙箱里，Agent 能改，还不能当作可信审计。
 - 没有指标、链路追踪和告警，没有压测数据，没有计费和管理后台。
-- Docker 沙箱的网络隔离依赖 Docker 的内部网络，没有像 NetworkPolicy 那样按端口精细控制；Docker 沙箱默认也装不了依赖（出不了外网），需要的话给沙箱网络加一个包镜像代理。
+- Docker 沙箱的网络隔离依赖 Docker 的内部网络，没有像 NetworkPolicy 那样按端口精细控制；Docker 沙箱默认也装不了依赖（出不了外网），远程沙箱（`deploy/sandbox-host`）可以打开出站代理（`NCS_EGRESS_PROXY`，默认关，生产等 #134），单机 Docker / K8s 模式还没有。

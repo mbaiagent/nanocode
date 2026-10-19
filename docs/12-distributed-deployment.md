@@ -310,7 +310,7 @@ PYTHONPATH=server:. python3 -m nanocode_server demo --users 10   # 模拟 10 个
 | 检查项 | 状态 |
 |---|---|
 | 每个会话运行在强隔离沙箱里，有资源限制 | ✅ Docker（实测）、K8s Pod 清单（gVisor，需在集群验证） |
-| 沙箱默认禁止出站，只放行白名单 | ✅ Docker 内部网络（实测出不了外网和元数据地址，只能访问网关）；K8s NetworkPolicy（需在集群验证） |
+| 沙箱默认禁止出站，只放行白名单 | ✅ Docker 内部网络（实测出不了外网和元数据地址，只能访问网关）；K8s NetworkPolicy（需在集群验证）。远程沙箱可选出站代理（`NCS_EGRESS_PROXY`，默认关；只放 HTTP/HTTPS、拦内网、可选域名白名单；生产等 #134），见 [distributed-deploy.md 3.5](distributed-deploy.md#35-出站代理沙箱上网默认关) |
 | 沙箱里没有真实的模型 Key | ✅ 只有网关令牌 |
 | 登录、会话授权、跨租户访问测试 | ✅ 端到端测试 + 多用户模拟 |
 | `provider`、`base_url`、`headers` 只能由平台设置 | ✅ 平台策略 + 网关按会话强制模型 |

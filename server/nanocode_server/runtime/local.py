@@ -227,6 +227,7 @@ class LocalLauncher(Launcher):
         import nanocode
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(("NCS_", "NANOCODE_")) and not k.endswith(_SECRET_SUFFIXES)}
+        env.update(self.sandbox_extra_env(spec))
         env.update(spec.env(home, policy_path))
         env["PYTHONPATH"] = os.path.dirname(os.path.dirname(os.path.abspath(nanocode.__file__)))
         cmd = [sys.executable, "-m", "nanocode", *spec.args("127.0.0.1", port, workspace)]

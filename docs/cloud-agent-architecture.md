@@ -234,6 +234,7 @@ flowchart LR
   - 白名单一般放包仓库（PyPI、npm）、代码托管平台、模型网关。
   - 出站统一走**代理**，才好做域名级白名单和审计（只靠 IP 防火墙挡不住 CDN 后面的域名）。
 - **内网**：沙箱绝对不能访问宿主机的管理端口、云厂商元数据地址（`169.254.169.254`）、数据库和内部服务。
+- **nanocode 的做法**（远程沙箱，`NCS_EGRESS_PROXY`，默认关）：沙箱机上的沙箱代理进程里内置一个只放 HTTP/HTTPS 的出站代理。沙箱没有 DNS，防火墙只放行模型 relay 和代理两个端口；`HTTP(S)_PROXY` 指向代理，`NO_PROXY` 里有 relay 地址，所以模型调用不经过它。代理自己解析域名，解析结果里只要有一个地址落在私网、CGNAT、本机、链路本地（含元数据）、ULA、WireGuard 网段、沙箱网段或沙箱机自己的地址里，就整个拒绝。检查过哪个 IP 就连哪个 IP，防 DNS 重绑定。它还有每沙箱连接上限、空闲超时、可选的域名白名单 / 黑名单，访问日志只记域名和字节数。细节见 [distributed-deploy.md 3.5](distributed-deploy.md#35-出站代理沙箱上网默认关)。**生产环境打开的前提是沙箱里没有真实 Key 和长期令牌（#134）**，否则能上网就能把它们外传。相关：#135（审计日志可被沙箱篡改）、#136（读敏感文件默认要确认）。
 - **跨机**：控制面和沙箱节点之间走私网或加密隧道（WireGuard、Tailscale 等），Cursor 文档里就提到可以用 Tailscale 接私有网络。
 
 ---
@@ -308,6 +309,7 @@ flowchart LR
     CP -->|NCS_LAUNCHER=remote<br/>共享密钥| AG
     AG --> D1 & D2
     D1 & D2 -->|只能连 relay| RL
+    D1 & D2 -.->|出站代理（默认关）<br/>只放 HTTP/HTTPS| EG[公网]
     RL -->|WireGuard| GW
     GW --> LLM[(模型 API)]
     CP --- PG[(托管 Postgres)]
@@ -320,7 +322,8 @@ flowchart LR
 | 认证 | GitHub OAuth + 邀请码，服务端会话 | ✅ |
 | 沙箱里不放 Key | 用户 Key 留在网关，沙箱经 relay 调模型 | ✅ |
 | 状态外置 | 托管 Postgres + Valkey | ✅（冷启动重试行为还要核实） |
-| 沙箱网络隔离 | Docker `internal` 网络，防火墙只放行 relay 端口（#123 / PR #124） | ✅ 基本到位，但只覆盖"不能访问宿主"，没有出站白名单代理 |
+| 沙箱网络隔离 | Docker `internal` 网络，防火墙只放行 relay 端口（#123 / PR #124） | ✅ 不能访问宿主 |
+| 出站控制 | 沙箱机内置出站代理：只放 HTTP/HTTPS，代理自己解析域名并拦内网，防重绑定，可选域名白名单，按沙箱记访问日志（`NCS_EGRESS_PROXY`，默认关） | ⚠️ 代码到位，生产启用等 #134（沙箱里还有长期令牌） |
 | 隔离强度 | Docker（runc），共享内核 | ⚠️ 弱于 gVisor / microVM |
 | 调度 | 单台沙箱机，没有调度器 | ⚠️ |
 | 预热池 | 无，每次冷启动 | ⚠️ |
@@ -337,7 +340,7 @@ flowchart LR
 **阶段 1：更强的隔离**
 - 沙箱机上给 Docker 加 gVisor 运行时（`runsc`），代理按配置选 `--runtime=runsc`；先跑现有测试，确认 syscall 兼容性。
 - 加固默认值：非 root、只读根文件系统 + 可写工作区卷、`--cap-drop=ALL`、`no-new-privileges`。
-- 出站：加一个出站代理做域名白名单（包仓库 + GitHub），默认断网。
+- 出站：出站代理已实现（默认关，见 distributed-deploy.md 3.5）。先做 #134（沙箱里只放短期、只能访问 relay 的令牌），再在生产环境打开，并用 `NCS_EGRESS_ALLOW_DOMAINS` 收紧到包仓库加 GitHub。
 - microVM（Firecracker / Kata）留到能拿到带 `/dev/kvm` 的机器再评估。
 
 **阶段 2：工作区快照**

@@ -16,7 +16,12 @@
   - 重定向每一跳都重新检查，次数有上限；
   - 下载大小、耗时、返回的字符数都有上限；只处理文本类内容。
 
-仍然没有处理的：公司代理（不走 HTTP_PROXY）、需要登录的页面、要执行 JS 才有内容的页面。
+代理：遵守 HTTP_PROXY / HTTPS_PROXY / NO_PROXY（大小写都认，和 urllib 一样；只支持 http:// 代理）。
+  - 一般情况（本机、公司代理）：仍然先在本地解析并检查每个地址，再经代理连接；
+  - 平台沙箱（NANOCODE_EGRESS_PROXY=1，由沙箱代理注入）：沙箱里没有 DNS，域名交给出站代理解析，
+    内网检查和防重绑定由代理做（server/nanocode_server/egress.py）；IP 字面量仍在本地先拦一次。
+
+仍然没有处理的：需要登录的页面、要执行 JS 才有内容的页面。
 """
 
 from __future__ import annotations
@@ -26,7 +31,9 @@ import ipaddress
 import re
 import socket
 import ssl
+import os
 import time
+import urllib.request
 import zlib
 from html.parser import HTMLParser
 from urllib.parse import quote, urljoin, urlsplit
@@ -74,9 +81,62 @@ def is_public_ip(ip: str) -> bool:
     return addr.is_global and not addr.is_multicast
 
 
+def _ip_literal(host: str) -> str | None:
+    """host 本身就是一个 IP（含 2130706433、0x7f.1 这类数字写法）时返回规范写法，否则 None。不查 DNS。"""
+    try:
+        return socket.inet_ntoa(socket.inet_aton(host))
+    except OSError:
+        pass
+    try:
+        return str(ipaddress.ip_address(host.strip("[]")))
+    except ValueError:
+        return None
+
+
+def proxy_for(scheme: str, host: str) -> tuple[str, int] | None:
+    """这个地址该走哪个代理（HTTP_PROXY / HTTPS_PROXY，NO_PROXY 里的不走）；不走代理返回 None。"""
+    proxies = urllib.request.getproxies_environment()
+    url = proxies.get(scheme)
+    if not url or urllib.request.proxy_bypass_environment(host, proxies):
+        return None
+    try:
+        parts = urlsplit(url if "://" in url else "http://" + url)
+        port = parts.port or 80
+    except ValueError:
+        return None
+    if parts.scheme.lower() != "http" or not parts.hostname:
+        return None                 # 只支持 http:// 代理（socks、https 代理不认，按直连处理）
+    return parts.hostname, port
+
+
+def proxy_resolves() -> bool:
+    """平台沙箱：出站代理负责解析和内网检查（沙箱里没有 DNS）。"""
+    return os.environ.get("NANOCODE_EGRESS_PROXY", "").strip() == "1"
+
+
+def open_connection(scheme: str, host: str, port: int, ip: str, timeout: float, context, proxy):
+    """建连接，返回 (连接, 把 origin-form 路径变成这条连接要发的请求目标的函数)。
+
+    直连：连到检查过的 ip，Host 和 TLS 校验用 host（防重绑定）。
+    代理：https 走 CONNECT 隧道（TLS 仍按 host 校验证书，代理看不到内容）；http 发绝对地址。
+    """
+    if proxy is None:
+        if scheme == "https":
+            return _PinnedHTTPS(host, port, ip, timeout, context), lambda path: path
+        return _PinnedHTTP(host, port, ip, timeout), lambda path: path
+    phost, pport = proxy
+    if scheme == "https":
+        conn = http.client.HTTPSConnection(phost, pport, timeout=timeout, context=context)
+        conn.set_tunnel(host, port)
+        return conn, lambda path: path
+    authority = (f"[{host}]" if ":" in host else host) + ("" if port == 80 else f":{port}")
+    return http.client.HTTPConnection(phost, pport, timeout=timeout), lambda path: f"http://{authority}{path}"
+
+
 class _Target:
-    def __init__(self, url, scheme, host, port, target, ip):
+    def __init__(self, url, scheme, host, port, target, ip, proxy=None):
         self.url, self.scheme, self.host, self.port, self.target, self.ip = url, scheme, host, port, target, ip
+        self.proxy = proxy
 
 
 # ---------------------------------------------------------------- 固定地址的连接
@@ -231,15 +291,20 @@ class WebFetch(Tool):
             host = parts.hostname.encode("idna").decode("ascii")
         except UnicodeError as e:
             raise ToolError(f"域名不合法：{parts.hostname}") from e
-        ips = self.resolver(host)
-        if not ips:
-            raise ToolError(f"无法解析域名 {host}")
-        for ip in ips:
-            if ip not in self.allow_ips and not is_public_ip(ip):
-                raise ToolError(f"{host} 解析到内网 / 本机地址 {ip}，web_fetch 不允许访问（防止被用来探测内网或读取云服务凭证）")
+        proxy = proxy_for(scheme, host)
+        literal = _ip_literal(host)
+        if proxy and proxy_resolves() and literal is None:
+            ips = [""]              # 平台沙箱：域名交给出站代理解析和检查
+        else:
+            ips = [literal] if literal else self.resolver(host)
+            if not ips:
+                raise ToolError(f"无法解析域名 {host}")
+            for ip in ips:
+                if ip not in self.allow_ips and not is_public_ip(ip):
+                    raise ToolError(f"{host} 解析到内网 / 本机地址 {ip}，web_fetch 不允许访问（防止被用来探测内网或读取云服务凭证）")
         path = quote(parts.path or "/", safe="/%:@!$&'()*+,;=~-._")
         target = path + (("?" + quote(parts.query, safe="=&?/%:@!$'()*+,;~-._")) if parts.query else "")
-        return _Target(url, scheme, host, port or (443 if scheme == "https" else 80), target, ips[0])
+        return _Target(url, scheme, host, port or (443 if scheme == "https" else 80), target, ips[0], proxy)
 
     # -------------------------------------------------------- 取一个网页
 
@@ -268,13 +333,10 @@ class WebFetch(Tool):
         raise ToolError(f"重定向次数过多（超过 {MAX_REDIRECTS} 次），最后停在 {url[:200]}")
 
     def _request(self, t: _Target):
-        if t.scheme == "https":
-            ctx = self.ssl_context or ssl.create_default_context()
-            conn = _PinnedHTTPS(t.host, t.port, t.ip, self.timeout, ctx)
-        else:
-            conn = _PinnedHTTP(t.host, t.port, t.ip, self.timeout)
+        ctx = (self.ssl_context or ssl.create_default_context()) if t.scheme == "https" else None
+        conn, request_target = open_connection(t.scheme, t.host, t.port, t.ip, self.timeout, ctx, t.proxy)
         try:
-            conn.request("GET", t.target, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "gzip",
+            conn.request("GET", request_target(t.target), headers={"User-Agent": USER_AGENT, "Accept-Encoding": "gzip",
                                                    "Accept": "text/html,application/json,text/plain;q=0.9,*/*;q=0.5"})
             return conn.getresponse(), conn
         except (TimeoutError, socket.timeout) as e:
