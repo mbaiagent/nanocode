@@ -82,6 +82,9 @@ services:
       NCS_LAUNCHER: docker
       NCS_SANDBOX_IMAGE: ${NCS_SANDBOX_IMAGE:-nanocode-sandbox:latest}
       NCS_DOCKER_RUNTIME: ${NCS_DOCKER_RUNTIME:-}
+      # #123：沙箱网桥名和网段固定下来，宿主机防火墙（deploy/firewall/）按它们只放行网关端口
+      NCS_DOCKER_BRIDGE: ${NCS_DOCKER_BRIDGE:-ncs-sbx0}
+      NCS_DOCKER_SUBNET: ${NCS_DOCKER_SUBNET:-172.30.250.0/24}
       NCS_SANDBOX_CPU: ${NCS_SANDBOX_CPU:-1}
       NCS_SANDBOX_MEMORY: ${NCS_SANDBOX_MEMORY:-2Gi}
       NCS_MAX_SANDBOXES: ${NCS_MAX_SANDBOXES:-50}

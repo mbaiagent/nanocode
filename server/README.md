@@ -44,7 +44,7 @@ docker build -f deploy/Dockerfile.sandbox -t nanocode-sandbox:latest .
 NCS_AUTH=dev PYTHONPATH=server:. python3 -m nanocode_server        # auto 会检测到镜像，改用 Docker
 ```
 
-Docker 沙箱：非 root、只读根文件系统、去掉全部 capabilities、禁止提权、限制 CPU / 内存 / 进程数，放在一个内部网络里——**新创建的 Docker 网络默认出不了外网、访问不了云元数据地址，容器之间也不通，只能访问宿主机上的模型网关**（已实测）。注意：如果复用已有的 Docker 网络，`Internal` 标志不会被重新校验，需要自己确认网络隔离。可以用 `NCS_DOCKER_RUNTIME=runsc` 换成 gVisor。
+Docker 沙箱：非 root、只读根文件系统、去掉全部 capabilities、禁止提权、限制 CPU / 内存 / 进程数，放在一个内部网络里——**Docker 网络出不了外网、访问不了云元数据地址，容器之间也不通**（已实测；复用已有网络时会校验 internal、关闭容器间通信、网桥名和网段，不符就拒绝启动）。internal 网络**挡不住沙箱访问宿主机网桥地址上的其它端口**（sshd、nginx……），必须在宿主机上配防火墙，只放行网关端口：见 [deploy/firewall/](../deploy/firewall/README.md)（#123）。可以用 `NCS_DOCKER_RUNTIME=runsc` 换成 gVisor。
 
 ## 架构
 
@@ -179,6 +179,7 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 | `NCS_SANDBOX_MCP_SERVERS` | 给每个沙箱配的 MCP 服务器，JSON 对象（格式同 settings.json 的 `mcpServers`）或 JSON 文件路径。用户和项目自己配的 MCP 服务器一律不生效（能执行命令）；命令要在沙箱镜像里存在，Docker / K8s 沙箱没有外网 | 空 |
 | `NCS_SANDBOX_CPU` / `NCS_SANDBOX_MEMORY` | 每个沙箱的资源上限 | `1` / `2Gi` |
 | `NCS_DOCKER_RUNTIME` / `NCS_DOCKER_NETWORK` | Docker 运行时（如 `runsc`）/ 沙箱网络名 | — / `ncs-sandboxes` |
+| `NCS_DOCKER_BRIDGE` / `NCS_DOCKER_SUBNET` | 沙箱网桥网卡名 / 沙箱网段（宿主机防火墙按它们写规则，见 deploy/firewall/；空 = Docker 自动分配） | `ncs-sbx0` / `172.30.250.0/24` |
 | `NCS_K8S_*` | 命名空间、运行时类、存储类、工作区大小、API 地址 | 见 `config.py` |
 | `NCS_MAX_SANDBOXES` / `NCS_MAX_SESSIONS_PER_USER` | 总容量 / 每人同时运行的会话数 | 200 / 3 |
 | `NCS_IDLE_TIMEOUT` / `NCS_TOKEN_TTL` | 空闲回收秒数 / 网关令牌有效期（也是沙箱最长存活时间） | 1800 / 43200 |

@@ -32,6 +32,18 @@ curl -s http://127.0.0.1:8700/healthz              # {"ok": true, "launcher": "d
 curl -sI https://nanocode.aipulse.lol/login        # 证书申请成功后 200
 ```
 
+### 宿主机防火墙（必做，#123）
+
+沙箱的 internal 网络挡得住外网，挡不住"沙箱 → 宿主机网桥地址上的 sshd / nginx 等端口"。平台第一次启动、建好沙箱网络后，在宿主机上执行：
+
+```bash
+cd deploy/firewall
+sudo NCS_DOCKER_SUBNET=172.30.250.0/24 NCS_GATEWAY_PORT=8701 ./ncs-sandbox-firewalld.sh   # 没有 firewalld：./ncs-sandbox-nftables.sh
+./check-sandbox-isolation.sh                                                             # 网关端口 open，其它 timeout 才算通过
+```
+
+细节（为什么按来源网段、默认 zone / eth0 的坑）见 [deploy/firewall/README.md](../firewall/README.md)。
+
 ## 用已有的 nginx（代替 Caddy）
 
 机器上 80/443 已经被 nginx 占着时，不启用 `caddy` profile，用 [nginx.example.conf](nginx.example.conf)：

@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 from dataclasses import dataclass, field
 
 from . import __version__
@@ -28,6 +29,25 @@ from .permissions import MODES, PermissionManager
 from .tools import ToolRegistry, default_tools
 from .tools.planning import STATUS_ICON
 from .trust import TrustFn, TrustStore, apply_trust
+
+_SID_LOCK = threading.Lock()
+_last_sid_time: datetime.datetime | None = None
+
+
+def new_session_id() -> str:
+    """按时间生成的会话编号（带微秒），同一进程内保证不重复、递增。
+
+    Windows 上 datetime.now() 的精度只有十几毫秒：开新会话后马上 /clear，两次拿到同一个时间戳，
+    新旧会话就共用一个编号（CI 上 test_clear_returns_new_session_id 偶发失败）。
+    撞上（或时钟回拨）时取上一个编号的时间再加 1 微秒。
+    """
+    global _last_sid_time
+    now = datetime.datetime.now()
+    with _SID_LOCK:
+        if _last_sid_time is not None and now <= _last_sid_time:
+            now = _last_sid_time + datetime.timedelta(microseconds=1)
+        _last_sid_time = now
+        return now.strftime("%Y%m%d-%H%M%S-%f")
 
 
 def _read_json(path: str) -> dict:
@@ -153,7 +173,7 @@ class Session:
         s = self.settings
         self.bus = EventBus()
         # 带微秒：同一秒启动两个进程（同项目、同秒）会共用一个会话文件并互相覆盖（#47）
-        self.session_id = session_id or datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        self.session_id = session_id or new_session_id()
         # 附加在系统提示末尾的一段话（Web 面板用它提醒"还有别的会话在同一目录并行工作"）；空串表示没有
         self.system_note = lambda: ""
         if self._audit_writer is not None:
@@ -365,7 +385,7 @@ class Session:
     def new_session(self) -> str:
         """开新会话：先保存当前，再清空。"""
         self.save()
-        sid = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        sid = new_session_id()
         d = os.path.join(self.data_dir, "sessions")
         # 极小概率撞上已有的 id（比如 1 秒内开了两次），往后挪直到不重
         while os.path.exists(os.path.join(d, f"{sid}.json")):
@@ -507,7 +527,7 @@ class Session:
             return "\n".join(lines), None
         if name == "clear":
             a.reset()
-            self.session_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            self.session_id = new_session_id()
             return "对话已清空", None
         if name == "compact":
             summary = a.compact(focus=arg)
