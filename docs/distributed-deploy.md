@@ -318,10 +318,10 @@ sequenceDiagram
 |---|---|
 | 用户点停止、空闲回收（`NCS_IDLE_TIMEOUT`）、管理员停用账号 | 先停容器（**不等快照**），再在后台打包上传 |
 | 换模型 | 停了马上重启，不存快照 |
-| 删除会话 | 停容器、标记删除；后台快照结束（成功或最终失败）后才删本地工作区。`NCS_SNAPSHOT_ON_DELETE=0` 则直接删、不留快照 |
+| 删除会话 | 停容器、标记删除；默认（`NCS_SNAPSHOT_PURGE_ON_DELETE=1`）在后台**删掉桶里这个会话的全部快照**，再删本地工作区（排着的快照先做完，免得删完又传上去一份）。关掉 purge 并设 `NCS_SNAPSHOT_ON_DELETE=1`：改为先存最后一份再删本地，云端快照留着方便误删找回 |
 | 打开已停止的会话 | 本地有工作区：直接启动。本地没有（换了沙箱机、磁盘清过）且会话以前启动过：先下载最近一份恢复再启动 |
 | 同一个会话的快照还在后台跑时又被打开 | 启动先等它结束（最多 5 分钟），不会一边打包一边写 |
-| 手动 | `POST /api/sessions/<id>/snapshot`（会话主人，运行中也可以）；`GET /api/sessions/<id>/snapshots` 列出快照 |
+| 手动 | `POST /api/sessions/<id>/snapshot`（会话主人，运行中也可以）；`GET /api/sessions/<id>/snapshots` 列出快照。手动快照**单独一个名额**、不占后台的 2 个名额；已有手动快照在跑就立即回 409，不排队，所以连点也挡不住别人的停止快照 |
 | 管理员 | `GET /api/admin/snapshots`：上传 / 失败 / 重试 / 恢复 / 清理计数和最近一次错误 |
 | 控制面退出 | 不再等重试退避；正在上传的最多等 30 秒 |
 
@@ -334,7 +334,7 @@ sequenceDiagram
 打包时：
 
 - **不跟随符号链接**：用 `os.fwalk` + `O_NOFOLLOW` 按目录 fd 逐级打开，打包过程中把文件换成链接也绕不过去。沙箱里 `ln -s /etc/shadow x` 不会把宿主机文件打进快照。
-- 只收普通文件、目录和**指向快照内部的相对**符号链接；设备、FIFO、socket、指向外面的链接一律跳过（计入 `skipped`）。
+- 只收普通文件、目录和**指向快照内部的相对**符号链接（字符串检查 + 按磁盘上的真实解析确认，链式链接也算）；设备、FIFO、socket、指向外面的链接一律跳过（计入 `skipped`）。
 - 权限去掉 setuid / setgid / sticky，属主写成 0。
 - 未压缩总大小超过 `NCS_SNAPSHOT_MAX_BYTES` 直接失败，不传半个快照；文件数上限 20 万。
 - 默认忽略（按文件名 / 目录名匹配，任意层级）：`node_modules`、`.venv`、`venv`、`__pycache__`、`.cache`、`.npm`、`.pnpm-store`、`.yarn`、`.mypy_cache`、`.pytest_cache`、`.ruff_cache`、`.tox`、`.nox`、`.gradle`、`.next`、`.nuxt`、`.turbo`、`.parcel-cache`、`*.pyc`。追加用 `NCS_SNAPSHOT_IGNORE`。
@@ -343,9 +343,11 @@ sequenceDiagram
 
 - 不能有绝对路径、`..`、反斜杠、盘符；顶层只能是 `workspace/` 或 `home/`；不能有重复路径；
 - 只允许普通文件、目录、符号链接；**硬链接、字符 / 块设备、FIFO 一律拒绝**；
-- 符号链接必须是相对的、解析后仍在快照根目录里；任何路径的上级都不能是归档里的符号链接（"先建链接、再顺着链接写文件"的穿越）；
-- 解压后总大小 ≤ `NCS_SNAPSHOT_MAX_BYTES`，下载的压缩包 ≤ 上限 + 5% + 16 MiB（防解压炸弹）；
-- 解压到全新的临时目录：文件用 `O_CREAT|O_EXCL|O_NOFOLLOW` 创建，符号链接最后才建，全部成功后才换进工作区位置；本地已有非空工作区时**不覆盖**。
+- 符号链接必须是相对的，并且**按归档里的链接表逐段模拟解析**（遇到归档内的链接就展开，`..` 作用在展开后的物理位置上，最多展开 40 次、成环即拒绝），最终必须落在 `workspace/` 或 `home/` 下。只做字符串规范化挡不住链式链接，例如 `home/a/b/k -> ../../../workspace` 加 `workspace/l -> ../home/a/b/k/../../..`，两条各自看都在里面，物理上却指到根目录上两级——这个例子就是测试用例；
+- 任何路径的上级都不能是归档里的符号链接（"先建链接、再顺着链接写文件"的穿越）；
+- **流式读取**（不先把全部成员头读进内存）：边读边计数，文件数超过 20 万或解压后总大小超过 `NCS_SNAPSHOT_MAX_BYTES` 立即停止；下载的压缩包 ≤ 上限 + 5% + 16 MiB（防解压炸弹）；
+- 解压到全新的临时目录：文件用 `O_CREAT|O_EXCL|O_NOFOLLOW` 创建，符号链接全部读完、整体校验通过后最后才建，全部成功后才换进工作区位置；本地已有非空工作区时**不覆盖**；
+- 下载 / 上传预签名地址**不跟随 HTTP 重定向**（对象存储不该回 3xx），少一个被引到别处的口子。
 - Docker 启动器把工作区 chown 给沙箱用户时不跟随符号链接（本 PR 一并修复：以前 `os.chown` 会跟随链接，沙箱里的 `ln -s /etc/shadow` 能让 root 把宿主机文件交给沙箱用户）。
 
 这些都有测试：`server/tests/test_snapshots.py` 的 `TarTraversalTest`、`PackRestoreTest`。
@@ -353,7 +355,8 @@ sequenceDiagram
 ### 10.4 保留与失败
 
 - **对象 key**：`<NCS_S3_PREFIX>/<用户 id>/<会话 id>/<UTC 时间到毫秒>Z.tar.gz`，例如 `snapshots/gh-12345/AbCdEfGh12345678/20260101T120000123Z.tar.gz`。用户 id 只保留 `[A-Za-z0-9._-]`，有替换时加一段哈希防撞。
-- **保留**：每次上传成功后列出这个会话的快照，只留最近 `NCS_SNAPSHOT_KEEP` 份（默认 3）。删掉的会话（`NCS_SNAPSHOT_ON_DELETE=1`）最后那几份会一直留着，方便误删找回——给桶配生命周期规则自动清理（见 10.5）。
+- **保留**：每次上传成功后列出这个会话的快照，只留最近 `NCS_SNAPSHOT_KEEP` 份（默认 3）。
+- **删除会话**：默认连云端快照一起删（`NCS_SNAPSHOT_PURGE_ON_DELETE=1`，隐私优先）。清理失败重试 3 次，之后只记日志（`[snapshot] purge failed`，计数 `purge_failed`），桶的生命周期规则兜底。关掉 purge 时这个会话的快照会一直留在桶里，直到生命周期规则清掉。
 - **上传失败**：后台重试 3 次（间隔 5 秒、30 秒），**从不阻塞停止**；超过大小上限这类"重试也没用"的错误不重试。每次失败都有一行日志，`/api/admin/snapshots` 里计数。
 - **清理失败**：只记日志，下次上传成功时再清。
 - **恢复失败**：最近一份坏了就试更早的（网络错误每份重试一次）；**全都恢复不了，这次启动失败**并把原因显示给用户——不能拿空工作区启动，否则下次停止时空快照会把好快照挤出保留名额。处理：查日志 → 修好对象存储连接后重试；确认快照真的都坏了，删掉这个会话前缀下的对象后再打开（得到空工作区）。
@@ -365,6 +368,8 @@ sequenceDiagram
 [snapshot] restored session=<id> from=<时间>Z.tar.gz files=… bytes=…
 [snapshot] restore failed session=<id> from=… attempt=1: …
 [snapshot] prune failed session=<id>: …
+[snapshot] purged session=<id> objects=…
+[snapshot] purge failed session=<id> attempt=1/3: …
 ```
 
 日志和报错里**不会**出现预签名地址的查询串（里面有签名）和密钥。
@@ -430,7 +435,8 @@ docker compose logs platform | grep '\[snapshot\] uploaded'
 | `NCS_SNAPSHOT_KEEP` | 平台机 | 每个会话保留几份（1–100） | `3` |
 | `NCS_SNAPSHOT_MAX_BYTES` | 平台机 | 工作区未压缩大小上限（1Mi–5Gi，认 `512Mi`、`1g` 写法），恢复时同样限制解压大小 | `1Gi` |
 | `NCS_SNAPSHOT_IGNORE` | 平台机 | 追加的忽略规则，逗号分隔的文件名通配，例如 `*.log,dist` | 空 |
-| `NCS_SNAPSHOT_ON_DELETE` | 平台机 | 删除会话前也留一份 | `true` |
+| `NCS_SNAPSHOT_PURGE_ON_DELETE` | 平台机 | 删除会话时删掉桶里这个会话的全部快照 | `true` |
+| `NCS_SNAPSHOT_ON_DELETE` | 平台机 | 只在 purge 关掉时生效：删除前先存最后一份 | `false` |
 
 沙箱机：**无新增变量**。K8s 启动器不支持（工作区在 PVC 里，用存储类自己的卷快照），配了 `NCS_OBJECT_STORE=s3` 会拒绝启动。
 

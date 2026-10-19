@@ -201,12 +201,18 @@ class SessionManager:
     def delete(self, sid: str) -> None:
         with self._lock(sid):
             s = self.store.get_session(sid)
-            if self.snapshots is not None and self.cfg.snapshot_on_delete and s is not None and s.started:
-                # 先停容器、标记删除，快照（成功或最终失败）之后再删本地工作区
+            if self.snapshots is not None and s is not None and s.started:
                 self.launcher.stop(sid)
                 self.store.update_session(sid, status="deleted", endpoint="", web_token="")
-                self.snapshots.schedule(s.owner, sid, then=lambda: self.launcher.delete(sid))
-                return
+                if self.cfg.snapshot_purge_on_delete:
+                    # 默认：删除会话 = 连云端快照一起删（等这个会话排着的快照做完再删，免得删完又传上去一份）
+                    self.snapshots.schedule(s.owner, sid, work=self.snapshots.purge,
+                                            then=lambda: self.launcher.delete(sid))
+                    return
+                if self.cfg.snapshot_on_delete:
+                    # 不清理云端时可选：先存最后一份（误删能找回），之后再删本地工作区
+                    self.snapshots.schedule(s.owner, sid, then=lambda: self.launcher.delete(sid))
+                    return
             self.launcher.delete(sid)
             self.store.update_session(sid, status="deleted", endpoint="", web_token="")
 
@@ -219,10 +225,13 @@ class SessionManager:
             raise SessionError(409, "这个会话还没有启动过，没有工作区")
         from ..runtime.snapshot import SnapshotError
         from ..storage.objectstore import ObjectStoreError
+        from .snapshots import SnapshotBusy
         try:
             if not self.launcher.has_workspace(sid):
                 raise SessionError(409, "本机没有这个会话的工作区（打开会话会先从快照恢复）")
-            return self.snapshots.snapshot_now(s.owner, sid)
+            return self.snapshots.snapshot_now(s.owner, sid, manual=True)
+        except SnapshotBusy as e:
+            raise SessionError(409, str(e)) from None
         except (SnapshotError, ObjectStoreError, LaunchError) as e:
             raise SessionError(502, f"快照失败：{e}") from None
 

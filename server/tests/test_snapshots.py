@@ -293,7 +293,8 @@ class ConfigTest(unittest.TestCase):
         env = {"NCS_OBJECT_STORE": "S3", "NCS_S3_ENDPOINT": "https://s3.example.com", "NCS_S3_REGION": "eu-x",
                "NCS_S3_BUCKET": "my-bucket", "NCS_S3_ACCESS_KEY_ID": "kid", "NCS_S3_SECRET_ACCESS_KEY": "sec",
                "NCS_S3_PREFIX": "ws", "NCS_SNAPSHOT_KEEP": "5", "NCS_SNAPSHOT_MAX_BYTES": "200Mi",
-               "NCS_SNAPSHOT_IGNORE": "*.log, dist", "NCS_SNAPSHOT_ON_DELETE": "0"}
+               "NCS_SNAPSHOT_IGNORE": "*.log, dist", "NCS_SNAPSHOT_ON_DELETE": "1",
+               "NCS_SNAPSHOT_PURGE_ON_DELETE": "0"}
         old = {k: os.environ.get(k) for k in env}
         os.environ.update(env)
         try:
@@ -305,7 +306,10 @@ class ConfigTest(unittest.TestCase):
                          ("s3", "eu-x", "my-bucket", "ws", 5))
         self.assertEqual(cfg.snapshot_max, 200 << 20)
         self.assertEqual(cfg.snapshot_ignore, ["*.log", "dist"])
-        self.assertFalse(cfg.snapshot_on_delete)
+        self.assertTrue(cfg.snapshot_on_delete)
+        self.assertFalse(cfg.snapshot_purge_on_delete)
+        d = make_config()
+        self.assertEqual((d.snapshot_purge_on_delete, d.snapshot_on_delete), (True, False))   # 默认：删除即清理云端
 
     def test_k8s_launcher_is_refused(self):
         class K8sLike(Launcher):
@@ -383,6 +387,19 @@ class PackRestoreTest(unittest.TestCase):
         extract(self.archive, self.dst, 1 << 20)
         with open(os.path.join(self.dst, "workspace", "inside-link"), "rb") as f:
             self.assertEqual(f.read(), b"ok")
+
+    @unittest.skipUnless(POSIX, "符号链接")
+    def test_pack_drops_chained_links_that_escape(self):
+        os.makedirs(os.path.join(self.src, "home", "a", "b"))
+        os.makedirs(os.path.join(self.src, "workspace"))
+        os.symlink("../../../workspace", os.path.join(self.src, "home", "a", "b", "k"))
+        os.symlink("../home/a/b/k/../../..", os.path.join(self.src, "workspace", "l"))
+        pack(self.src, self.archive, 1 << 20)
+        with tarfile.open(self.archive) as t:
+            names = t.getnames()
+        self.assertIn("home/a/b/k", names)
+        self.assertNotIn("workspace/l", names)
+        extract(self.archive, self.dst, 1 << 20)
 
     @unittest.skipUnless(POSIX, "符号链接")
     def test_workspace_itself_replaced_by_a_link_is_not_followed(self):
@@ -473,6 +490,38 @@ class TarTraversalTest(unittest.TestCase):
                               ("workspace/l/x", tarfile.REGTYPE, None)])
         self.assert_rejected([("workspace/l/x", tarfile.REGTYPE, None),
                               ("workspace/l", tarfile.SYMTYPE, "home")])
+
+    def test_chained_symlinks_escape(self):
+        # PR #144 review 的反例：每个链接按字符串规范化都在根目录里，物理解析却走到根目录上两级
+        self.assert_rejected([("home/a/b", tarfile.DIRTYPE, None),
+                              ("home/a/b/k", tarfile.SYMTYPE, "../../../workspace"),
+                              ("workspace/l", tarfile.SYMTYPE, "../home/a/b/k/../../..")])
+        # 顺序反过来、嵌套更深也一样
+        self.assert_rejected([("workspace/l", tarfile.SYMTYPE, "../home/x/y/z/k/../../../../.."),
+                              ("home/x/y/z/k", tarfile.SYMTYPE, "../../../../workspace")])
+
+    def test_symlink_loop(self):
+        self.assert_rejected([("workspace/a", tarfile.SYMTYPE, "b"), ("workspace/b", tarfile.SYMTYPE, "a")])
+
+    def test_link_to_root_itself(self):
+        self.assert_rejected([("workspace/up", tarfile.SYMTYPE, "..")])
+
+    def test_safe_chained_links_are_kept(self):
+        archive = self.make([("workspace/sub", tarfile.DIRTYPE, None),
+                             ("workspace/sub/f", tarfile.REGTYPE, b"ok"),
+                             ("home/k", tarfile.SYMTYPE, "../workspace/sub"),
+                             ("workspace/l", tarfile.SYMTYPE, "../home/k/f")])
+        extract(archive, self.root, 1 << 20)
+        if POSIX:
+            with open(os.path.join(self.root, "workspace", "l"), "rb") as f:
+                self.assertEqual(f.read(), b"ok")
+
+    def test_member_count_cap_streaming(self):
+        from nanocode_server.runtime import snapshot as mod
+        old = mod.MAX_MEMBERS
+        mod.MAX_MEMBERS = 5
+        self.addCleanup(setattr, mod, "MAX_MEMBERS", old)
+        self.assert_rejected([(f"workspace/e{i}", tarfile.DIRTYPE, None) for i in range(50)])
 
     def test_hardlink(self):
         self.assert_rejected([("workspace/h", tarfile.LNKTYPE, "/etc/shadow")])
@@ -626,6 +675,40 @@ class ManagerTest(unittest.TestCase):
         self.assertTrue(self.mgr.schedule("u", SID, then=lambda: ran.append(1)).wait(20))
         self.assertEqual(ran, [1])
 
+    def test_manual_snapshots_have_own_slot_and_do_not_queue(self):
+        from nanocode_server.services.snapshots import SnapshotBusy
+        gate = threading.Event()
+        orig = self.launcher.snapshot
+        self.launcher.snapshot = lambda *a: (gate.wait(10), orig(*a))[1]
+        t = threading.Thread(target=self.mgr.snapshot_now, args=("u", SID), kwargs={"manual": True})
+        t.start()
+        time.sleep(0.2)
+        with self.assertRaises(SnapshotBusy):                               # 第二个手动快照：立即拒绝，不排队
+            self.mgr.snapshot_now("u", SID, manual=True)
+        self.launcher.snapshot = orig
+        self.assertTrue(self.mgr.schedule("u", SID).wait(10))               # 后台快照不被手动快照挡住
+        gate.set()
+        t.join(10)
+        self.assertEqual(self.mgr.stats()["manual_busy"], 1)
+
+    def test_purge_deletes_all_snapshots_of_the_session(self):
+        self.mgr.snapshot_now("u", SID)
+        write(os.path.join(self.root, "C" * 16, "workspace", "x"))
+        other = self.mgr.snapshot_now("u", "C" * 16)["key"]
+        self.assertTrue(self.mgr.purge("u", SID))
+        self.assertEqual(sorted(self.fake.objects), [other])
+
+    def test_download_does_not_follow_redirects(self):
+        from nanocode_server.runtime.snapshot import download
+        from support import FakeServer
+        target = FakeServer(lambda m, p, h, b: (200, {}, b"evil"))
+        redirect = FakeServer(lambda m, p, h, b: (302, {"location": target.url + "/x", "content-length": "0"}, b""))
+        self.addCleanup(target.close)
+        self.addCleanup(redirect.close)
+        with self.assertRaises(SnapshotError):
+            download(redirect.url + "/snap", os.path.join(self.root, "dl"), 1 << 20)
+        self.assertEqual(target.requests, [])
+
     def test_settle_waits_for_pending(self):
         gate = threading.Event()
         orig = self.launcher.snapshot
@@ -690,11 +773,33 @@ class LocalEndToEndTest(unittest.TestCase):
         other = Client(self.port, "vic")
         self.assertEqual(other.request("POST", f"/api/sessions/{sid}/snapshot", {})[0], 404)
         self.assertEqual(other.request("GET", f"/api/sessions/{sid}/snapshots")[0], 404)
-        # 删除：先留一份快照，然后才删本地工作区
+        # 删除（默认 NCS_SNAPSHOT_PURGE_ON_DELETE=1）：云端快照和本地工作区都删掉
         self.assertEqual(c.request("POST", f"/api/sessions/{sid}/delete", {})[0], 200)
         self.assertTrue(self.platform.snapshots.settle(sid, 30))
-        self.assertEqual(len(self.objects(sid)), 3)
+        self.assertEqual(self.objects(sid), [])
         self.assertFalse(os.path.exists(self.launcher.snapshot_root(sid)))
+
+    def test_delete_keeps_last_snapshot_when_purge_is_off(self):
+        self.cfg.snapshot_purge_on_delete, self.cfg.snapshot_on_delete = False, True
+        self.addCleanup(setattr, self.cfg, "snapshot_purge_on_delete", True)
+        self.addCleanup(setattr, self.cfg, "snapshot_on_delete", False)
+        c = Client(self.port, "zed")
+        sid = c.request("POST", "/api/sessions", {"title": "t"})[1]["session"]["id"]
+        write(os.path.join(self.launcher.workspace(sid), "a.txt"), b"a")
+        self.assertEqual(c.request("POST", f"/api/sessions/{sid}/delete", {})[0], 200)
+        self.assertTrue(self.platform.snapshots.settle(sid, 30))
+        self.assertEqual(len(self.objects(sid)), 1)
+        self.assertFalse(os.path.exists(self.launcher.snapshot_root(sid)))
+
+    def test_idle_reaping_triggers_snapshot(self):
+        c = Client(self.port, "ivy")
+        sid = c.request("POST", "/api/sessions", {"title": "t"})[1]["session"]["id"]
+        self.addCleanup(c.request, "POST", f"/api/sessions/{sid}/delete", {})
+        write(os.path.join(self.launcher.workspace(sid), "idle.txt"), b"idle")
+        reaped = self.platform.sessions.reap_once(now=time.time() + self.cfg.idle_timeout + 60)
+        self.assertIn(sid, reaped)
+        self.assertTrue(self.platform.snapshots.settle(sid, 30))
+        self.assertEqual(len(self.objects(sid)), 1)
 
     def test_admin_stats_requires_admin(self):
         self.assertEqual(Client(self.port, "wes").request("GET", "/api/admin/snapshots")[0], 403)

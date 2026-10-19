@@ -36,6 +36,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from zlib import error as zlib_error
 
 from .base import LaunchError
 
@@ -63,11 +64,59 @@ def _ignored(name: str, patterns) -> bool:
 
 
 def _link_inside(member_path: str, target: str) -> bool:
-    """符号链接（位于归档里的 member_path）指向的位置是否还在快照根目录里（纯字符串判断）。"""
-    if not target or target.startswith("/") or "\\" in target or (len(target) > 1 and target[1] == ":"):
+    """快速的纯字符串预检：链接目标是相对的、不含反斜杠 / 盘符，按字符串规范化后仍在快照根目录里。
+
+    只是第一道筛子——`..` 在物理上跟着上一级链接走，字符串规范化挡不住链式链接
+    （PR #144 review 的反例：home/a/b/k -> ../../../workspace，workspace/l -> ../home/a/b/k/../../..）。
+    恢复时真正的判定是 resolve_link()：按归档里的链接表逐段模拟解析。
+    """
+    if not target or target.startswith("/") or "\\" in target or "\0" in target or (len(target) > 1 and target[1] == ":"):
         return False
     resolved = posixpath.normpath(posixpath.join(posixpath.dirname(member_path), target))
     return resolved != ".." and not resolved.startswith("../") and resolved.split("/", 1)[0] in TOPS
+
+
+MAX_LINK_HOPS = 40
+
+
+def resolve_link(path: str, links: dict[str, str]) -> list[str] | None:
+    """像内核一样逐段解析归档里的符号链接 path（links：链接路径 → 目标），返回最终路径的各段；
+    任何时候走出快照根目录、链接成环或展开超过 MAX_LINK_HOPS 次，返回 None。
+
+    遇到 `..` 弹出的是"当前物理位置"的上一级：先展开路径上已经走过的链接再弹，
+    所以链式链接里的 `..` 会被正确地算到链接指向的位置上。
+    """
+    hops = 0
+
+    def walk(base: list[str], target: str) -> list[str] | None:
+        nonlocal hops
+        if not target or target.startswith("/") or "\\" in target or "\0" in target or (len(target) > 1 and target[1] == ":"):
+            return None
+        cur = list(base)
+        for seg in target.split("/"):
+            if seg in ("", "."):
+                continue
+            if seg == "..":
+                if not cur:
+                    return None                       # 走出快照根目录
+                cur.pop()
+                continue
+            cur.append(seg)
+            key = "/".join(cur)
+            if key in links:
+                hops += 1
+                if hops > MAX_LINK_HOPS:
+                    return None
+                cur = walk(cur[:-1], links[key])
+                if cur is None:
+                    return None
+        return cur
+
+    parts = path.split("/")
+    final = walk(parts[:-1], links[path])
+    if final is None or not final or final[0] not in TOPS:
+        return None
+    return final
 
 
 class _Exact(io.RawIOBase):
@@ -123,7 +172,9 @@ class _Packer:
         self.tar.addfile(self._info(arc, st, tarfile.DIRTYPE))
 
     def add_link(self, arc: str, target: str, st: os.stat_result) -> None:
-        if not _link_inside(arc, target):
+        # 字符串预检 + 按磁盘上的真实解析（跟着链式链接走）确认还在快照根目录里；
+        # 恢复时还会按归档内容再校验一次（resolve_link），这里只是不把坏链接打进去
+        if not _link_inside(arc, target) or not self._really_inside(arc):
             self.skipped += 1                              # 指向工作区外面的链接不进快照
             return
         self._count(0)
@@ -131,6 +182,16 @@ class _Packer:
         ti.mode = 0o777
         ti.linkname = target
         self.tar.addfile(ti)
+
+    root = ""
+
+    def _really_inside(self, arc: str) -> bool:
+        if not self.root:
+            return True
+        real = os.path.realpath(os.path.join(self.root, *arc.split("/")))
+        base = os.path.realpath(self.root)
+        tops = [os.path.join(base, t) for t in TOPS]
+        return any(real == t or real.startswith(t + os.sep) for t in tops)
 
     # POSIX：按目录 fd 逐级走，不跟随任何链接
     def walk_fd(self, top: str, root: str) -> None:
@@ -193,6 +254,7 @@ def pack(root: str, out_path: str, max_bytes: int, ignore=DEFAULT_IGNORE) -> dic
     started = time.monotonic()
     with tarfile.open(out_path, "w:gz", compresslevel=6, format=tarfile.PAX_FORMAT) as tar:
         p = _Packer(tar, max_bytes, ignore)
+        p.root = root
         for top in TOPS:
             d = os.path.join(root, top)
             if not os.path.isdir(d) or os.path.islink(d):
@@ -205,15 +267,20 @@ def pack(root: str, out_path: str, max_bytes: int, ignore=DEFAULT_IGNORE) -> dic
 # ---------------------------------------------------------------------- 恢复
 
 
-def validate_members(members: list[tarfile.TarInfo], max_bytes: int) -> list[tuple[str, tarfile.TarInfo]]:
-    """完整校验归档成员，返回 (规范化路径, 成员)。任何一个不合法都整体拒绝。"""
-    if len(members) > MAX_MEMBERS:
-        raise SnapshotError(f"快照里的文件数超过 {MAX_MEMBERS}", permanent=True)
-    seen: dict[str, tarfile.TarInfo] = {}
-    links: set[str] = set()
-    out = []
-    total = 0
-    for m in members:
+class _Checker:
+    """逐个成员校验（边读边查，不先把全部成员头读进内存），最后再统一校验符号链接。"""
+
+    def __init__(self, max_bytes: int):
+        self.max_bytes = max_bytes
+        self.seen: set[str] = set()
+        self.links: dict[str, str] = {}
+        self.total = 0
+        self.count = 0
+
+    def member(self, m: tarfile.TarInfo) -> str:
+        self.count += 1
+        if self.count > MAX_MEMBERS:
+            raise SnapshotError(f"快照里的文件数超过 {MAX_MEMBERS}", permanent=True)
         name = m.name
         if not name or name.startswith("/") or "\\" in name or "\0" in name or (len(name) > 1 and name[1] == ":"):
             raise SnapshotError(f"快照里有不合法的路径：{name!r}", permanent=True)
@@ -223,31 +290,45 @@ def validate_members(members: list[tarfile.TarInfo], max_bytes: int) -> list[tup
         path = "/".join(parts)
         if not (m.isreg() or m.isdir() or m.issym()):
             raise SnapshotError(f"快照里有不允许的条目类型（硬链接 / 设备 / FIFO）：{name!r}", permanent=True)
-        if path in seen:
+        if path in self.seen:
             raise SnapshotError(f"快照里有重复的路径：{name!r}", permanent=True)
-        for i in range(1, len(parts)):                       # 上级目录不能是归档里的链接
-            if "/".join(parts[:i]) in links:
-                raise SnapshotError(f"快照里有经过符号链接的路径：{name!r}", permanent=True)
+        self.seen.add(path)
         if m.issym():
             if not _link_inside(path, m.linkname):
                 raise SnapshotError(f"快照里有指向外面的符号链接：{name!r} -> {m.linkname!r}", permanent=True)
-            links.add(path)
+            self.links[path] = m.linkname
         if m.isreg():
-            total += max(0, m.size)
-            if total > max_bytes:
-                raise SnapshotError(f"快照解压后超过大小上限 {max_bytes} 字节", permanent=True)
-        seen[path] = m
-        out.append((path, m))
-    for path in seen:                                        # 先出现文件、后出现同名前缀链接的情况
-        parts = path.split("/")
-        for i in range(1, len(parts)):
-            if "/".join(parts[:i]) in links:
-                raise SnapshotError(f"快照里有经过符号链接的路径：{path!r}", permanent=True)
+            self.total += max(0, m.size)
+            if self.total > self.max_bytes:
+                raise SnapshotError(f"快照解压后超过大小上限 {self.max_bytes} 字节", permanent=True)
+        return path
+
+    def finish(self) -> None:
+        for path in self.seen:                          # 任何路径的上级都不能是归档里的链接
+            parts = path.split("/")
+            for i in range(1, len(parts)):
+                if "/".join(parts[:i]) in self.links:
+                    raise SnapshotError(f"快照里有经过符号链接的路径：{path!r}", permanent=True)
+        for path, target in self.links.items():         # 链式链接逐段解析，必须仍在快照根目录里
+            if resolve_link(path, self.links) is None:
+                raise SnapshotError(f"快照里有（经链式解析后）指向外面的符号链接：{path!r} -> {target!r}",
+                                    permanent=True)
+
+
+def validate_members(members, max_bytes: int) -> list[tuple[str, tarfile.TarInfo]]:
+    """完整校验归档成员，返回 (规范化路径, 成员)。任何一个不合法都整体拒绝。"""
+    c = _Checker(max_bytes)
+    out = [(c.member(m), m) for m in members]
+    c.finish()
     return out
 
 
 def extract(archive: str, root: str, max_bytes: int) -> dict:
-    """把归档恢复到 root 下的 workspace/ 和 home/。root 下这两个目录必须不存在或为空。"""
+    """把归档恢复到 root 下的 workspace/ 和 home/。root 下这两个目录必须不存在或为空。
+
+    流式读（r|gz）：边读边校验、边把普通文件和目录写进全新的临时目录，文件数和总大小一超限立即停；
+    符号链接先记下来，读完后按完整的链接表校验，全部合格才建链接、换进工作区位置。
+    """
     for top in TOPS:
         d = os.path.join(root, top)
         if os.path.islink(d) or (os.path.isdir(d) and os.listdir(d)) or (os.path.exists(d) and not os.path.isdir(d)):
@@ -256,42 +337,47 @@ def extract(archive: str, root: str, max_bytes: int) -> dict:
     tmp = tempfile.mkdtemp(prefix=".restore-", dir=root)
     try:
         try:
-            tar = tarfile.open(archive, "r:gz")
+            tar = tarfile.open(archive, "r|gz")
         except (tarfile.TarError, OSError, EOFError) as e:
             raise SnapshotError(f"快照不是合法的 tar.gz：{e}", permanent=True) from None
+        checker = _Checker(max_bytes)
+        files = 0
+        symlinks = []
         with tar:
             try:
-                members = validate_members(tar.getmembers(), max_bytes)
-            except (tarfile.TarError, EOFError, OSError) as e:
+                for m in tar:
+                    path = checker.member(m)
+                    dest = os.path.join(tmp, *path.split("/"))
+                    if m.isdir():
+                        os.makedirs(dest, mode=0o755, exist_ok=True)
+                        continue
+                    if m.issym():
+                        symlinks.append((m.linkname, dest))
+                        continue
+                    # 上级目录如果是本归档里（稍后才建）的链接，finish() 会整份拒绝；这时文件只落在临时目录里
+                    os.makedirs(os.path.dirname(dest), mode=0o755, exist_ok=True)
+                    flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+                             | getattr(os, "O_BINARY", 0))
+                    fd = os.open(dest, flags, 0o600)
+                    src = tar.extractfile(m)
+                    with os.fdopen(fd, "wb") as out:
+                        if src is not None:
+                            shutil.copyfileobj(src, out, 1 << 20)
+                    os.chmod(dest, (m.mode & 0o777) | 0o600)
+                    files += 1
+            except (tarfile.TarError, EOFError, zlib_error) as e:
                 raise SnapshotError(f"快照损坏：{e}", permanent=True) from None
-            files = 0
-            symlinks = []
-            for path, m in members:
-                dest = os.path.join(tmp, *path.split("/"))
-                if m.isdir():
-                    os.makedirs(dest, mode=0o755, exist_ok=True)
-                    continue
-                os.makedirs(os.path.dirname(dest), mode=0o755, exist_ok=True)
-                if m.issym():
-                    symlinks.append((m.linkname, dest))
-                    continue
-                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
-                fd = os.open(dest, flags, 0o600)
-                src = tar.extractfile(m)
-                with os.fdopen(fd, "wb") as out:
-                    if src is not None:
-                        shutil.copyfileobj(src, out, 1 << 20)
-                os.chmod(dest, (m.mode & 0o777) | 0o600)
-                files += 1
-            for target, dest in symlinks:                    # 链接最后建：写文件时路径上不可能有链接
-                try:
-                    os.symlink(target, dest)
-                except (OSError, NotImplementedError):
-                    pass                                     # Windows 没权限建链接：跳过
+        checker.finish()
+        for target, dest in symlinks:                    # 链接最后建：写文件时路径上不可能有链接
+            os.makedirs(os.path.dirname(dest), mode=0o755, exist_ok=True)
+            try:
+                os.symlink(target, dest)
+            except (OSError, NotImplementedError):
+                pass                                     # Windows 没权限建链接：跳过
         for top in TOPS:
             d = os.path.join(root, top)
             if os.path.isdir(d):
-                os.rmdir(d)                                  # 上面确认过是空目录
+                os.rmdir(d)                              # 上面确认过是空目录
             src = os.path.join(tmp, top)
             if os.path.isdir(src):
                 os.replace(src, d)
@@ -303,6 +389,16 @@ def extract(archive: str, root: str, max_bytes: int) -> dict:
 
 
 # ---------------------------------------------------------------------- 传输（预签名地址）
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """对象存储不该回 3xx：不跟随重定向，少一个被引到别处（SSRF）的口子。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_opener = urllib.request.build_opener(_NoRedirect)
 
 
 def _check_url(url: str) -> None:
@@ -317,7 +413,7 @@ def upload(url: str, path: str, timeout: float = 600) -> None:
         req = urllib.request.Request(url, data=f, method="PUT", headers={
             "content-length": str(size), "content-type": "application/gzip"})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with _opener.open(req, timeout=timeout) as r:
                 r.read()
         except urllib.error.HTTPError as e:
             raise SnapshotError(f"上传快照失败：对象存储返回 HTTP {e.code}") from None
@@ -328,7 +424,7 @@ def upload(url: str, path: str, timeout: float = 600) -> None:
 def download(url: str, path: str, limit: int, timeout: float = 600) -> int:
     _check_url(url)
     try:
-        with urllib.request.urlopen(urllib.request.Request(url), timeout=timeout) as r, open(path, "wb") as f:
+        with _opener.open(urllib.request.Request(url), timeout=timeout) as r, open(path, "wb") as f:
             n = 0
             while True:
                 chunk = r.read(1 << 20)

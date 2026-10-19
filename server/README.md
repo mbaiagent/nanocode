@@ -104,7 +104,7 @@ nanocode_server/
 | 登录会话被盗用 / 无法吊销 | 服务端保存登录会话（不是 JWT），库里只存令牌的 SHA-256；退出、停用账号立即失效；有绝对和闲置两个有效期 |
 | 暴力尝试邀请码 / 刷登录 | 每个 IP 每分钟限 `NCS_LOGIN_PER_MINUTE` 次（多副本时用 Redis 计数）；邀请码约 64 位随机、只存哈希 |
 | 多个控制面副本同时启动同一个会话 | 数据库里原子地"抢占启动"，只有抢到的那个去启动 |
-| 对象存储密钥泄露 / 快照被篡改 | 密钥只在控制面；搬数据的一方（单机的控制面 / 沙箱代理）只拿单个对象、1 小时有效的预签名地址，沙箱容器什么都拿不到；打包不跟随符号链接，恢复前完整校验（无绝对路径、`..`、硬链接、设备、越界链接，有大小上限） |
+| 对象存储密钥泄露 / 快照被篡改 | 密钥只在控制面；搬数据的一方（单机的控制面 / 沙箱代理）只拿单个对象、1 小时有效的预签名地址，沙箱容器什么都拿不到；打包不跟随符号链接，恢复时流式读取并完整校验（无绝对路径、`..`、硬链接、设备；符号链接按链接表逐段解析、链式链接也不能越界；文件数和解压大小边读边限）；下载不跟随重定向；删除会话默认连云端快照一起删 |
 
 ## 测试
 
@@ -193,7 +193,8 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 | `NCS_S3_ACCESS_KEY_ID` / `NCS_S3_SECRET_ACCESS_KEY` | 只限这个桶的读写密钥，放 root 只读的 .env | — |
 | `NCS_S3_PREFIX` | 对象 key 前缀：`<前缀>/<用户>/<会话>/<UTC 时间>.tar.gz` | `snapshots` |
 | `NCS_SNAPSHOT_KEEP` / `NCS_SNAPSHOT_MAX_BYTES` | 每个会话保留几份 / 工作区未压缩大小上限（恢复时同样限制解压大小） | `3` / `1Gi` |
-| `NCS_SNAPSHOT_IGNORE` / `NCS_SNAPSHOT_ON_DELETE` | 追加的忽略规则（逗号分隔的文件名通配；默认已忽略 node_modules、.venv、__pycache__、.cache 等）/ 删除会话前也留一份 | 空 / `true` |
+| `NCS_SNAPSHOT_IGNORE` | 追加的忽略规则（逗号分隔的文件名通配；默认已忽略 node_modules、.venv、__pycache__、.cache 等） | 空 |
+| `NCS_SNAPSHOT_PURGE_ON_DELETE` / `NCS_SNAPSHOT_ON_DELETE` | 删除会话时删掉云端快照 / 只在不 purge 时：删除前先存最后一份 | `true` / `false` |
 | `NCS_K8S_*` | 命名空间、运行时类、存储类、工作区大小、API 地址 | 见 `config.py` |
 | `NCS_MAX_SANDBOXES` / `NCS_MAX_SESSIONS_PER_USER` | 总容量 / 每人同时运行的会话数 | 200 / 3 |
 | `NCS_IDLE_TIMEOUT` / `NCS_TOKEN_TTL` | 空闲回收秒数 / 网关令牌有效期（也是沙箱最长存活时间） | 1800 / 43200 |

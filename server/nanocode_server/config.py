@@ -175,7 +175,8 @@ class Config:
     snapshot_keep: int = 3                  # 每个工作区保留最近几份
     snapshot_max_bytes: str = "1Gi"         # 工作区未压缩大小上限，超了不打包（恢复时同样按它限制解压大小）
     snapshot_ignore: list[str] = field(default_factory=list)  # 追加的忽略规则（文件名通配），默认规则见 runtime/snapshot.py
-    snapshot_on_delete: bool = True         # 删除会话前也留一份（误删能找回；不想留就关掉，或给桶配生命周期规则）
+    snapshot_purge_on_delete: bool = True   # 删除会话时连桶里这个会话的快照一起删（默认，隐私优先）
+    snapshot_on_delete: bool = False        # 只在不 purge 时有意义：删除前先存最后一份，误删能找回
 
     gateway_host: str = "127.0.0.1"
     gateway_port: int = 8701
@@ -255,7 +256,8 @@ class Config:
             snapshot_keep=_int("NCS_SNAPSHOT_KEEP", d.snapshot_keep),
             snapshot_max_bytes=_env("NCS_SNAPSHOT_MAX_BYTES", d.snapshot_max_bytes),
             snapshot_ignore=_list("NCS_SNAPSHOT_IGNORE", []),
-            snapshot_on_delete=_bool("NCS_SNAPSHOT_ON_DELETE", True),
+            snapshot_purge_on_delete=_bool("NCS_SNAPSHOT_PURGE_ON_DELETE", True),
+            snapshot_on_delete=_bool("NCS_SNAPSHOT_ON_DELETE", False),
             k8s_api=_env("NCS_K8S_API", d.k8s_api),
             k8s_namespace=_env("NCS_K8S_NAMESPACE", d.k8s_namespace),
             k8s_runtime_class=_env("NCS_K8S_RUNTIME_CLASS", d.k8s_runtime_class),

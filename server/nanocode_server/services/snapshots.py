@@ -14,12 +14,14 @@
 生命周期：
   stop / 空闲回收      先停容器（不等快照），再在后台打包上传；失败按退避重试几次，只记日志和计数，
                        从不阻塞停止。
-  delete               停容器、标记删除，后台快照完成（或最终失败）后才删本地工作区。
+  delete               停容器、标记删除；默认（NCS_SNAPSHOT_PURGE_ON_DELETE=1）删掉桶里这个会话的全部快照，
+                       再删本地工作区。关掉 purge 且 NCS_SNAPSHOT_ON_DELETE=1 时改为先存最后一份再删本地。
   再次启动             本机没有工作区（换了沙箱主机、磁盘清过）且会话以前启动过 → 下载最近一份恢复；
                        最近一份坏了就试更早的；全都恢复不了就让这次启动失败（不能拿空工作区启动，
                        否则下次停止时空快照会把好快照挤出保留名额）。
                        同一个会话还有快照在后台跑时，启动先等它结束（不会一边打包一边写）。
-  手动                 POST /api/sessions/<id>/snapshot（会话主人），沙箱可以在运行。
+  手动                 POST /api/sessions/<id>/snapshot（会话主人），沙箱可以在运行；单独一个名额，
+                       已有手动快照在跑就 409，不会挡住后台的停止快照。
   保留                 上传成功后列出这个工作区的快照，只留最近 NCS_SNAPSHOT_KEEP 份。
 
 对象 key：<NCS_S3_PREFIX>/<用户>/<会话>/<UTC 时间，到毫秒>.tar.gz，按字典序就是时间序。
@@ -62,12 +64,16 @@ class SnapshotManager:
         self.max_bytes = cfg.snapshot_max
         self.ignore = list(DEFAULT_IGNORE) + list(cfg.snapshot_ignore)
         self.retries, self.backoff = max(1, retries), backoff
-        self._slots = threading.Semaphore(concurrency)    # 同时打包上传的数量：别把沙箱主机的磁盘和带宽占满
+        self._slots = threading.Semaphore(concurrency)    # 后台快照同时打包上传的数量：别把沙箱主机的磁盘和带宽占满
+        # 手动快照单独一个名额，并且每个会话同时只能有一个：用户连点不会占满后台名额、挡住别人的停止快照
+        self._manual_slot = threading.Semaphore(1)
+        self._manual: set[str] = set()
         self._guard = threading.Lock()
         self._pending: dict[str, threading.Event] = {}    # 会话 → 后台快照完成的信号
         self._closing = threading.Event()
         self.metrics = {"uploaded": 0, "upload_failed": 0, "upload_retries": 0, "bytes_uploaded": 0,
-                        "restored": 0, "restore_failed": 0, "pruned": 0, "prune_failed": 0, "last_error": ""}
+                        "restored": 0, "restore_failed": 0, "pruned": 0, "prune_failed": 0,
+                        "purged": 0, "purge_failed": 0, "manual_busy": 0, "last_error": ""}
 
     # ------------------------------------------------------------------ key
 
@@ -103,11 +109,35 @@ class SnapshotManager:
 
     # ------------------------------------------------------------------ 上传
 
-    def snapshot_now(self, owner: str, sid: str) -> dict:
-        """打一份快照并上传（一次，不重试），成功后按保留份数清理。失败抛 SnapshotError / ObjectStoreError。"""
+    def snapshot_now(self, owner: str, sid: str, manual: bool = False) -> dict:
+        """打一份快照并上传（一次，不重试），成功后按保留份数清理。失败抛 SnapshotError / ObjectStoreError。
+
+        manual=True（用户手动）：不占后台名额，用单独的一个名额；已有手动快照在跑（这个会话或别的会话）
+        就立即抛 SnapshotBusy，不排队。
+        """
+        if manual:
+            with self._guard:
+                if sid in self._manual or not self._manual_slot.acquire(blocking=False):
+                    self.metrics["manual_busy"] += 1
+                    raise SnapshotBusy("已经有一个手动快照在进行，请稍后再试")
+                self._manual.add(sid)
+            try:
+                return self._upload(owner, sid, None)
+            finally:
+                with self._guard:
+                    self._manual.discard(sid)
+                self._manual_slot.release()
+        return self._upload(owner, sid, self._slots)
+
+    def _upload(self, owner: str, sid: str, slots) -> dict:
         key = self.new_key(owner, sid)
-        with self._slots:
+        if slots is not None:
+            slots.acquire()
+        try:
             stats = self.launcher.snapshot(sid, self.s3.presign("PUT", key, PRESIGN_TTL), self.max_bytes, self.ignore)
+        finally:
+            if slots is not None:
+                slots.release()
         self._count("uploaded")
         self._count("bytes_uploaded", int(stats.get("bytes") or 0))
         self.log(f"[snapshot] uploaded session={sid} bytes={stats.get('bytes')} raw={stats.get('raw_bytes')} "
@@ -147,8 +177,26 @@ class SnapshotManager:
         self._count("upload_failed")
         return False
 
-    def schedule(self, owner: str, sid: str, then=None) -> threading.Event:
-        """后台打包上传（带重试），立即返回。then：快照结束后（无论成败）要做的事，例如删除本地工作区。"""
+    def purge(self, owner: str, sid: str) -> bool:
+        """删掉这个会话在桶里的全部快照（删除会话时，NCS_SNAPSHOT_PURGE_ON_DELETE）。带重试，失败只记日志。"""
+        for attempt in range(1, self.retries + 1):
+            if attempt > 1 and self._closing.wait(self.backoff[min(attempt - 2, len(self.backoff) - 1)]):
+                break
+            try:
+                objs = self.s3.list(self.workspace_prefix(owner, sid))
+                for o in objs:
+                    self.s3.delete(o.key)
+                self._count("purged", len(objs))
+                self.log(f"[snapshot] purged session={sid} objects={len(objs)}")
+                return True
+            except ObjectStoreError as e:
+                self._fail(f"purge failed session={sid} attempt={attempt}/{self.retries}: {e}")
+        self._count("purge_failed")
+        return False
+
+    def schedule(self, owner: str, sid: str, then=None, work=None) -> threading.Event:
+        """后台打包上传（带重试），立即返回。then：结束后（无论成败）要做的事，例如删除本地工作区。
+        work：代替"上传快照"做的事（例如 purge），同样和这个会话的其它后台任务按顺序执行。"""
         with self._guard:
             prev = self._pending.get(sid)
             done = threading.Event()
@@ -158,7 +206,7 @@ class SnapshotManager:
             try:
                 if prev is not None:
                     prev.wait(900)                        # 同一个会话的快照按顺序来
-                self._attempt_all(owner, sid)
+                (work or self._attempt_all)(owner, sid)
             finally:
                 try:
                     if then is not None:
@@ -225,4 +273,8 @@ class SnapshotManager:
             ev.wait(max(0.0, deadline - time.time()))
 
 
-__all__ = ["SnapshotManager", "safe_segment"]
+class SnapshotBusy(SnapshotError):
+    pass
+
+
+__all__ = ["SnapshotManager", "SnapshotBusy", "safe_segment"]
