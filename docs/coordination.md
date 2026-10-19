@@ -65,7 +65,7 @@ git checkout -b fix/<自己>-<topic> origin/main
 
 | （无 issue，用户直派） | Muse | `fix/muse-md-spacing` | **已合并到 main（4ab5434）** | 已完成 | 回复 markdown 排版收紧：标题/列表纵向 margin 太大显空行，h3 字号太小无层级 |
 
-| （无 issue，用户直派） | Muse | `fix/muse-tool-history` | 进行中 | 今天 | 刷新后恢复工具卡片：loadHistory 按块顺序交错渲染文本+tool_use 卡片（tool_result 按 id 配对）；权限卡片不恢复（无落盘数据） |
+| （无 issue，用户直派） | Muse | `fix/muse-tool-history` | **已合并到 main（d51a05e）** | 已完成 | 刷新后恢复工具卡片：loadHistory 按块顺序交错渲染文本+tool_use 卡片（tool_result 按 id 配对）；权限卡片不恢复（无落盘数据） |
 
 **空 issue 认领流程**：
 1. 先看 issue 是否被 main 覆盖（`git log --oneline | grep issue号`）
