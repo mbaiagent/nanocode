@@ -97,13 +97,13 @@ on_main() {   # sha 必须是 BRANCH 上的提交（compare: sha...BRANCH 为 ah
 
 do_deploy() {
   local sha="$1"; valid_sha "$sha" || die "sha 必须是 40 位小写十六进制"
+  if [ "${SKIP_BRANCH_CHECK:-0}" != 1 ]; then
+    on_main "$sha" || die "$sha 不在 $REPO 的 $BRANCH 上（或查询 GitHub 失败），拒绝部署"
+  fi
   migrate
   local prev; prev="$(current_dir)"
   if [ -n "$prev" ] && [ "$(cat "$prev/DEPLOYED_COMMIT" 2>/dev/null)" = "$sha" ] && [ "${FORCE:-0}" != 1 ]; then
     log "$sha 已经是当前版本，只做健康检查"; health; return
-  fi
-  if [ "${SKIP_BRANCH_CHECK:-0}" != 1 ]; then
-    on_main "$sha" || die "$sha 不在 $REPO 的 $BRANCH 上（或查询 GitHub 失败），拒绝部署"
   fi
 
   local new="$RELEASES/$sha-$(date +%Y%m%d%H%M%S)" tmp; tmp="$(mktemp -d)"
