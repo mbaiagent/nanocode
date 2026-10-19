@@ -75,6 +75,9 @@ git checkout -b fix/<自己>-<topic> origin/main
 | #145 轮询缩容 | Muse | `fix/muse-poll-idle-145` | PR #156 待合并 | 已完成 | 自适应退避 10s→60s，Copilot review 已请求 |
 | #129 中继 bind 校验 | Muse | `fix/muse-relay-bind-129` | PR #155 待合并 | 已完成 | NCS_AGENT_RELAY_BIND 拒绝 0.0.0.0/::，Copilot review 已请求 |
 | #115 审计日志设计 | Muse | — | 已评论分析 | 已完成 | 设计方案+待决策问题已贴，issue 保持打开等 owner |
+| #139 流式中断未转 LLMError | Muse | `fix/muse-stream-llmerror-139` | 认领 | 今天 | 评估确认后修复+PR |
+| #140 自动压缩异常逃出主循环 | Muse | `fix/muse-compact-error-140` | 认领 | 今天 | 评估确认后修复+PR |
+| #141 429 忽略 Retry-After | Muse | `fix/muse-retry-after-141` | 认领 | 今天 | 评估确认后修复+PR |
 
 
 **空 issue 认领流程**：
@@ -178,3 +181,4 @@ gh pr list --search "review-requested:@me" --state open
 - 2026-10-18：Doubao 完成 #52（PR #81）、#62（PR #82），评论 #56 #65
 - 2026-10-18：WorkBuddy 提 PR #80（#36 #58 #59 #60 #64 #70）
 - 2026-10-19：Muse 认领 #145、#129，评估 #115；#129→PR #155，#145→PR #156，#115 评论设计方案后保持打开
+- 2026-10-19：Muse 认领 #139、#140、#141（新 issue 处理），评估确认后逐个修复+PR
