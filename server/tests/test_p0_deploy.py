@@ -141,13 +141,15 @@ class ComposeConsistencyTest(unittest.TestCase):
         self.assertIn('profiles: ["caddy"]', self.compose)          # 可选：已有 nginx 的机器不用它
         nginx = read(COMPOSE, "nginx.example.conf")
         for must in ("proxy_pass http://127.0.0.1:8700", "proxy_buffering off",
-                     "X-Forwarded-For $proxy_add_x_forwarded_for", "server_name nanocode.aipulse.lol"):
+                     "X-Forwarded-For $proxy_add_x_forwarded_for", "server_name nanocode.example.com;"):
             self.assertIn(must, nginx)
         self.assertIn("image: caddy:2", self.compose)
         self.assertIn("NCS_AUTH: ${NCS_AUTH:-github}", self.compose)
         self.assertIn("NCS_PUBLIC_URL: https://${NCS_DOMAIN", self.compose)
         self.assertIn('NCS_TRUST_FORWARDED: "1"', self.compose)
-        self.assertEqual(self.env["NCS_ADMIN_GITHUB_LOGINS"], "mbaiagent")
+        self.assertIn("NCS_ADMIN_GITHUB_LOGINS", self.env)
+        self.assertEqual(self.env["NCS_ADMIN_GITHUB_LOGINS"], "")      # 示例不带真实账号，部署时自己填
+        self.assertEqual(self.env["NCS_DOMAIN"], "nanocode.example.com")   # 公开仓库：示例只用占位域名
         self.assertEqual(self.env["NCS_HOST"], "127.0.0.1")         # 控制面不直接对外
 
     def test_k8s_replicas_env_matches_deployment(self):

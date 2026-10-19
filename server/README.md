@@ -133,7 +133,7 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 
 ## 账号与登录（NCS_AUTH=github）
 
-- **登录**：只用 GitHub OAuth，申请 `read:user user:email`，不读用户仓库；access_token 用完即丢。账号按 GitHub **数字 id** 绑定（login 改名不影响），id 形如 `gh-14838384`，就是会话、Key、用量表里的 owner。
+- **登录**：只用 GitHub OAuth，申请 `read:user user:email`，不读用户仓库；access_token 用完即丢。账号按 GitHub **数字 id** 绑定（login 改名不影响），id 形如 `gh-1000001`，就是会话、Key、用量表里的 owner。
 - **注册**：第一次登录必须带有效邀请码（登录页填写）；`NCS_ADMIN_GITHUB_LOGINS` 里的 login 例外，直接成为管理员。如果名单里的 login 已经被另一个 GitHub 账号用过（原主人改名、别人抢注），不会给管理员；更稳的写法是 `id:<数字 id>`。
 - **管理员**：`/admin` 页面（或 `/api/admin/*`）生成、查看、撤销邀请码（可设次数、有效天数，明文只显示一次），查看账号、停用 / 启用账号（停用立即作废登录会话并停掉运行中的沙箱）。
 - **老数据**：schema v2 把之前 dev / proxy 模式下出现过的用户名（owner 字符串）回填成 `legacy` 账号，会话、Key、用量原样保留。它们和 GitHub 账号不会自动合并（自动按名字合并有冒领风险）。
