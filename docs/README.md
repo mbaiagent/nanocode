@@ -27,7 +27,7 @@ nanocode 的文档分三类：**学习章节**（看懂一个编程 Agent 怎么
 | 文档 | 内容 |
 |---|---|
 | [server/README.md](../server/README.md) | 平台是什么、一分钟跑起来、组件可选、代码结构、测试、压测 |
-| [deployment-topology.md](deployment-topology.md) | **先读这个**：本地单机 vs 平台；开发 / 单机平台 / 分布式三种形态怎么选；托管 Postgres / Redis；计划中的事项 |
+| [deployment-topology.md](deployment-topology.md) | **先读这个**：本地单机 vs 平台；开发 / 单机平台 / 分布式三种形态怎么选；托管 Postgres / Redis；[生产架构图](deployment-topology.md#生产架构图分布式形态)；计划中的事项 |
 | [configuration.md](configuration.md) | 全部 `NCS_*` 环境变量：默认值、谁读、含义 |
 | [auth-and-admin.md](auth-and-admin.md) | GitHub 登录、邀请码注册、管理员和 `/admin`、用户自带 Key |
 | [security-model.md](security-model.md) | 信任边界、实测状态、已知弱点和在修的安全 issue、出站代理的前置条件 |

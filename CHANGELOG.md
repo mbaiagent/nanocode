@@ -7,6 +7,7 @@
 
 ### 多用户平台（nanocode-server）
 
+- **文档 生产架构图**：[docs/deployment-topology.md](docs/deployment-topology.md#生产架构图分布式形态) 新增 mermaid 架构图（平台机 / 沙箱机 / WireGuard / 出站代理 / 快照 / CD）和安全要点。
 - **新增 多用户 P0**（[#117](https://github.com/mbaiagent/nanocode/pull/117)）：`NCS_REPLICAS > 1` 时强制 PostgreSQL + Redis，否则拒绝启动；Redis 默认 RESP2，兼容老版本；新增单机 `deploy/compose`（控制面 + 网关 + PostgreSQL 16 + Redis 7 + Docker 沙箱）。
 - **新增 多用户 P1**（[#118](https://github.com/mbaiagent/nanocode/pull/118)）：`NCS_AUTH=github`，用 GitHub OAuth 登录（state + PKCE，按 GitHub 数字 id 绑定）；邀请码注册；服务端登录会话（库里只存哈希，可立即吊销）；`/admin` 管理页（邀请码、账号停用 / 启用）；引导管理员 `NCS_ADMIN_GITHUB_LOGINS`；可选 Caddy 自动 HTTPS。模型 Key 由用户自带（BYO），加密存库、只在网关解密。见 [docs/auth-and-admin.md](docs/auth-and-admin.md)。
 - **安全 沙箱宿主机隔离**（[#124](https://github.com/mbaiagent/nanocode/pull/124)，Fixes [#123](https://github.com/mbaiagent/nanocode/issues/123)）：沙箱网桥名 / 网段固定（`NCS_DOCKER_BRIDGE`、`NCS_DOCKER_SUBNET`），新增 `deploy/firewall/` 的 firewalld / nftables 脚本和 `check-sandbox-isolation.sh`，沙箱只能连宿主机的网关端口。

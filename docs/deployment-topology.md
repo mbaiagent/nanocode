@@ -106,6 +106,43 @@ services:
 - ⚠️ **已知问题**：平台的回收线程目前每 60 秒查一次库，哪怕没有沙箱在跑，托管库因此永远缩不到零，免费额度约半个月用完（[#131](https://github.com/mbaiagent/nanocode/issues/131)）。修复在 [PR #133](https://github.com/mbaiagent/nanocode/pull/133)（**未合并**）：空闲时零查询、`NCS_REAP_INTERVAL` 可配、启动连库指数退避重试约 30 秒、默认 `connect_timeout=10`。运行中坏连接重试一次等其余项仍在 #132。
 - **Redis 兼容（以 Aiven Valkey 免费版为例）**：只有 TLS（`rediss://`）；长期不活跃会被关机，所以**只给它**配保活 timer + `OnFailure=` 告警。
 
+### 生产架构图（分布式形态）
+
+当前生产按分布式形态部署：一台平台机、一台沙箱机，中间用 WireGuard 连接。
+
+```mermaid
+flowchart LR
+  U["用户浏览器"] -->|HTTPS| CF["Cloudflare"]
+  CF --> WEB
+  subgraph P["平台机 platform host"]
+    WEB["Web / API 平台"]
+    GW["模型网关: 限流 + 短期令牌"]
+  end
+  WEB --> PG[("托管 Postgres")]
+  WEB --> RD[("托管 Valkey / Redis")]
+  WEB -->|"预签名 URL"| OS[("S3 兼容对象存储: 快照保留 3 份")]
+  GW --> LLM["模型厂商"]
+  P <-->|WireGuard| S
+  subgraph S["沙箱机 sandbox host"]
+    AG["沙箱 agent :8790"]
+    RL["relay :8701"]
+    EP["出站代理 :3128 只放 80/443"]
+    SB["Docker 沙箱: 无 DNS, 其余全拦"]
+  end
+  SB --> RL --> GW
+  SB --> EP -->|"只放行公网 IP"| NET["互联网"]
+  AG -->|"快照上传 / 恢复"| OS
+  GH["GitHub Actions CI"] -->|"CD: SSH 受限 deploy 用户, 先沙箱"| S
+  GH -->|"后平台"| P
+```
+
+要点：
+
+- 真正的模型 Key 和对象存储密钥只放在平台机。
+- 沙箱里只有短期令牌（默认 12 小时）和预签名地址。
+- 沙箱只能连 relay 和出站代理；内网、云元数据地址和其他端口全拦。
+- 主机 SSH 只允许密钥登录，并开启 fail2ban。CD 细节见 [cd.md](cd.md)。
+
 ## 四、计划中 / 进行中
 
 | 事项 | 状态 | 说明 |
