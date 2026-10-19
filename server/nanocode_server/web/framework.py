@@ -208,12 +208,23 @@ class _Server(ThreadingHTTPServer):
             if self._slots is not None:
                 self._slots.release()
 
-    @staticmethod
-    def _reject(request):
+    REJECT_DRAIN_SECONDS = 0.2
+
+    @classmethod
+    def _reject(cls, request):
         try:
             request.settimeout(5)                # 别让回 503 本身阻塞住 accept 循环
             request.sendall(b"HTTP/1.0 503 Service Unavailable\r\ncontent-length: 0\r\n"
                             b"retry-after: 1\r\nconnection: close\r\n\r\n")
+            # 客户端的请求还躺在接收缓冲里没读时直接 close，内核会回 RST 而不是 FIN；
+            # Windows 收到 RST 会把已经到达、还没被读走的 503 一起丢掉，客户端只看到
+            # ConnectionAbortedError（10053）。所以先半关写端把 503 + FIN 发出去，再在很短的
+            # 时间内把请求读掉，然后才 close。时间有上限，不会拖住 accept 循环。
+            request.shutdown(socket.SHUT_WR)
+            request.settimeout(cls.REJECT_DRAIN_SECONDS)
+            deadline = time.monotonic() + cls.REJECT_DRAIN_SECONDS
+            while time.monotonic() < deadline and request.recv(65536):
+                pass
         except OSError:
             pass
         finally:
