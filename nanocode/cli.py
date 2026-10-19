@@ -8,6 +8,10 @@
     nanocode --provider deepseek --model deepseek-chat
     nanocode --provider custom --protocol openai --base-url https://你的中转/v1 --model xxx
 
+这是本地单机模式：只用标准库，不需要数据库、Redis、Docker、远程沙箱或登录，
+macOS / Windows / Linux 上装了 Python 就能跑。多用户平台是另一个入口 `nanocode-server`（server/），
+两者互不依赖（tests/test_local_mode.py 保证）。
+
 CLI 本身只是事件总线的一个订阅者：它把事件渲染成彩色文字。
 Agent 在后台线程里运行，主线程负责读键盘（权限确认、Ctrl-C 中断）。
 """

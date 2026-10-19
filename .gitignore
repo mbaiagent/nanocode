@@ -21,3 +21,19 @@ build/
 .mypy_cache/
 .ruff_cache/
 uv.lock
+
+# 密钥 / 环境变量文件：防止 `git add -A` 把它们提交进公开仓库（#122）。
+# 规则不锚定，server/、deploy/ 等子目录同样生效；示例文件 *.env.example 仍要提交。
+.env
+.env.*
+*.env
+!.env.example
+!*.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+id_ecdsa*
+!*.pub
