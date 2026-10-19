@@ -13,7 +13,8 @@ from urllib.parse import urlparse
 from ..models import Session
 from .framework import Request, Response
 
-FORWARD_REQUEST_HEADERS = ("content-type", "accept", "last-event-id")
+# x-nanocode-session：沙箱里的面板支持多会话（#106），页面靠这个头指明操作哪个会话
+FORWARD_REQUEST_HEADERS = ("content-type", "accept", "last-event-id", "x-nanocode-session")
 
 
 class SandboxGone(Exception):

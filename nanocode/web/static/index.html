@@ -142,6 +142,10 @@ svg { display: block; flex: none; }
   font: 600 10px/1 var(--font-mono); letter-spacing: .1em; text-transform: uppercase;
   color: var(--muted); border: 1px solid var(--border); border-radius: 99px; padding: 4px 7px;
 }
+.parallel {
+  font-size: 12px; white-space: nowrap; color: var(--warn); background: var(--warn-soft);
+  border-radius: 99px; padding: 3px 9px;
+}
 .session { display: flex; align-items: center; gap: 4px; min-width: 0; }
 #session {
   appearance: none; -webkit-appearance: none;
@@ -617,6 +621,7 @@ body.embed .inspector { border-radius: 0; }
     <span class="dot" aria-hidden="true"></span>
     <span id="meta">连接中…</span>
   </div>
+  <span id="parallel" class="parallel" hidden></span>
 
   <span class="grow"></span>
 
@@ -827,6 +832,8 @@ function applyHistory(e) {
   else if (e.type === "llm_response") stepEnd(e);
 }
 function onEvent(e) {
+  // 各会话运行状态的广播：没有序号，不参与去重
+  if (e.type === "sessions_status") return onSessionsStatus(e);
   // 重连时服务端会从 after 之后补发，这里按序号兜底去重（text_delta 也带序号，一起记）
   if (e.seq <= lastSeq) return;
   lastSeq = e.seq;
@@ -942,7 +949,7 @@ function onEvent(e) {
       queueCount = e.position; updateQueuebar(); break;
     case "dequeue":
       queueCount = e.remaining; updateQueuebar(); break;
-    case "session_switched":
+    case "session_switched":   // 只有不带会话 id 的旧客户端切换"默认会话"时才会发；本页不受影响
       add("note", esc(e.message)); break;
     case "turn_end":
       if (a === "main") {
@@ -994,9 +1001,31 @@ function logRaw(e) {
 /* ---------- api ---------- */
 // 令牌由服务器在返回页面时注入；每个 /api 请求都要带上（见 server.py 的 _guard）
 const TOKEN = "__NANOCODE_TOKEN__";
-const getJSON = async (url) => (await fetch(url, { headers: { "x-nanocode-token": TOKEN } })).json();
+// 多会话（#106）：每个标签页自己记住"当前会话"（URL 的 ?s= 和 sessionStorage），每个请求都用
+// X-Nanocode-Session 头指明，服务端不再有全局的当前会话 —— 别的标签页切换、新建会话都不会影响这里。
+// 还不知道时（第一次打开）不带，服务端用默认会话，refreshState 再把它的 id 记下来。
+let SID = new URLSearchParams(location.search).get("s") || sessionStorage.getItem("nc_sid") || "";
+function setSid(id) {
+  if (!id) return;
+  SID = id;
+  sessionStorage.setItem("nc_sid", id);
+  const u = new URL(location.href);
+  if (u.searchParams.get("s") !== id) { u.searchParams.set("s", id); history.replaceState(null, "", u); }
+}
+function openSession(id) {          // 切到另一个会话：整页重载，按新会话重新拉历史、连事件流
+  sessionStorage.setItem("nc_sid", id);
+  const u = new URL(location.href);
+  u.searchParams.set("s", id);
+  location.href = u.toString();
+}
+function apiHeaders(extra) {
+  const h = Object.assign({ "x-nanocode-token": TOKEN }, extra || {});
+  if (SID) h["x-nanocode-session"] = SID;
+  return h;
+}
+const getJSON = async (url) => (await fetch(url, { headers: apiHeaders() })).json();
 async function post(url, body) {
-  const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-nanocode-token": TOKEN }, body: JSON.stringify(body || {}) });
+  const r = await fetch(url, { method: "POST", headers: apiHeaders({ "content-type": "application/json" }), body: JSON.stringify(body || {}) });
   return r.json();
 }
 // sync=true 只用于页面刚加载时：以服务端的 busy 为准。历史事件缓冲有上限（2000 条），长任务的
@@ -1005,6 +1034,15 @@ async function post(url, body) {
 // 用服务端状态覆盖会让界面卡在"忙碌"。
 async function refreshState(sync = false) {
   const s = await getJSON("api/state");
+  if (s.code === "no_session" || s.code === "bad_session") {
+    // 记住的会话已经不在了（比如没保存过就重启了服务）：忘掉它，回到默认会话
+    sessionStorage.removeItem("nc_sid");
+    const u = new URL(location.href); u.searchParams.delete("s");
+    location.replace(u.toString());
+    return;
+  }
+  if (s.session_id) setSid(s.session_id);
+  parallelCount = s.parallel || 0; updateParallel();
   $("#meta").textContent = `${s.provider}/${s.model} · ${s.cwd}`;
   $("#meta").title = `${s.provider}/${s.model}\n${s.cwd}`;
   $("#status").title = `${s.provider}/${s.model}\n${s.cwd}`;
@@ -1068,6 +1106,7 @@ $("#form").onsubmit = async (ev) => {
     $("#input").value = text; autosize();
     if (r.retry_after) startCooldown(r.retry_after);
   }
+  if (r.session_id && r.session_id !== SID) { setSid(r.session_id); refreshSessions(); }   // /clear 换了新会话 id
   if (!r.ok) add("error", esc(r.error));
   else if (r.queued) add("note", `⏳ 已排队（第 ${r.position} 位），当前任务完成后自动执行`);
   // 斜杠命令的输出由 SSE 的 command 事件统一渲染（带命令回显），这里再画一次就重复了
@@ -1077,7 +1116,7 @@ const input = $("#input");
 function autosize() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 200) + "px"; }
 input.addEventListener("input", autosize);
 $("#input").onkeydown = (ev) => { if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) $("#form").requestSubmit(); };
-$("#stop").onclick = () => post("api/cancel");
+$("#stop").onclick = () => post("api/cancel");   // 只停当前会话，别的会话照跑
 $("#refresh").onclick = refreshContext;
 // 切换权限模式：后端可能拒绝（忙时的非只读命令、限流、模式名不合法……），
 // 不把错误显示出来的话，下拉框已经变了而服务端没变，用户会以为切换成功了（#78）。
@@ -1100,9 +1139,11 @@ async function refreshSessions() {
     o.value = s.id;
     const d = new Date(s.mtime * 1000);
     // 只显示标题，id 放进 tooltip：下拉里 "20261018-153041 · 介绍…" 太吵
-    o.textContent = (s.title || s.id).slice(0, 26);
+    // 在跑 / 排队 / 等确认的会话加个标记（完整的徽标在二期）
+    const mark = s.awaiting_permission ? "🔔 " : s.running ? "● " : "";
+    o.textContent = mark + (s.title || s.id).slice(0, 26);
     o.title = `${s.id} · ${s.title}（${s.messages} 条消息，${d.toLocaleString()}）`;
-    if (s.id === r.current) o.selected = true;
+    if (s.id === (SID || r.current)) o.selected = true;
     sel.append(o);
   }
   if (!sel.options.length) {
@@ -1112,16 +1153,31 @@ async function refreshSessions() {
     sel.append(o);
   }
 }
+// 切换 / 新建会话只影响本标签页：别的会话（哪怕正在跑）继续在后台跑，切回去时重新拉历史、续上事件流。
 $("#session").onchange = async () => {
   const r = await post("api/session", { action: "load", id: $("#session").value });
-  if (r.ok) location.reload();
+  if (r.ok) openSession(r.session_id);
   else { add("error", esc(r.error)); refreshSessions(); }
 };
 $("#newsession").onclick = async () => {
   const r = await post("api/session", { action: "new" });
-  if (r.ok) location.reload();
+  if (r.ok) openSession(r.session_id);
   else add("error", esc(r.error));
 };
+// 同一工作目录里另外还有几个会话在跑：提醒用户它们可能同时改文件
+let parallelCount = 0, statusTimer = null;
+function updateParallel() {
+  const el = $("#parallel");
+  el.hidden = !parallelCount;
+  el.textContent = parallelCount ? `另有 ${parallelCount} 个会话在运行` : "";
+  el.title = parallelCount ? "它们和当前会话共用同一个工作目录，可能同时修改文件" : "";
+}
+function onSessionsStatus(e) {
+  parallelCount = (e.sessions || []).filter((x) => x.id !== SID && (x.running || x.queued)).length;
+  updateParallel();
+  clearTimeout(statusTimer);          // 状态变化可能一阵一阵来，合并成一次列表刷新
+  statusTimer = setTimeout(refreshSessions, 300);
+}
 
 // 调试面板：默认在窄屏收起，宽屏也给一键收起，聊天占满
 //（变量名避开 main：iOS 内嵌浏览器可能注入同名脚本导致 const 重声明报错）
@@ -1190,7 +1246,7 @@ function addHistoryToolCard(b, result) {
 async function loadHistory() {
   // 刷新页面后恢复聊天记录：先拉完整消息列表，再连 SSE 接收新事件（#86）
   try {
-    const r = await fetch("api/messages", { headers: { "x-nanocode-token": TOKEN } });
+    const r = await fetch("api/messages", { headers: apiHeaders() });
     if (!r.ok) return;
     const data = await r.json();
     if (!data.messages) return;
@@ -1244,7 +1300,8 @@ async function connectEvents() {
     if (!historyLoaded) { await loadHistory(); historyLoaded = true; }
     const t = await post("api/ticket");
     if (!t.ticket) throw new Error(t.error || "no ticket");
-    es = new EventSource("api/events?ticket=" + encodeURIComponent(t.ticket) + "&after=" + lastSeq);
+    es = new EventSource("api/events?ticket=" + encodeURIComponent(t.ticket) + "&after=" + lastSeq
+      + "&status=1" + (SID ? "&sid=" + encodeURIComponent(SID) : ""));
     es.onmessage = (m) => onEvent(JSON.parse(m.data));
     es.onerror = () => { es.close(); setTimeout(connectEvents, 1500); };
   } catch (err) {

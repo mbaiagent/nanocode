@@ -86,6 +86,12 @@ class Options:
     verify: str = ""       # 自动验证命令（--verify），优先于 settings.json 里的 verify
 
 
+# spawn() 时子会话直接沿用的项目级字段（见 Session.spawn）
+_SHARED_FIELDS = {"cwd", "policy", "settings", "trust_notice", "provider", "provider_name", "_trace_enabled",
+                  "data_dir", "_audit_writer", "mcp_clients", "mcp_status", "registry", "_perm_config", "hooks",
+                  "_verify_cfg", "skills", "commands"}
+
+
 class Session:
     def __init__(self, opts: Options, log=print, trust_fn: TrustFn | None = None):
         self.cwd = os.path.realpath(opts.cwd)
@@ -110,18 +116,10 @@ class Session:
             extra_headers=s.get("headers"),
         )
         self.provider_name = provider_name
-        self.bus = EventBus()
-        # 带微秒：同一秒启动两个进程（同项目、同秒）会共用一个会话文件并互相覆盖（#47）
-        self.session_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        self._trace_enabled = opts.trace
         self.data_dir = project_data_dir(self.cwd)
-        if self.policy.get("audit_log"):
-            self._audit = AuditWriter(self.policy["audit_log"], session=lambda: self.session_id)
-            self.bus.subscribe(self._audit)
-        if opts.trace:
-            os.makedirs(os.path.join(self.data_dir, "traces"), exist_ok=True)
-            self.trace_path = os.path.join(self.data_dir, "traces", f"{self.session_id}.jsonl")
-            self._trace = TraceWriter(self.trace_path)
-            self.bus.subscribe(self._trace)
+        # 审计日志整个进程只开一份文件：Web 面板的并行会话（spawn）共用它，每条记录带各自的会话 id
+        self._audit_writer = AuditWriter(self.policy["audit_log"]) if self.policy.get("audit_log") else None
 
         tools = default_tools()
         self.mcp_clients, mcp_tools, self.mcp_status = connect_servers(s.get("mcpServers", {}), self.cwd, log=log)
@@ -133,23 +131,48 @@ class Session:
         if allowed_modes and mode not in allowed_modes:
             log(f"权限模式 {mode} 不在平台允许的范围内，改用 {allowed_modes[0]}")
             mode = allowed_modes[0]
-        self.permissions = PermissionManager(self.cwd, mode=mode,
-                                             allow=list(perms.get("allow", [])), deny=list(perms.get("deny", [])),
-                                             allowed_modes=tuple(allowed_modes))
+        self._perm_config = {"mode": mode, "allow": list(perms.get("allow", [])),
+                             "deny": list(perms.get("deny", [])), "allowed_modes": tuple(allowed_modes)}
         self.hooks = HookRunner(s.get("hooks"), self.cwd)
         try:
-            verify_cfg = verify_mod.parse_config(s.get("verify"), opts.verify)
+            self._verify_cfg = verify_mod.parse_config(s.get("verify"), opts.verify)
         except ValueError as e:   # 写错了要明说，不能悄悄当作没配置
             log(f"verify 配置无效，自动验证未启用：{e}")
-            verify_cfg = None
+            self._verify_cfg = None
         self.skills = discover_skills(self.cwd)
         self.commands = discover_commands(self.cwd)
+        self._owns_shared = True    # 共享部件（MCP 进程、审计文件）由最初构造的这个 Session 负责关闭
+        self._init_conversation()
+
+    def _init_conversation(self, session_id: str | None = None) -> None:
+        """一段对话自己的状态：事件总线、Agent（messages / usage / 取消标志）、权限（模式和"总是允许"）。
+
+        和配置、Provider、工具（含 MCP）、hooks、技能这些项目级部件分开，Web 面板才能在同一个
+        项目里同时跑多个会话（spawn），彼此的对话、权限询问、"总是允许"互不串（#106）。
+        """
+        s = self.settings
+        self.bus = EventBus()
+        # 带微秒：同一秒启动两个进程（同项目、同秒）会共用一个会话文件并互相覆盖（#47）
+        self.session_id = session_id or datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        # 附加在系统提示末尾的一段话（Web 面板用它提醒"还有别的会话在同一目录并行工作"）；空串表示没有
+        self.system_note = lambda: ""
+        if self._audit_writer is not None:
+            writer = self._audit_writer
+            self._audit = lambda e: writer(e, session=self.session_id)
+            self.bus.subscribe(self._audit)
+        if self._trace_enabled:
+            os.makedirs(os.path.join(self.data_dir, "traces"), exist_ok=True)
+            self.trace_path = os.path.join(self.data_dir, "traces", f"{self.session_id}.jsonl")
+            self._trace = TraceWriter(self.trace_path)
+            self.bus.subscribe(self._trace)
+        pc = self._perm_config
+        self.permissions = PermissionManager(self.cwd, mode=pc["mode"], allow=list(pc["allow"]),
+                                             deny=list(pc["deny"]), allowed_modes=pc["allowed_modes"])
         self.agent = Agent(self.provider, self.registry, self.permissions, self.hooks, self.bus, self.cwd,
-                           system_prompt=lambda: build_system_prompt(self.cwd, self.skills, model=self.provider.model,
-                                                                     provider=self.provider_name, protocol=self.provider.name),
+                           system_prompt=self._system_prompt,
                            max_tokens=int(s.get("max_tokens", 8192)),
                            context_window=int(s.get("context_window", 128000)), skills=self.skills,
-                           verify=verify_cfg)
+                           verify=self._verify_cfg)
         self.agent.state["rag_config"] = s.get("rag", {})
         # 经验沉淀：自动验证打回又修好的回合会产生候选，等用户用 /memory accept 确认（见 lessons.py）
         self.suggest_memory = bool(s.get("suggest_memory", True))
@@ -157,6 +180,29 @@ class Session:
         self._declined_memory: set[str] = set()
         self.bus.subscribe(self._on_lesson)
         self.bus.subscribe(self._autosave)
+
+    def _system_prompt(self) -> str:
+        base = build_system_prompt(self.cwd, self.skills, model=self.provider.model,
+                                   provider=self.provider_name, protocol=self.provider.name)
+        note = self.system_note()
+        return f"{base}\n\n{note}" if note else base
+
+    def spawn(self, session_id: str | None = None) -> "Session":
+        """在同一个项目里再开一段对话（Web 面板的并行会话用）。
+
+        共享：配置、平台策略、Provider、工具与 MCP 连接、hooks、技能、自定义命令。
+        独立：事件总线、Agent（messages / usage / 取消）、权限模式与"总是允许"、模型（/model 只换自己的）、
+        待确认的经验候选。给了 session_id 就从磁盘载入那个会话（不存在 / 格式不对抛 OSError / ValueError），
+        不会像 resume() 那样先保存一份空会话。
+        """
+        child = Session.__new__(Session)
+        child.__dict__.update({k: v for k, v in self.__dict__.items() if k in _SHARED_FIELDS})
+        child._owns_shared = False
+        data = self._read_session(session_id) if session_id else None
+        child._init_conversation(session_id)
+        if data is not None:
+            child._apply(data)
+        return child
 
     def _autosave(self, e: dict) -> None:
         """主 Agent 每一步调用模型前保存一次会话。
@@ -289,15 +335,16 @@ class Session:
                         "mtime": os.path.getmtime(path), "title": title or "（空会话）"})
         return out
 
-    def resume(self, session_id: str) -> str:
-        """切换到指定会话：先保存当前，再载入目标。"""
-        self.save()
-        d = os.path.join(self.data_dir, "sessions")
-        path = os.path.join(d, f"{session_id}.json")
+    def _read_session(self, session_id: str) -> dict:
+        path = os.path.join(self.data_dir, "sessions", f"{session_id}.json")
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, dict) or not isinstance(data.get("messages", []), list):
             raise ValueError("会话文件格式不对")
+        return data
+
+    def _apply(self, data: dict) -> None:
+        """把读出来的会话内容装进 Agent。usage 也要恢复，否则 /cost 显示的是别的会话的累计值（#47）。"""
         self.agent.messages = data.get("messages", [])
         self.agent.state["todos"] = data.get("todos", [])
         u = data.get("usage", {}) or {}
@@ -305,6 +352,11 @@ class Session:
         self.agent.usage.output_tokens = u.get("output_tokens", 0)
         self.agent.usage.estimated = u.get("estimated", False)
         self.agent.usage.reasoning_tokens = u.get("reasoning_tokens", 0)
+
+    def resume(self, session_id: str) -> str:
+        """切换到指定会话：先保存当前，再载入目标。"""
+        self.save()
+        self._apply(self._read_session(session_id))
         self.session_id = session_id
         # 切会话时清空事件历史，前端重连后只重放新会话的内容
         self.bus.history.clear()
@@ -371,12 +423,14 @@ class Session:
         return "\n".join(notes + ["没有可恢复的会话"])
 
     def close(self) -> None:
-        for c in self.mcp_clients:
-            c.close()
         if getattr(self, "_trace", None):
             self._trace.close()
-        if getattr(self, "_audit", None):
-            self._audit.close()
+        if not getattr(self, "_owns_shared", True):      # spawn 出来的会话不关共享的 MCP 进程和审计文件
+            return
+        for c in self.mcp_clients:
+            c.close()
+        if self._audit_writer is not None:
+            self._audit_writer.close()
 
     # ------------------------------------------------------------------ 斜杠命令
 

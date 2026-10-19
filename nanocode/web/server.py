@@ -9,6 +9,7 @@
     GET  /login             登录页（自带登录启用时；已登录则跳回 /）
     GET  /learn             交互式架构学习页
     GET  /api/state         会话概况
+    GET  /api/sessions      会话列表（含各会话是否在运行 / 排队 / 等确认）
     GET  /api/context       完整上下文：system、messages、tools（就是下一次要发给模型的东西）
     GET  /api/messages      恢复页面用：完整 messages、事件缓冲的最新序号、从 messages 折出来的时间线
     GET  /api/events        SSE 事件流（连接时先补发历史事件）。浏览器用 ?ticket= 一次性票据；
@@ -16,9 +17,13 @@
     POST /api/ticket        换一张 30 秒有效、只能用一次的 SSE 票据
     POST /api/chat          {"message": "..."} 发送消息（也支持 /命令 和 # 记忆）
     POST /api/permission    {"id": "...", "decision": "yes|always|no"}
-    POST /api/cancel        中断当前任务，并清空排队中的消息
+    POST /api/cancel        中断这个会话的任务，并清空它排队中的消息；{"all": true} 停掉所有会话
+    POST /api/session       {"action": "new"} 开新会话 / {"action": "load", "id": "..."} 打开已有会话
     POST /api/login         {"username": "...", "password": "..."} 登录（启用自带登录时）
     POST /api/logout        退出登录（清会话 Cookie）
+
+多会话（#106，见 runtime.py）：会话相关的接口按请求头 X-Nanocode-Session（事件流用 ?sid=）找会话，
+    不带就用默认会话（旧客户端、控制面转发）。不同会话可以同时运行，上限见 limits.py。
 
 /api/chat 有限流（issue #7，见 limits.py）：超限返回 429 + Retry-After 头，
     {"ok": false, "error": "...", "code": "rate_limited|queue_full|daily_budget", "retry_after": 秒}
@@ -46,13 +51,13 @@ import socketserver
 import subprocess
 import threading
 import time
-import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from ..messages import steps_of_turn
 from ..session import Session
-from .limits import DailyCounter, Limits, RateLimited
+from .limits import Limits, RateLimited, env_int
+from .runtime import BUSY_ALLOWED, READ_ONLY_COMMANDS, SessionManager, valid_session_id  # noqa: F401（兼容旧导入）
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 
@@ -75,18 +80,6 @@ LOGIN_FAIL_WINDOW = 600
 LOGIN_FAIL_MAX_KEYS = 10000     # 失败记录最多记多少个客户端，防伪造 key 撑爆内存
 MAX_PASSWORD_LEN = 1024         # 密码长度上限（字节），防超大输入拖慢 openssl
 _APR1_SALT_RE = re.compile(r"[./0-9A-Za-z]{1,8}")
-
-# Agent 忙时仍然可以执行的斜杠命令：只读查询，不会碰正在跑的那一轮对话。
-# 其余命令（/clear /compact /resume /mode、以及会转成提示词的自定义命令）会改掉
-# Agent 脚下的状态，必须等这一轮结束 —— 见 chat() 里对 #50 的注释。
-READ_ONLY_COMMANDS = {"help", "?", "cost", "context", "tools", "todos", "mcp", "skills", "providers", "memory"}
-
-# 忙时还能改的配置项。/mode 不是只读查询，但它只改权限模式这一个配置：正在跑的那一轮
-# 已经判过的工具不会回退重判，新模式从下一次工具调用开始生效，不会动 messages / usage
-# 这些 Agent 脚下的状态。以前它和 /clear 一起被 429 拒掉，而前端又不显示这个错误，
-# 用户以为切换成功了（#78）。
-BUSY_ALLOWED = READ_ONLY_COMMANDS | {"mode"}
-
 
 def htpasswd_file() -> str | None:
     """登录凭据文件路径；不存在或不可读则返回 None（此时登录功能关闭）。
@@ -246,9 +239,6 @@ def resume_after(headers, query: str) -> int:
 
 class WebApp:
     def __init__(self, session: Session, permission_timeout: float | None = None, disconnect_grace: float = 30):
-        self.session = session
-        self.pending: dict[str, dict] = {}
-        self.lock = threading.Lock()
         self.token = web_token()
         if permission_timeout is None:
             permission_timeout = float(os.environ.get("NANOCODE_PERMISSION_TIMEOUT") or 600)
@@ -264,13 +254,9 @@ class WebApp:
         self._tickets: dict[str, float] = {}   # 一次性 SSE 票据 → 过期时间
         self.allowed_hosts: set[str] = set(LOCAL_HOSTS)
         self.allowed_origins: set[str] = set()
-        self.queue: list[str] = []      # 忙时排队的消息，按先进先出执行
-        # 「这个会话有一轮工作在进行」（含排队中的消息），由本类独占维护。
-        # 不能用 agent.busy 代替：Agent.run() 在 finally 里会把它清零，而那时 _run
-        # 还没开始处理队列，中间的窗口会让新请求误判成「不忙」而并发起第二个 Agent。
-        self._turn_active = False
         self.limits = Limits()          # 限流与每日预算（issue #7）
-        session.permissions.ask_fn = self.ask
+        # 多会话（#106）：每个会话自己的排队、忙碌标志、权限询问都在 SessionRuntime 里
+        self.sessions = SessionManager(self, session, max_live=env_int("NANOCODE_WEB_MAX_LIVE_SESSIONS", 8))
         # ---- 自带登录的会话状态 ----
         # 登录功能是否启用：凭据文件存在才启用，否则保持旧行为（无登录）。
         self.login_enabled = htpasswd_file() is not None
@@ -278,15 +264,44 @@ class WebApp:
         self._session_lock = threading.Lock()
         self._login_fails: dict[str, list[float]] = {}  # client_key -> 失败时间戳
 
+    # ---- 兼容：以前 WebApp 只有一个会话，这些属性都指向默认会话 ----
+    @property
+    def session(self) -> Session:
+        return self.sessions.default.session
+
     @property
     def busy(self) -> bool:
-        """这个会话是否还有工作没做完（含排队中的消息）。
+        return self.sessions.default.busy
 
-        以 _turn_active 为准：Agent.run() 一返回就把 agent.busy 清掉了，而从那一刻到
-        _run() 处理完队列之间还有一段路，只看 agent.busy 会误判成空闲并放第二个 Agent 进来。
-        agent.busy 也一起看，是为了兼容"直接把 agent.busy 置 True 表示忙"的调用方。
-        """
-        return self._turn_active or self.session.agent.busy
+    @property
+    def queue(self) -> list[str]:
+        return self.sessions.default.queue
+
+    @property
+    def pending(self) -> dict:
+        return self.sessions.default.pending
+
+    @property
+    def _turn_active(self) -> bool:
+        return self.sessions.default._turn_active
+
+    @_turn_active.setter
+    def _turn_active(self, value: bool) -> None:
+        self.sessions.default._turn_active = value
+
+    @property
+    def _run(self):
+        return self.sessions.default._run
+
+    @_run.setter
+    def _run(self, fn) -> None:
+        self.sessions.default._run = fn
+
+    def ask(self, name: str, input: dict, target: str) -> str:
+        return self.sessions.default.ask(name, input, target)
+
+    def chat(self, message: str, client: str = "local") -> dict:
+        return self.sessions.default.chat(message, client)
 
     def issue_ticket(self) -> str | None:
         """签发一张 SSE 用的一次性票据，TICKET_TTL 秒内有效、只能用一次。
@@ -389,139 +404,6 @@ class WebApp:
         self.allowed_hosts = hosts
         self.allowed_origins = origins
 
-    def ask(self, name: str, input: dict, target: str) -> str:
-        """权限询问：发事件给浏览器，然后阻塞等待 /api/permission 的回答。
-
-        按拒绝处理的三种情况，Agent 都不会永远卡住（等待期间 Agent 占着全局 busy 锁，别的请求都会被拒）：
-          - 用户点了中断
-          - 超过 permission_timeout（默认 10 分钟，环境变量 NANOCODE_PERMISSION_TIMEOUT 可改）
-          - 没有任何浏览器连着（页面关了）超过 disconnect_grace 秒。刷新页面会很快重连，不受影响。
-        """
-        rid = uuid.uuid4().hex[:8]
-        slot = {"event": threading.Event(), "answer": "no"}
-        self.pending[rid] = slot
-        self.session.bus.emit("permission_request", id=rid, name=name, input=input, target=target)
-        deadline = time.time() + self.permission_timeout
-        no_client_since = None
-        while not slot["event"].wait(0.2):
-            now = time.time()
-            if self.session.agent.cancel.is_set() or now > deadline:
-                break
-            if self.sse_clients == 0:
-                no_client_since = no_client_since or now
-                if now - no_client_since > self.disconnect_grace:
-                    break
-            else:
-                no_client_since = None
-        self.pending.pop(rid, None)
-        self.session.bus.emit("permission_answer", id=rid, decision=slot["answer"])
-        return slot["answer"]
-
-    def chat(self, message: str, client: str = "local") -> dict:
-        """处理一条消息。超限时抛 RateLimited，由 Handler 转成 429。
-
-        只有真正要跑模型的消息才扣额度：# 记忆和不产生 prompt 的 /命令 不扣。
-        """
-        s = self.session
-        with self.lock:
-            message = message.strip()
-            if message.startswith("#"):
-                return {"ok": True, "output": s.add_memory(message.lstrip("#"))}
-            prompt = message
-            output = ""
-            if message.startswith("/"):
-                # 先取命令名、先判忙，再执行。反过来（先 handle_command 后判忙）会让
-                # /clear、/resume、/compact 在 Agent 正在跑的时候改掉它脚下的状态：
-                # /clear 清空正在使用的 messages，/resume 换掉整个对话，/compact 在全局锁里
-                # 发模型调用还把取消按钮一起堵死（#50）。
-                # 纯查询类命令和 /mode 不受影响，忙时照样能用（#78）。
-                name = message[1:].strip().partition(" ")[0]
-                if self.busy and name not in BUSY_ALLOWED:
-                    raise RateLimited("busy", f"Agent 正在工作，等它做完或先中断再用 /{name}", 5)
-                output, prompt = s.handle_command(message)
-                s.bus.emit("command", input=message, output=output)
-                if not prompt:
-                    # /compact 虽然不产生 prompt，但它自己会调一次模型做总结，
-                    # 必须和普通消息一样过限流与每日预算，否则是个免费刷模型的入口（#50）。
-                    if name != "compact":
-                        return {"ok": True, "output": output}
-            wait = self.limits.bucket.take(client)
-            if wait:
-                w = max(1, int(wait + 0.999))
-                raise RateLimited("rate_limited", f"发送太频繁，请 {w} 秒后再试", w)
-            if self.busy:
-                # 不设上限的话，连点 100 次就会排进 100 轮完整的 Agent 循环（issue #7）
-                if self.limits.max_queue and len(self.queue) >= self.limits.max_queue:
-                    raise RateLimited("queue_full",
-                                      f"排队已满（{self.limits.max_queue} 条），等当前任务做完或先中断", 5)
-                # 忙时不再拒绝：收下排队，当前任务做完自动执行。立即发 user 事件，
-                # 让前端马上显示这条消息（带排队标记），实际执行时 agent.run 会再发一次，
-                # 前端按文本去重。
-                self.queue.append(prompt)
-                s.bus.emit("user", agent="main", text=message)
-                s.bus.emit("queued", position=len(self.queue))
-                return {"ok": True, "queued": True, "position": len(self.queue)}
-            if not self.limits.daily_runs.take():
-                raise RateLimited("daily_budget", "今天的调用预算已用完，明天再来（或调大 NANOCODE_WEB_DAILY_RUNS）",
-                                  DailyCounter.seconds_to_midnight())
-            if prompt is None:
-                # /compact 已经把事做完了（它自己调过一次模型做总结），这里只补记一次
-                # 每日预算，然后结束 —— 不能把 None 当 prompt 起一轮 Agent：
-                # 那会往对话里塞一条 text=None 的消息（真实接口直接 400），
-                # 还会多发一次模型请求、多扣一次预算（#73）。
-                return {"ok": True, "output": output}
-            # 两个标志一起置位：_turn_active 是本层的权威判定，agent.busy 让界面立刻反应过来
-            self._turn_active = True
-            s.agent.busy = True
-        threading.Thread(target=self._run, args=(prompt,), daemon=True).start()
-        return {"ok": True}
-
-    def _end_turn(self) -> None:
-        """这一轮工作彻底结束（队列已空，或排队消息被丢弃）：清掉两个标志。
-
-        调用方必须持有 self.lock。先清 _turn_active 能让紧接着的 chat() 立刻看到空闲；
-        agent.busy 在 Agent.run() 结束时已被自己清零，这里再清一次是为了覆盖
-        "还没进入 session.send() 就被取消"这类没走到 Agent.run 的路径。
-        """
-        self._turn_active = False
-        self.session.agent.busy = False
-
-    def _run(self, prompt: str) -> None:
-        try:
-            self._run_queue(prompt)
-        finally:
-            # 兜底：_turn_active 相当于一把会话锁，任何退出路径都必须放开。
-            # 正常收尾时 _end_turn() 已经清掉，这里不会重复发 idle；
-            # 只有被中断（BaseException）、连 _run_queue 都没走完的路径才会落到这里。
-            with self.lock:
-                if self._turn_active:
-                    self._end_turn()
-                    self.session.bus.emit("idle")
-
-    def _run_queue(self, prompt: str) -> None:
-        while True:
-            try:
-                self.session.send(prompt)
-            except Exception as e:  # noqa: BLE001
-                self.session.bus.emit("error", agent="main", message=friendly_error(e),
-                                      retryable=True, prompt=prompt)
-            with self.lock:
-                if not self.queue:
-                    self._end_turn()
-                    self.session.bus.emit("idle")
-                    return
-                if not self.limits.daily_runs.take():   # 排队的消息也要扣每日预算，否则能绕过去
-                    dropped = len(self.queue)
-                    self.queue.clear()
-                    self._end_turn()
-                    self.session.bus.emit("error", agent="main", retryable=False,
-                                          message=f"今天的调用预算已用完，已丢弃排队中的 {dropped} 条消息")
-                    self.session.bus.emit("idle")
-                    return
-                prompt = self.queue.pop(0)
-                self.session.bus.emit("dequeue", remaining=len(self.queue))
-            # _turn_active 保持 True，直接进入下一轮
-
 
 def make_handler(app: WebApp):
     class Handler(BaseHTTPRequestHandler):
@@ -603,6 +485,22 @@ def make_handler(app: WebApp):
                 if xff:
                     return xff
             return self.client_address[0]
+
+        def _rt(self):
+            """这个请求操作的是哪个会话：请求头 X-Nanocode-Session，事件流用 ?sid=（EventSource 发不出请求头）。
+
+            都没带就是默认会话。找不到时已经回复了错误，返回 None。
+            """
+            sid = (self.headers.get("x-nanocode-session") or "").strip()
+            if not sid:
+                sid = (parse_qs(urlparse(self.path).query).get("sid") or [""])[0].strip()
+            try:
+                return app.sessions.get(sid)
+            except ValueError as e:
+                self._json({"ok": False, "error": str(e), "code": "bad_session"}, 400)
+            except LookupError as e:
+                self._json({"ok": False, "error": str(e), "code": "no_session"}, 404)
+            return None
 
         def _cookie_token(self) -> str:
             """从 Cookie 头里取登录会话令牌。"""
@@ -690,10 +588,16 @@ def make_handler(app: WebApp):
             return False
 
         def do_GET(self):
-            s = app.session
             path = self.path.split("?")[0]
             if not self._guard(path, "GET"):
                 return
+            rt = s = None
+            if path in ("/api/state", "/api/messages", "/api/context", "/api/extensions", "/api/events",
+                        "/api/sessions"):
+                rt = self._rt()
+                if rt is None:
+                    return
+                s = rt.session
             if path in ("/", "/index.html"):
                 return self._file("index.html")
             if path == "/login":
@@ -713,10 +617,13 @@ def make_handler(app: WebApp):
             if path == "/api/state":
                 info = s.info()
                 info["session_id"] = s.session_id
-                info["queue"] = len(app.queue)
+                info["queue"] = len(rt.queue)
                 # Agent 跑完一轮到出队之间 agent.busy 已经是 False，直接用它会闪一下"空闲"。
                 # 界面要的是"这一轮工作还没结束"，所以以本层标志为准。
-                info["busy"] = app.busy
+                info["busy"] = rt.busy
+                info["default_session"] = app.sessions.default.sid
+                # 同一工作目录里另外还有几个会话在跑：界面据此提醒可能互相改文件
+                info["parallel"] = sum(1 for r in app.sessions.live() if r is not rt and r.busy)
                 return self._json(info)
             if path == "/api/messages":
                 # 刷新页面后恢复聊天记录（#86）。messages 是权威来源，不靠 SSE 重放拼对话：
@@ -735,14 +642,13 @@ def make_handler(app: WebApp):
             if path == "/api/extensions":
                 return self._json(s.extensions())
             if path == "/api/events":
-                return self._sse()
+                return self._sse(rt)
             if path == "/api/sessions":
-                return self._json({"ok": True, "sessions": s.list_sessions(),
-                                   "current": s.session_id})
+                return self._json({"ok": True, "sessions": app.sessions.list_sessions(),
+                                   "current": rt.sid, "default": app.sessions.default.sid})
             self.send_error(404)
 
         def do_POST(self):
-            s = app.session
             path = self.path.split("?")[0]
             if not self._guard(path, "POST"):
                 return
@@ -775,54 +681,67 @@ def make_handler(app: WebApp):
                 if token:
                     app.destroy_session(token)
                 return self._json({"ok": True}, headers=[self._clear_session_cookie()])
+            if path in ("/api/chat", "/api/cancel", "/api/permission", "/api/session"):
+                rt = self._rt()
+                if rt is None:
+                    return
+                explicit = bool(self.headers.get("x-nanocode-session"))
             if path == "/api/chat":
                 try:
-                    return self._json(app.chat(str(data.get("message", "")), self._client_key()))
+                    result = rt.chat(str(data.get("message", "")), self._client_key())
                 except RateLimited as e:
                     return self._limited(e)
+                # /clear 会换新的会话 id：告诉页面，让它更新自己记住的当前会话
+                return self._json({**result, "session_id": rt.sid})
             if path == "/api/permission":
-                slot = app.pending.get(data.get("id", ""))
+                rid = str(data.get("id", ""))
+                slot = rt.pending.get(rid)
+                if not slot and not explicit:
+                    # 旧客户端不带会话 id：在所有会话里找（询问 id 是随机的，不会撞）
+                    slot = next((r.pending[rid] for r in app.sessions.live() if rid in r.pending), None)
                 if not slot:
                     return self._json({"ok": False, "error": "请求不存在或已过期"}, 404)
                 slot["answer"] = data.get("decision") if data.get("decision") in ("yes", "always", "no") else "no"
                 slot["event"].set()
                 return self._json({"ok": True})
             if path == "/api/cancel":
-                # "停止"连排队的一起停，否则队列里的会接着烧额度
-                with app.lock:
-                    dropped = len(app.queue)
-                    app.queue.clear()
-                if dropped:
-                    s.bus.emit("dequeue", remaining=0)
-                app.session.agent.cancel.set()
-                return self._json({"ok": True})
+                # "停止"连排队的一起停，否则队列里的会接着烧额度。只停这个会话，别的会话照跑
+                targets = app.sessions.live() if data.get("all") is True else [rt]
+                for r in targets:
+                    r.cancel()
+                return self._json({"ok": True, "session_id": rt.sid})
             if path == "/api/ticket":
                 ticket = app.issue_ticket()
                 if ticket is None:
                     return self._reject(429, "未使用的票据太多，请稍后再试")
                 return self._json({"ok": True, "ticket": ticket, "expires_in": TICKET_TTL})
             if path == "/api/session":
-                # 忙时不许切会话，等当前任务做完（或先中断）
-                if app.busy or app.queue:
-                    return self._json({"ok": False, "error": "Agent 正在工作，等它做完（或先中断）再切换会话"})
+                # 切换会话不再改任何全局状态：别的会话（哪怕正在跑）不受影响，所以忙时也能切（#106）。
+                # 新客户端带着 X-Nanocode-Session，"当前会话"由页面自己记住，这里只建 / 找会话并返回 id。
+                # 旧客户端不带会话 id：沿用旧语义，把"默认会话"指过去（旧会话照样在后台跑完）。
                 action = data.get("action", "")
-                try:
-                    if action == "new":
-                        msg = s.new_session()
-                    elif action == "load":
-                        sid = str(data.get("id", "")).strip()
-                        if not sid or "/" in sid or "\\" in sid or ".." in sid:
-                            return self._json({"ok": False, "error": "会话 id 非法"})
-                        msg = s.resume(sid)
-                    else:
-                        return self._json({"ok": False, "error": "未知操作"})
-                except (OSError, ValueError) as e:
-                    return self._json({"ok": False, "error": f"切换失败：{e}"})
-                s.bus.emit("session_switched", message=msg)
-                return self._json({"ok": True, "output": msg})
+                if action == "new":
+                    target = app.sessions.create()
+                    msg = f"已开始新会话 {target.sid}"
+                elif action == "load":
+                    sid = str(data.get("id", "")).strip()
+                    if not valid_session_id(sid):
+                        return self._json({"ok": False, "error": "会话 id 非法"})
+                    try:
+                        target = app.sessions.get(sid)
+                    except LookupError as e:
+                        return self._json({"ok": False, "error": f"切换失败：{e}"})
+                    msg = f"已切换到会话 {target.sid}（{len(target.session.agent.messages)} 条消息）"
+                else:
+                    return self._json({"ok": False, "error": "未知操作"})
+                if not explicit and target is not app.sessions.default:
+                    old = app.sessions.default
+                    app.sessions.default = target
+                    old.session.bus.emit("session_switched", message=msg, session_id=target.sid)
+                return self._json({"ok": True, "output": msg, "session_id": target.sid})
             self.send_error(404)
 
-        def _sse(self):
+        def _sse(self, rt):
             self.connection.settimeout(app.sse_write_timeout)
             self.send_response(200)
             self.send_header("content-type", "text/event-stream; charset=utf-8")
@@ -832,7 +751,8 @@ def make_handler(app: WebApp):
             # 进程重启后序号从 0 重新开始，而浏览器还记着上个进程的序号：这时 after 比本进程
             # 已经发出的任何事件都大，照常过滤的话浏览器再也收不到事件 —— 界面静默卡死（#86）。
             # 序号只会单调递增，所以"客户端比我收到的还多"只可能是换了个进程，按从头补发处理。
-            if after > app.session.bus.seq:
+            bus = rt.session.bus
+            if after > bus.seq:
                 after = 0
             q: queue.Queue = queue.Queue(maxsize=app.sse_queue_size)
             overflow = threading.Event()
@@ -847,15 +767,22 @@ def make_handler(app: WebApp):
                     # Last-Event-ID 重连，历史事件可补发，text_delta 最终由 llm_response 补全。
                     overflow.set()
 
-            unsubscribe = app.session.bus.subscribe(enqueue_event)
+            unsubscribe = bus.subscribe(enqueue_event)
+            # 各会话的运行状态（没有 seq、不进历史），页面据此提示"另有 n 个会话在运行"。
+            # 只发给明确要的连接（?status=1），旧的订阅方（控制面、脚本）看到的事件流不变
+            want_status = (parse_qs(urlparse(self.path).query).get("status") or [""])[0] == "1"
+            unsubscribe_status = app.sessions.subscribe(enqueue_event) if want_status else (lambda: None)
             with app._sse_lock:
                 app.sse_clients += 1
+                rt.subscribers += 1
             try:
                 sent = after
                 # 补发历史，刷新页面不丢状态；重连时只补发浏览器还没收到的
-                for e in [e for e in list(app.session.bus.history) if e["seq"] > after]:
+                for e in [e for e in list(bus.history) if e["seq"] > after]:
                     self._send_event(e)
                     sent = max(sent, e["seq"])
+                if want_status:
+                    self._send_event(app.sessions.snapshot())
                 while True:
                     if overflow.is_set():
                         raise ConnectionResetError("SSE 客户端事件队列已满")
@@ -869,20 +796,24 @@ def make_handler(app: WebApp):
                         continue
                     if overflow.is_set():
                         raise ConnectionResetError("SSE 客户端事件队列已满")
-                    if e["seq"] <= sent:      # 订阅之后、补发历史之前产生的事件，已经补发过了
+                    if "seq" in e and e["seq"] <= sent:   # 订阅之后、补发历史之前产生的事件，已经补发过了
                         continue
                     self._send_event(e)
             except (BrokenPipeError, ConnectionResetError, OSError):
                 pass
             finally:
                 unsubscribe()
+                unsubscribe_status()
                 with app._sse_lock:
                     app.sse_clients -= 1
+                    rt.subscribers -= 1
 
         def _send_event(self, e):
             data = json.dumps(e, ensure_ascii=False, default=str)
-            # id 行让浏览器（和控制面的转发）记住最后收到的序号，重连时作为 Last-Event-ID 带回来
-            self.wfile.write(f"id: {e['seq']}\ndata: {data}\n\n".encode("utf-8"))
+            # id 行让浏览器（和控制面的转发）记住最后收到的序号，重连时作为 Last-Event-ID 带回来。
+            # 会话状态广播没有序号，也不能带 id 行，否则会把浏览器记的序号冲掉
+            idline = f"id: {e['seq']}\n" if "seq" in e else ""
+            self.wfile.write(f"{idline}data: {data}\n\n".encode("utf-8"))
             self.wfile.flush()
 
     return Handler
@@ -934,4 +865,5 @@ def serve(session: Session, host: str = "127.0.0.1", port: int = 8765,
         pass
     finally:
         server.shutdown()
+        app.sessions.close()
         session.close()
