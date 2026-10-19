@@ -19,6 +19,10 @@
   网关中继：
     在沙箱网桥地址的 NCS_GATEWAY_PORT 上开一个 TCP 中继，转到 NCS_AGENT_UPSTREAM_GATEWAY（控制面那边的模型网关）。
     沙箱只能连这一个端口（宿主机防火墙，deploy/firewall/），到不了数据库、Redis 和控制面。
+  出站代理（NCS_EGRESS_PROXY=1，默认关）：
+    在同一个网桥地址的 NCS_EGRESS_PORT 上开一个只放行 HTTP/HTTPS 的正向代理（egress.py），
+    并把 HTTP(S)_PROXY / NO_PROXY 注入沙箱容器。防火墙再放行这个端口，沙箱就能经它上公网，
+    内网、本机、元数据地址仍然到不了。
 
 安全前提：代理只监听内网隧道地址（NCS_AGENT_BIND，例如 WireGuard 的 10.77.0.2:8790），
 不能是 0.0.0.0；管理接口能起停容器，密钥泄漏等于能在这台机器上跑任意沙箱。
@@ -29,14 +33,13 @@ from __future__ import annotations
 import hmac
 import json
 import re
-import select
 import socket
 import sys
 import threading
-import time
 from types import SimpleNamespace
 
 from .config import Config, split_hostport
+from .egress import EgressProxy, proxy_env, pump
 from .runtime import Launcher, LaunchError, SandboxSpec
 from .web.framework import App, HttpError, Request, Response, make_server
 from .web.proxy import SandboxGone, forward
@@ -128,39 +131,7 @@ class TcpRelay:
             self._release(source)
 
     def _pump(self, client: socket.socket, upstream: socket.socket) -> None:
-        peer = {client: upstream, upstream: client}
-        reading = {client, upstream}
-        last = time.monotonic()
-        eof_at = None
-        while reading and not self._stop.is_set():
-            now = time.monotonic()
-            deadline = last + self.idle_timeout
-            if eof_at is not None:
-                # 半关闭后剩下那个方向还在传数据就继续，停顿超过 half_close_timeout 就断开
-                deadline = min(deadline, max(eof_at, last) + self.half_close_timeout)
-            wait = deadline - now
-            if wait <= 0:
-                return
-            try:
-                ready, _, _ = select.select(list(reading), [], [], min(wait, 1.0))
-            except (OSError, ValueError):
-                return
-            for sk in ready:
-                try:
-                    data = sk.recv(65536)
-                    if data:
-                        peer[sk].sendall(data)
-                        last = time.monotonic()
-                        continue
-                except OSError:
-                    return
-                reading.discard(sk)                     # 这一头发完了：把 EOF 传给另一头（半关闭）
-                if eof_at is None:
-                    eof_at = time.monotonic()
-                try:
-                    peer[sk].shutdown(socket.SHUT_WR)
-                except OSError:
-                    pass
+        pump(client, upstream, self.idle_timeout, self.half_close_timeout, self._stop)
 
     def close(self) -> None:
         self._stop.set()
@@ -185,6 +156,7 @@ class SandboxAgent(App):
         self._endpoints: dict[str, str] = {}    # 会话 → 本机容器地址
         self._guard = threading.Lock()
         self._locks: dict[str, threading.Lock] = {}
+        self.egress: EgressProxy | None = None  # NCS_EGRESS_PROXY=1 时由 build_agent 建好
 
         self.route("GET", "/healthz")(lambda req: Response.json({"ok": True}))
         self.route("GET", "/v1/info")(self.info)
@@ -199,6 +171,14 @@ class SandboxAgent(App):
         self.route("POST", "/v1/sandboxes/{sid}/restore")(self.restore)
         for method in ("GET", "POST"):
             self.route(method, "/sbx/{sid}/{rest:path}")(self.proxy)
+
+    def sandbox_of(self, ip: str) -> str:
+        """出站代理的访问日志用：来源 IP 是哪个沙箱（会话编号）；不认识返回空串。"""
+        with self._guard:
+            for sid, endpoint in self._endpoints.items():
+                if endpoint.split("//", 1)[-1].rsplit(":", 1)[0].strip("[]") == ip:
+                    return sid
+        return ""
 
     # ------------------------------------------------------------------ 认证
 
@@ -384,7 +364,23 @@ def build_agent(cfg: Config, launcher: Launcher | None = None, log=print) -> tup
                      per_source=cfg.agent_relay_per_sandbox).start()
     host, port = relay.address
     gateway_url = f"http://{'[' + host + ']' if ':' in host else host}:{port}"
-    return SandboxAgent(launcher, cfg.remote_agent_secret, gateway_url, log), relay
+    agent = SandboxAgent(launcher, cfg.remote_agent_secret, gateway_url, log)
+    if cfg.egress_proxy:
+        agent.egress = build_egress(cfg, cfg.egress_bind or host, agent.sandbox_of, log).start()
+        # 沙箱里的工具经代理上网；模型调用（中继地址）不走代理
+        launcher.extra_env = proxy_env(agent.egress.url, [host])
+    return agent, relay
+
+
+def build_egress(cfg: Config, host: str, who=None, log=print, **test_overrides) -> EgressProxy:
+    """出站代理（还没开始 accept）。沙箱网段和 NCS_EGRESS_BLOCK_NETWORKS 一起拦住，宿主机自己的地址自动拦住。"""
+    block = list(cfg.egress_block_networks)
+    if cfg.docker_subnet:
+        block.append(cfg.docker_subnet)
+    return EgressProxy(host, cfg.egress_port, allowed_ports=cfg.egress_allowed_ports, block_networks=block,
+                       allow_domains=cfg.egress_allow_domains, deny_domains=cfg.egress_deny_domains,
+                       max_connections=cfg.egress_max_connections, per_source=cfg.egress_per_sandbox,
+                       idle_timeout=cfg.egress_idle_timeout, who=who, log=log, **test_overrides)
 
 
 def run_agent(argv: list[str] | None = None) -> int:
@@ -401,7 +397,7 @@ def run_agent(argv: list[str] | None = None) -> int:
     server = make_server(agent, host, port, cfg.max_connections)
     threading.Thread(target=server.serve_forever, daemon=True, name="沙箱代理").start()
     print(f"沙箱代理：http://{host}:{port} · 沙箱 {agent.launcher.name} · 网关中继 {agent.gateway_url} → "
-          f"{cfg.agent_upstream_gateway}")
+          f"{cfg.agent_upstream_gateway} · 出站代理 {agent.egress.url if agent.egress else '关闭'}", flush=True)
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     try:
@@ -412,9 +408,11 @@ def run_agent(argv: list[str] | None = None) -> int:
         server.shutdown()
         server.server_close()
         relay.close()
+        if agent.egress:
+            agent.egress.close()
         # 不停沙箱：代理重启（升级）时沙箱继续跑，控制面那边的会话不受影响；
         # 控制面退出时会调 /v1/shutdown，超寿容器由对账清理
     return 0
 
 
-__all__ = ["SandboxAgent", "TcpRelay", "build_agent", "run_agent"]
+__all__ = ["SandboxAgent", "TcpRelay", "build_agent", "build_egress", "run_agent"]

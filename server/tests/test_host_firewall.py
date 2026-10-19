@@ -171,12 +171,52 @@ class FirewallScriptTest(unittest.TestCase):
                            env={**os.environ, "NFT_CMD": fake, "NFT_FILE": out, "NCS_GATEWAY_PORT": "8701"})
         self.assertEqual(r.returncode, 0, r.stderr)
         rules = read(out)
-        self.assertIn('iifname "ncs-sbx0" tcp dport 8701 accept', rules)
+        self.assertIn('iifname "ncs-sbx0" tcp dport { 8701 } accept', rules)
         self.assertIn('iifname "ncs-sbx0" counter drop', rules)
         self.assertIn("ip saddr 172.30.250.0/24 counter drop", rules)
         self.assertIn("ct state established,related accept", rules)
         # accept 必须在 drop 前面
-        self.assertLess(rules.index("tcp dport 8701 accept"), rules.index('iifname "ncs-sbx0" counter drop'))
+        self.assertLess(rules.index("tcp dport { 8701 } accept"), rules.index('iifname "ncs-sbx0" counter drop'))
+        self.assertNotIn("3128", rules)
+
+    def run_nft(self, **env):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        fake = os.path.join(tmp, "nft")
+        with open(fake, "w") as f:
+            f.write("#!/usr/bin/env bash\nexit 0\n")
+        os.chmod(fake, 0o755)
+        out = os.path.join(tmp, "ncs.nft")
+        r = subprocess.run([BASH, os.path.join(FIREWALL, "ncs-sandbox-nftables.sh")], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
+                           env={**os.environ, "NFT_CMD": fake, "NFT_FILE": out, "NCS_GATEWAY_PORT": "8701", **env})
+        return r, (read(out) if os.path.exists(out) else "")
+
+    def test_nftables_egress_port_is_the_only_extra_port(self):
+        r, rules = self.run_nft(NCS_EGRESS_PORT="3128")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('iifname "ncs-sbx0" tcp dport { 8701, 3128 } accept', rules)
+        self.assertIn("ip saddr 172.30.250.0/24 tcp dport { 8701, 3128 } accept", rules)
+        for bad in ("31;28", "8701"):
+            with self.subTest(port=bad):
+                r, _ = self.run_nft(NCS_EGRESS_PORT=bad)
+                self.assertEqual(r.returncode, 2)
+
+    def test_firewalld_egress_port_is_kept_and_added(self):
+        r, calls = self.run_firewalld(NCS_EGRESS_PORT="3128")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        z = "--permanent --zone=ncs-sandbox"
+        self.assertIn(f"{z} --add-port=8701/tcp", calls)
+        self.assertIn(f"{z} --add-port=3128/tcp", calls)
+        self.assertIn(f"{z} --remove-port=9999/tcp", calls)
+        r, calls = self.run_firewalld(NCS_EGRESS_PORT="8701")
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(calls, [])
+
+    def test_firewalld_without_egress_port_opens_nothing_extra(self):
+        r, calls = self.run_firewalld()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual([c for c in calls if "--add-port" in c], ["--permanent --zone=ncs-sandbox --add-port=8701/tcp"])
 
 
 if __name__ == "__main__":

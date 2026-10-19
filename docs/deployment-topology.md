@@ -114,5 +114,5 @@ services:
 | 回收线程空闲时不查库 | 进行中：[PR #133](https://github.com/mbaiagent/nanocode/pull/133)（Fixes [#131](https://github.com/mbaiagent/nanocode/issues/131)） | |
 | compose 支持外部库、remote 模式不挂 docker.sock、运行中连接重试 | 待修：[#132](https://github.com/mbaiagent/nanocode/issues/132) | 在那之前用上面的 override |
 | 中继监听地址拒绝 `0.0.0.0` | 待修：[#129](https://github.com/mbaiagent/nanocode/issues/129) | 在那之前 `NCS_AGENT_RELAY_BIND` 保持为空 |
-| 沙箱出站代理（只放 HTTP/HTTPS） | 计划中 | 默认关闭；**依赖 [#134](https://github.com/mbaiagent/nanocode/issues/134)**，修完前不在生产打开。见 [security-model.md](security-model.md) |
+| 沙箱出站代理（只放 HTTP/HTTPS） | 已实现（[PR #137](https://github.com/mbaiagent/nanocode/pull/137)），默认关闭 | 生产启用的前提是 [#134](https://github.com/mbaiagent/nanocode/issues/134)，已由 PR #146 修复；打开前确认镜像版本。见 [distributed-deploy.md 3.5](distributed-deploy.md#35-出站代理沙箱上网默认关)、[security-model.md](security-model.md) |
 | 工作区快照到对象存储（B2 / S3 兼容） | 已实现（可选）：[PR #144](https://github.com/mbaiagent/nanocode/pull/144)，`NCS_OBJECT_STORE=s3` | 停止 / 回收时打包上传，每个会话保留最近几份，本地没有时自动恢复，删除会话默认连云端快照一起删；密钥只在平台机，沙箱机只拿预签名地址。见 [distributed-deploy.md 第十节](distributed-deploy.md#十工作区快照s3-兼容对象存储)。没开时**工作区只在沙箱机本地**（`/srv/nanocode/sandboxes/<会话>/`），备份要备那台机器 |

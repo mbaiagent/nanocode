@@ -196,6 +196,12 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 | `NCS_SNAPSHOT_KEEP` / `NCS_SNAPSHOT_MAX_BYTES` | 每个会话保留几份 / 工作区未压缩大小上限（恢复时同样限制解压大小） | `3` / `1Gi` |
 | `NCS_SNAPSHOT_IGNORE` | 追加的忽略规则（逗号分隔的文件名通配；默认已忽略 node_modules、.venv、__pycache__、.cache 等） | 空 |
 | `NCS_SNAPSHOT_PURGE_ON_DELETE` / `NCS_SNAPSHOT_ON_DELETE` | 删除会话时删掉云端快照 / 只在不 purge 时：删除前先存最后一份 | `true` / `false` |
+| `NCS_EGRESS_PROXY` | 沙箱代理里的出站代理：沙箱经它访问公网 HTTP/HTTPS，内网、元数据、本机地址一律拒绝，并把 `HTTP(S)_PROXY` / `NO_PROXY` / `NANOCODE_EGRESS_PROXY=1` 注入沙箱。生产打开前确认镜像已包含 #134 的修复（PR #146），打开前先在防火墙放行端口。见 [distributed-deploy.md 3.5](../docs/distributed-deploy.md#35-出站代理沙箱上网默认关) | `0` |
+| `NCS_EGRESS_BIND` / `NCS_EGRESS_PORT` | 出站代理的监听地址（空 = 和网关中继相同；不能是 0.0.0.0）/ 端口（不能等于网关端口） | 空 / `3128` |
+| `NCS_EGRESS_ALLOWED_PORTS` | 允许的目标端口（CONNECT 和明文 HTTP 共用） | `80,443` |
+| `NCS_EGRESS_MAX_CONNECTIONS` / `NCS_EGRESS_PER_SANDBOX` / `NCS_EGRESS_IDLE_TIMEOUT` | 出站代理：全局连接上限 / 每个沙箱上限 / 空闲断开秒数 | `64` / `8` / `120` |
+| `NCS_EGRESS_ALLOW_DOMAINS` / `NCS_EGRESS_DENY_DOMAINS` | 域名白名单（非空时只放行这些，含子域名）/ 黑名单（先于白名单） | 空 |
+| `NCS_EGRESS_BLOCK_NETWORKS` | 额外拦住的网段（WireGuard 网段等）。私网、CGNAT、链路本地、ULA、沙箱网段、本机地址都已经自动拦了 | 空 |
 | `NCS_K8S_*` | 命名空间、运行时类、存储类、工作区大小、API 地址 | 见 `config.py` |
 | `NCS_MAX_SANDBOXES` / `NCS_MAX_SESSIONS_PER_USER` | 总容量 / 每人同时运行的会话数 | 200 / 3 |
 | `NCS_IDLE_TIMEOUT` / `NCS_TOKEN_TTL` | 空闲回收秒数 / 网关令牌有效期（也是沙箱最长存活时间） | 1800 / 43200 |
@@ -220,5 +226,5 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 - 审计日志写在沙箱里，Agent 能改，还不能当作可信审计（[#135](https://github.com/mbaiagent/nanocode/issues/135)）。沙箱环境变量里的令牌对子进程可见（[#134](https://github.com/mbaiagent/nanocode/issues/134)）。完整的安全边界见 [docs/security-model.md](../docs/security-model.md)。
 - 工作区快照是"停止时的磁盘快照"：运行中途机器挂了，丢的是上次停止（或手动快照）之后的改动；快照用 gzip 压缩，没有客户端加密（依赖桶是私有的和服务商的静态加密）。
 - 没有指标、链路追踪和告警，没有计费。管理后台只有 `/admin` 的邀请码和账号停用 / 启用。压测数据见上文「压测」。
-- Docker 沙箱的网络隔离依赖 Docker 的内部网络加宿主机防火墙（[deploy/firewall/](../deploy/firewall/README.md)，只放行网关端口）；Docker 沙箱默认也装不了依赖（出不了外网）。只放行 HTTP/HTTPS 的出站代理在计划中，[#134](https://github.com/mbaiagent/nanocode/issues/134) 修完前不在生产打开。
+- Docker 沙箱的网络隔离依赖 Docker 的内部网络加宿主机防火墙（[deploy/firewall/](../deploy/firewall/README.md)，只放行网关端口）；Docker 沙箱默认也装不了依赖（出不了外网）。远程沙箱可以打开只放行 HTTP/HTTPS 的出站代理（`NCS_EGRESS_PROXY`，默认关，见 [distributed-deploy.md 3.5](../docs/distributed-deploy.md#35-出站代理沙箱上网默认关)），默认关；单机 Docker / K8s 模式还没有。
 - 全部 `NCS_*` 变量（含上表没列的 `NCS_LOGIN_TTL`、`NCS_MAX_CONNECTIONS`、`NCS_ALLOW_UNISOLATED` 和 compose 专用变量）见 [docs/configuration.md](../docs/configuration.md)。

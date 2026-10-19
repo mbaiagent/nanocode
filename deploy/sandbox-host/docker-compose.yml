@@ -48,6 +48,17 @@ services:
       NCS_AGENT_RELAY_PER_SANDBOX: ${NCS_AGENT_RELAY_PER_SANDBOX:-16}
       NCS_AGENT_RELAY_IDLE_TIMEOUT: ${NCS_AGENT_RELAY_IDLE_TIMEOUT:-300}
       NCS_GATEWAY_PORT: ${NCS_GATEWAY_PORT:-8701}
+      # 出站代理（沙箱经它上公网，只放 HTTP/HTTPS，拦内网）。默认关；打开前先跑防火墙脚本放行 NCS_EGRESS_PORT
+      NCS_EGRESS_PROXY: ${NCS_EGRESS_PROXY:-0}
+      NCS_EGRESS_BIND: ${NCS_EGRESS_BIND:-}
+      NCS_EGRESS_PORT: ${NCS_EGRESS_PORT:-3128}
+      NCS_EGRESS_ALLOWED_PORTS: ${NCS_EGRESS_ALLOWED_PORTS:-80,443}
+      NCS_EGRESS_MAX_CONNECTIONS: ${NCS_EGRESS_MAX_CONNECTIONS:-64}
+      NCS_EGRESS_PER_SANDBOX: ${NCS_EGRESS_PER_SANDBOX:-8}
+      NCS_EGRESS_IDLE_TIMEOUT: ${NCS_EGRESS_IDLE_TIMEOUT:-120}
+      NCS_EGRESS_ALLOW_DOMAINS: ${NCS_EGRESS_ALLOW_DOMAINS:-}
+      NCS_EGRESS_DENY_DOMAINS: ${NCS_EGRESS_DENY_DOMAINS:-}
+      NCS_EGRESS_BLOCK_NETWORKS: ${NCS_EGRESS_BLOCK_NETWORKS:-}
       NCS_TOKEN_TTL: ${NCS_TOKEN_TTL:-43200}
       NCS_SANDBOX_IMAGE: ${NCS_SANDBOX_IMAGE:-nanocode-sandbox:latest}
       NCS_DOCKER_RUNTIME: ${NCS_DOCKER_RUNTIME:-}
@@ -58,6 +69,10 @@ services:
       NCS_SANDBOX_TMPFS: ${NCS_SANDBOX_TMPFS:-}
       NCS_SANDBOX_PIDS: ${NCS_SANDBOX_PIDS:-512}
       NCS_MAX_CONNECTIONS: ${NCS_MAX_CONNECTIONS:-64}
+    # 出站代理的访问日志（每条连接一行 JSON）也在这里：限制大小，别把小盘写满
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
     healthcheck:
       test: ["CMD", "python", "-c", "import os,urllib.request;urllib.request.urlopen('http://%s/healthz' % os.environ['NCS_AGENT_BIND'],timeout=3)"]
       interval: 10s

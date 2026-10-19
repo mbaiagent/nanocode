@@ -172,7 +172,9 @@ nanocode 的三道防线（`web/server.py` 的 `_guard`）：
 
 确认之前它还会自己拦住几类请求，规则写了 allow 也没用：非 http/https 的地址（`file://`）、地址里带用户名密码、域名解析出**任何一个**内网 / 本机 / 链路本地 / CGNAT 地址（`2130706433`、`0x7f.1`、`::ffff:127.0.0.1` 这些写法解析出来也一样）。连接固定到检查过的那个 IP（防 DNS 重绑定），HTTPS 证书仍按域名校验；重定向每一跳重新检查，最多 5 跳；下载最多 2MB，返回最多 20000 字符。
 
-**没有处理的**：不走 `HTTP_PROXY`（公司代理后面可能连不上）；不能登录、不执行 JS；确认之后内容仍然是不可信的外部数据，返回里会注明，系统提示词也要求模型不要执行其中的"指令"，但这只是提醒，不是隔离。`web_search` 默认抓 DuckDuckGo 的 HTML（没有官方 API，可能被限流或改版），也可以配置 SearXNG（自建、JSON）或带 Key 的搜索服务（Tavily / Brave / Serper / DeepSeek `/v1/tools/search`）；它和 `web_fetch` 一样每次都要确认，结果同样按不可信数据处理。
+**代理**：遵守 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`。一般情况下仍先在本地解析、拦住内网地址，再经代理连接（这时代理会再解析一次域名，**防 DNS 重绑定取决于你配的那个上游代理**，本地没法把连接固定到检查过的 IP）；平台沙箱里设了 `NANOCODE_EGRESS_PROXY=1`，域名交给出站代理去解析和检查（沙箱里没有 DNS，见 [distributed-deploy.md 3.5](distributed-deploy.md#35-出站代理沙箱上网默认关)）。
+
+**没有处理的**：不能登录、不执行 JS；确认之后内容仍然是不可信的外部数据，返回里会注明，系统提示词也要求模型不要执行其中的"指令"，但这只是提醒，不是隔离。`web_search` 默认抓 DuckDuckGo 的 HTML（没有官方 API，可能被限流或改版），也可以配置 SearXNG（自建、JSON）或带 Key 的搜索服务（Tavily / Brave / Serper / DeepSeek `/v1/tools/search`）；它和 `web_fetch` 一样每次都要确认，结果同样按不可信数据处理。
 
 ## 被拒绝之后
 

@@ -8,6 +8,7 @@ import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 SANDBOX_PORT = 8765
 
@@ -88,6 +89,18 @@ def wait_ready(endpoint: str, web_token: str, timeout: float, alive=lambda: True
 class Launcher(ABC):
     name = ""
     isolated = False               # 有没有真正的隔离（本机子进程没有）
+    # 额外注入沙箱的环境变量（只读，要改就整个替换）：沙箱代理打开出站代理时放 HTTP(S)_PROXY / NO_PROXY
+    extra_env: dict = {}
+
+    def sandbox_extra_env(self, spec: SandboxSpec) -> dict:
+        """extra_env，并把这个沙箱的模型网关地址补进 NO_PROXY：模型调用不能绕到出站代理上
+        （控制面用 NCS_REMOTE_GATEWAY_URL 指了别的地址时，中继地址之外还有这一个）。"""
+        env = dict(self.extra_env)
+        if env.get("NO_PROXY"):
+            host = urlsplit(str(spec.policy.get("base_url") or "")).hostname
+            if host and host not in env["NO_PROXY"].split(","):
+                env["NO_PROXY"] = env["no_proxy"] = env["NO_PROXY"] + "," + host
+        return env
 
     @abstractmethod
     def start(self, spec: SandboxSpec) -> str:

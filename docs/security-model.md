@@ -68,17 +68,25 @@ flowchart LR
 | 沙箱面板 `/s/<id>/` 和控制面同源，浏览器同源请求会带上控制面登录 Cookie | 面板一旦有 XSS，脚本能以用户身份调 `/api/credentials`、`/api/sessions` | 面板 CSP 只允许同源脚本和内联脚本、平台统一加安全头（#113）；面板输出做了转义和链接过滤（#89、#90） | [#114](https://github.com/mbaiagent/nanocode/issues/114) |
 | 控制面进程也持有解密用的 SecretBox | 控制面被攻破 = Key 泄露 | 威胁模型里控制面本身是可信组件 | 设计如此，见 server/README |
 
-## 五、出站代理（计划中）与它的前置条件
+## 五、出站代理（已实现，默认关）与它的前置条件
 
-用户需要沙箱里能 `pip install`、`web_search`、`web_fetch`，计划加一个**只放行 HTTP/HTTPS** 的出站代理（CONNECT 443 + HTTP 80，由代理代做 DNS，拒绝内网 / 链路本地 / 云元数据 / WireGuard 网段以及平台和宿主机地址，按沙箱限速限连接；沙箱通过 `HTTP_PROXY` / `HTTPS_PROXY` 使用，防火墙只多放行代理端口）。默认关闭。
+用户需要沙箱里能 `pip install`、`web_search`、`web_fetch`。远程沙箱有一个**只放行 HTTP/HTTPS** 的出站代理（`NCS_EGRESS_PROXY`，默认关，[PR #137](https://github.com/mbaiagent/nanocode/pull/137)）：
+- 只做 CONNECT 和明文 HTTP，目标端口默认只放 80/443；DNS 由代理解析，沙箱里没有 DNS；
+- 拒绝内网、CGNAT、本机、链路本地（含云元数据）、ULA、WireGuard 网段、沙箱网段和沙箱机自己的地址；
+- 检查过哪个 IP 就连哪个 IP，防 DNS 重绑定；
+- 每个沙箱有连接上限和空闲超时；
+- 访问日志只记域名和字节数；
+- 沙箱通过 `HTTP_PROXY` / `HTTPS_PROXY` 使用它，防火墙只多放行代理端口。
+
+细节见 [distributed-deploy.md 3.5](distributed-deploy.md#35-出站代理沙箱上网默认关)。经用户自己配的上游代理（公司代理等）出网时，防重绑定取决于那个上游代理。
 
 一旦打开，"没有外网"这层缓解就没了：提示词注入只要 `env` + `curl` 就能把令牌发出去。所以：
 
-1. **[#134](https://github.com/mbaiagent/nanocode/issues/134) 修完前不在生产打开出站代理**：沙箱里只放短期、只能访问中继的令牌，执行工具时清理子进程环境里的 `NANOCODE_*`。
-2. [#135](https://github.com/mbaiagent/nanocode/issues/135)：审计由沙箱外的组件写，或实时推到平台只追加存储。
-3. [#136](https://github.com/mbaiagent/nanocode/issues/136)：敏感文件读取默认 ask（非交互 deny）。
+1. [#134](https://github.com/mbaiagent/nanocode/issues/134)：工具子进程不继承令牌，Web 进程不可 dump。**已由 [PR #146](https://github.com/mbaiagent/nanocode/pull/146) 修复。**
+2. [#135](https://github.com/mbaiagent/nanocode/issues/135)：审计日志可被沙箱篡改。已关闭。
+3. [#136](https://github.com/mbaiagent/nanocode/issues/136)：敏感文件读取默认 ask（非交互 deny）。**已由 [PR #147](https://github.com/mbaiagent/nanocode/pull/147) 修复。**
 
-这三项和出站代理本身合并后，本节改成"已实现"。
+代理本身已经实现，`NCS_EGRESS_PROXY` 仍然默认 `0`。生产上打开要人来决定，先确认沙箱镜像已经包含上面的修复，并接受残留风险：同一个进程里的 Python 工具、读得到的文件。
 
 ## 六、工作区快照（`NCS_OBJECT_STORE=s3`）
 

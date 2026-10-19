@@ -85,6 +85,16 @@
 | `NCS_AGENT_RELAY_MAX_CONNECTIONS` | `128` | 代理 | 中继全局连接上限 |
 | `NCS_AGENT_RELAY_PER_SANDBOX` | `16` | 代理 | 每个沙箱（按来源 IP）的中继连接上限，要求 1 ≤ 它 ≤ 全局上限 |
 | `NCS_AGENT_RELAY_IDLE_TIMEOUT` | `300` | 代理 | 中继连接两个方向都没数据超过这么多秒就断开，至少 10 |
+| `NCS_EGRESS_PROXY` | `0` | 代理 | 出站代理开关：沙箱经它访问公网 HTTP/HTTPS，内网 / 元数据 / 本机地址一律拒绝；打开后给沙箱注入 `HTTP(S)_PROXY`、`NO_PROXY`、`NANOCODE_EGRESS_PROXY=1`。生产打开前确认镜像已包含 [#134](https://github.com/mbaiagent/nanocode/issues/134) 的修复（PR #146）；打开前防火墙脚本要带 `NCS_EGRESS_PORT`。见 [distributed-deploy.md 3.5](distributed-deploy.md#35-出站代理沙箱上网默认关) |
+| `NCS_EGRESS_BIND` | 空 = 和网关中继相同 | 代理 | 出站代理监听地址，拒绝 `0.0.0.0` / `::` |
+| `NCS_EGRESS_PORT` | `3128` | 代理 | 出站代理端口，不能等于 `NCS_GATEWAY_PORT` |
+| `NCS_EGRESS_ALLOWED_PORTS` | `80,443` | 代理 | 允许的目标端口（CONNECT 和明文 HTTP 共用） |
+| `NCS_EGRESS_MAX_CONNECTIONS` | `64` | 代理 | 出站代理全局连接上限 |
+| `NCS_EGRESS_PER_SANDBOX` | `8` | 代理 | 每个沙箱（按来源 IP）上限，要求 1 ≤ 它 ≤ 全局上限 |
+| `NCS_EGRESS_IDLE_TIMEOUT` | `120` | 代理 | 两个方向都没数据超过这么多秒就断开，至少 10 |
+| `NCS_EGRESS_ALLOW_DOMAINS` | 空 = 不限 | 代理 | 域名白名单，逗号分隔，含子域名；非空时直接写 IP 的一律拒绝 |
+| `NCS_EGRESS_DENY_DOMAINS` | 空 | 代理 | 域名黑名单，先于白名单判断 |
+| `NCS_EGRESS_BLOCK_NETWORKS` | 空 | 代理 | 额外拦住的网段（WireGuard 网段、经 NAT 进来的公网 IP 等）；私网、CGNAT、链路本地、ULA、沙箱网段、本机地址已经自动拦了 |
 
 ## 4a. 工作区快照（`NCS_OBJECT_STORE=s3`，PR #144）
 
@@ -149,7 +159,6 @@
 |---|---|---|
 | `NCS_SEARCH_*` | 兼容旧名 | `web_search` 的旧前缀，新名是 `NANOCODE_SEARCH_*`（见 README） |
 | `NCS_REAP_INTERVAL` | **进行中**：[PR #133](https://github.com/mbaiagent/nanocode/pull/133)（未合并） | 回收线程间隔（默认 60 秒）；空闲时不查数据库，让托管 Postgres 能缩到零（[#131](https://github.com/mbaiagent/nanocode/issues/131)） |
-| 出站代理相关（issue 里暂称 `NCS_EGRESS_PROXY`） | **计划中**，变量名以 PR 为准 | 沙箱只放行 HTTP/HTTPS 的出站代理，默认关闭；**在 [#134](https://github.com/mbaiagent/nanocode/issues/134) 修完前不应在生产打开** |
 
 ## 附：沙箱内 nanocode 进程的相关变量
 
