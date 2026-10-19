@@ -59,7 +59,6 @@ class Authenticator:
         prefix = "__Host-" if cfg.https else ""
         self.session_cookie = f"{prefix}ncs_sid"
         self.oauth_cookie = f"{prefix}ncs_oauth"
-        self._known: set[str] = set()       # dev / proxy：已经建过账号的 id，不用每个请求查库
 
     @property
     def mode(self) -> str:
@@ -70,9 +69,14 @@ class Authenticator:
             raise AuthError("开发模式只接受 Host 为本机地址的请求（防 DNS 重绑定）", 403)
 
     def _ensure(self, uid: str, provider: str) -> str:
-        if self.accounts and uid not in self._known:
-            self.accounts.ensure_user(uid, provider)
-            self._known.add(uid)
+        """dev / proxy：第一次出现时建账号；每次都检查账号状态——停用必须立即生效。
+
+        不做进程内缓存：缓存会让停用在多副本 / 缓存有效期内失效（停用了还能起沙箱）。
+        """
+        if self.accounts:
+            user = self.accounts.store.get_user(uid) or self.accounts.ensure_user(uid, provider)
+            if user.status != "active":
+                raise AuthError("这个账号已被管理员停用", 403)
         return uid
 
     def identify(self, headers, cookies: dict) -> str | None:
@@ -87,7 +91,7 @@ class Authenticator:
             raw = headers.get(self.cfg.auth_header) or ""
             return self._ensure(normalize_user(raw), "proxy") if raw else None
         claims = self.signer.verify(cookies.get(COOKIE, ""))
-        return claims["u"] if claims else None
+        return self._ensure(claims["u"], "dev") if claims else None
 
     # ------------------------------------------------------------------ Cookie
 

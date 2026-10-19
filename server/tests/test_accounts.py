@@ -18,7 +18,7 @@ from nanocode_server.security.accounts import AccountError, Accounts, token_hash
 from nanocode_server.security.auth import Authenticator
 from nanocode_server.security.github import GitHubError, GitHubOAuth, pkce_pair
 from nanocode_server.storage import Database, Store
-from support import PG_URL, make_config
+from support import PG_URL, Client, make_config
 
 ADMIN = {"id": 14838384, "login": "mbaiagent", "name": "MB", "avatar_url": "https://avatars.example/x.png"}
 
@@ -357,8 +357,11 @@ class GitHubLoginEndToEndTest(unittest.TestCase):
         users = {u["id"]: u for u in admin.request("GET", "/api/admin/users")[1]["users"]}
         self.assertEqual(users["gh-2"]["login"], "alice")
 
-        # 停用 → 立即失效；不能停用自己
+        # 停用 → 立即失效；不能停用自己，也不能停用别的管理员
         self.assertEqual(admin.request("POST", "/api/admin/users/gh-14838384/status", {"status": "disabled"})[0], 400)
+        self.platform.store.update_user("gh-2", role="admin")
+        self.assertEqual(admin.request("POST", "/api/admin/users/gh-2/status", {"status": "disabled"})[0], 400)
+        self.platform.store.update_user("gh-2", role="user")
         self.assertEqual(admin.request("POST", "/api/admin/users/gh-2/status", {"status": "disabled"})[0], 200)
         self.assertEqual(alice.request("GET", "/api/me")[0], 401)
         _, _, loc = self.login(profile(2, "alice"))
@@ -403,6 +406,64 @@ class GitHubLoginEndToEndTest(unittest.TestCase):
         b, _, _ = self.login({**ADMIN, "emails": []})
         status, _, _ = b.request("POST", "/api/admin/invites", {}, headers={"origin": "https://evil.example"})
         self.assertEqual(status, 403)
+
+
+class LogFailureTest(unittest.TestCase):
+    def test_logging_never_breaks_the_request(self):
+        """stderr 不是 UTF-8（Windows cp1252）或日志本身出错：登录失败照样跳回登录页。"""
+        import logging
+        from nanocode_server.web import control
+
+        class Boom(logging.Handler):
+            def emit(self, record):
+                raise UnicodeEncodeError("cp1252", "换取", 0, 1, "nope")
+        h = Boom()
+        h.handleError = lambda record: (_ for _ in ()).throw(RuntimeError("handler failed"))
+        control._auth_log.addHandler(h)
+        try:
+            control._log_failure("rid", "github", "换取令牌失败：bad_verification_code")
+        finally:
+            control._auth_log.removeHandler(h)
+
+
+class DevAndProxyStatusTest(unittest.TestCase):
+    """dev / proxy 模式下停用账号也必须立即生效（不能只靠 github 模式的登录会话检查）。"""
+
+    def test_disabled_dev_user_is_locked_out(self):
+        platform = Platform(make_config(admin_github_logins=["root"]), log=lambda m: None)
+        platform.start()
+        try:
+            port = platform.control_port
+            root, bob = Client(port, "root"), Client(port, "bob")
+            self.assertEqual(bob.request("GET", "/api/me")[0], 200)
+            self.assertEqual(root.request("POST", "/api/admin/users/bob/status", {"status": "disabled"})[0], 200)
+            self.assertEqual(bob.request("GET", "/api/me")[0], 403)                       # 旧 Cookie 失效
+            self.assertEqual(bob.request("POST", "/api/sessions", {"title": "x"})[0], 403)
+            again = Client(port)
+            self.assertEqual(again.request("POST", "/api/login", {"user": "bob"})[0], 403)  # 重新登录也不行
+            self.assertEqual(root.request("POST", "/api/admin/users/bob/status", {"status": "active"})[0], 200)
+            self.assertEqual(bob.request("GET", "/api/me")[0], 200)
+        finally:
+            platform.close()
+
+    def test_disabled_proxy_user_is_rejected_even_with_valid_proxy_headers(self):
+        secret = "p" * 24
+        cfg = make_config(auth="proxy", proxy_secret=secret, admin_github_logins=["boss@example.com"],
+                          allow_unisolated=True)
+        platform = Platform(cfg, log=lambda m: None)
+        platform.start()
+        try:
+            port = platform.control_port
+            boss = Client(port, "boss@example.com", proxy_secret=secret)
+            eve = Client(port, "eve@example.com", proxy_secret=secret)
+            self.assertEqual(eve.request("GET", "/api/me")[0], 200)
+            self.assertEqual(boss.request("GET", "/api/me")[1]["role"], "admin")
+            status, data, _ = boss.request("POST", "/api/admin/users/eve@example.com/status", {"status": "disabled"})
+            self.assertEqual(status, 200, data)
+            self.assertEqual(eve.request("GET", "/api/me")[0], 403)
+            self.assertEqual(eve.request("POST", "/api/sessions", {"title": "x"})[0], 403)
+        finally:
+            platform.close()
 
 
 class LoginRateLimitTest(unittest.TestCase):

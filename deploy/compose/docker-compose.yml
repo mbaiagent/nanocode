@@ -1,8 +1,9 @@
-# 单机部署：Caddy（自动 HTTPS）+ 控制面 + 模型网关（一个进程）+ PostgreSQL + Redis + Docker 沙箱。
+# 单机部署：[可选 Caddy（自动 HTTPS，--profile caddy）] + 控制面 + 模型网关（一个进程）+ PostgreSQL + Redis + Docker 沙箱。
 # 用法见同目录 README.md。只支持 Linux 宿主机（用了 network_mode: host）。
 #
 #   cp .env.example .env && 编辑 .env
-#   docker compose up -d --build
+#   docker compose up -d --build                    # 前面已有 nginx 等反向代理（见 nginx.example.conf）
+#   docker compose --profile caddy up -d --build    # 用自带的 Caddy 占 80/443、自动申请证书
 #
 # 为什么平台用 host 网络：Docker 启动器要（1）把模型网关监听在沙箱内部网络的网桥地址上，
 # （2）直接访问沙箱容器在内部网络里的 IP。这两件事都要在宿主机的网络命名空间里做。
@@ -107,6 +108,7 @@ services:
 
   caddy:
     image: caddy:2-alpine
+    profiles: ["caddy"]              # 可选：机器上已有 nginx 时不启用
     restart: unless-stopped
     network_mode: host               # 直接占用宿主机 80/443，并访问只听 127.0.0.1 的控制面
     depends_on:

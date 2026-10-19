@@ -134,6 +134,12 @@ class ComposeConsistencyTest(unittest.TestCase):
         self.assertIn("{$NCS_DOMAIN}", caddy)
         self.assertIn("reverse_proxy 127.0.0.1:{$NCS_PORT}", caddy)
         self.assertIn("flush_interval -1", caddy)                   # SSE 不缓冲
+        self.assertIn("admin off", caddy)                           # host 网络下不开 :2019 管理 API
+        self.assertIn('profiles: ["caddy"]', self.compose)          # 可选：已有 nginx 的机器不用它
+        nginx = read(COMPOSE, "nginx.example.conf")
+        for must in ("proxy_pass http://127.0.0.1:8700", "proxy_buffering off",
+                     "X-Forwarded-For $proxy_add_x_forwarded_for", "server_name nanocode.aipulse.lol"):
+            self.assertIn(must, nginx)
         self.assertIn("image: caddy:2", self.compose)
         self.assertIn("NCS_AUTH: ${NCS_AUTH:-github}", self.compose)
         self.assertIn("NCS_PUBLIC_URL: https://${NCS_DOMAIN", self.compose)

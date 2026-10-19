@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -175,9 +176,9 @@ class ControlApp(App):
                 raise HttpError(404, "没有这个地址")
             clear = ("set-cookie", self.auth.clear_oauth_cookie())
 
-            def fail(code: str, log: str = "") -> Response:
-                if log:
-                    print(f"[auth] GitHub 登录失败 [{req.rid}] {code}: {log}", flush=True)
+            def fail(code: str, detail: str = "") -> Response:
+                if detail:
+                    _log_failure(req.rid, code, detail)
                 return Response.redirect(f"/login?error={quote(code)}", [clear])
 
             saved = self.auth.read_oauth_cookie(req.cookies)
@@ -265,8 +266,11 @@ class ControlApp(App):
             uid = req.params["uid"]
             if uid == admin.id:
                 raise HttpError(400, "不能停用自己")
-            if not self.store.get_user(uid):
+            target = self.store.get_user(uid)
+            if not target:
                 raise HttpError(404, "不存在")
+            if target.is_admin:
+                raise HttpError(400, "不能停用管理员")
             self.store.update_user(uid, status=status)
             if status == "disabled":
                 self.store.revoke_user_sessions(uid)
@@ -396,6 +400,19 @@ class ControlApp(App):
             return {"ok": False, "error": f"网关返回 HTTP {e.code}"}
         except (urllib.error.URLError, OSError, ValueError) as e:
             return {"ok": False, "error": f"连不上模型网关：{e}"}
+
+
+_auth_log = logging.getLogger("nanocode_server.auth")
+
+
+def _log_failure(rid: str, code: str, detail: str) -> None:
+    """登录失败记日志。日志绝不能影响请求：终端不是 UTF-8（Windows cp1252、容器 locale 不对）
+    时直接 print 中文会抛 UnicodeEncodeError，回调就变成 500 而不是跳回登录页。
+    所以只写 ASCII（非 ASCII 转义），并且吞掉一切日志异常。"""
+    try:
+        _auth_log.warning("github login failed [%s] %s: %s", rid, code, ascii(detail))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _model_list(value) -> list[str]:

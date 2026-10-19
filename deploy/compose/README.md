@@ -1,6 +1,6 @@
 # 单机部署（docker compose）
 
-一台 Linux 服务器上跑起整个平台：Caddy（自动 HTTPS）、控制面 + 模型网关（一个进程）、PostgreSQL 16、Redis 7，沙箱用宿主机的 Docker（每个会话一个容器）。登录用 GitHub OAuth，注册要邀请码，模型 Key 由用户自带。
+一台 Linux 服务器上跑起整个平台：HTTPS 反向代理（可选自带的 Caddy，或机器上已有的 nginx）、控制面 + 模型网关（一个进程）、PostgreSQL 16、Redis 7，沙箱用宿主机的 Docker（每个会话一个容器）。登录用 GitHub OAuth，注册要邀请码，模型 Key 由用户自带。
 
 只支持 **Linux 宿主机**。平台和 Caddy 用 `network_mode: host`：平台要把模型网关监听在沙箱内部网络的网桥地址上、直接访问沙箱容器的 IP；Caddy 直接占用宿主机 80/443，转发到只听 127.0.0.1 的控制面。macOS / Windows 请用 `NCS_AUTH=dev python -m nanocode_server` 直接跑（见 [server/README.md](../../server/README.md)）。
 
@@ -24,11 +24,26 @@ sed -i "s/替换成-openssl-rand-hex-16-的输出/$(openssl rand -hex 16)/g" .en
 chmod 600 .env
 # 编辑 .env：NCS_DOMAIN、NCS_GITHUB_CLIENT_ID、NCS_GITHUB_CLIENT_SECRET、NCS_ADMIN_GITHUB_LOGINS
 sudo mkdir -p /srv/nanocode   # 或改 .env 里的 NCS_HOST_DATA_DIR
-docker compose up -d --build
+# 二选一：
+docker compose --profile caddy up -d --build     # 用自带的 Caddy 占 80/443、自动申请证书
+docker compose up -d --build                     # 机器上已有 nginx：见下文"用已有的 nginx"
 docker compose ps                                  # platform 的 health 应变为 healthy
 curl -s http://127.0.0.1:8700/healthz              # {"ok": true, "launcher": "docker", "isolated": true}
 curl -sI https://nanocode.aipulse.lol/login        # 证书申请成功后 200
 ```
+
+## 用已有的 nginx（代替 Caddy）
+
+机器上 80/443 已经被 nginx 占着时，不启用 `caddy` profile，用 [nginx.example.conf](nginx.example.conf)：
+
+```bash
+sudo cp nginx.example.conf /etc/nginx/sites-available/nanocode
+sudo ln -s /etc/nginx/sites-available/nanocode /etc/nginx/sites-enabled/nanocode
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot --nginx -d nanocode.aipulse.lol      # 申请证书，自动加 443 和 http→https 跳转
+```
+
+要点：`proxy_buffering off`（事件流）、`X-Forwarded-For $proxy_add_x_forwarded_for`（登录限流按真实 IP）、`Host $host`。
 
 ## 第一次登录
 
@@ -41,7 +56,7 @@ curl -sI https://nanocode.aipulse.lol/login        # 证书申请成功后 200
 
 | 服务 | 说明 |
 |---|---|
-| `caddy` | 自动申请 / 续期 Let's Encrypt 证书，证书在 `caddy_data` 卷。HSTS；SSE 不缓冲 |
+| `caddy` | 可选（`--profile caddy`）。自动申请 / 续期 Let's Encrypt 证书，证书在 `caddy_data` 卷。HSTS；SSE 不缓冲；管理 API 关闭 |
 | `platform` | `nanocode-server:latest`，`standalone` 模式，只听 `127.0.0.1:8700`。以 root 运行（要操作 docker.sock，并把工作区 chown 给沙箱里的 uid 10001）；沙箱容器本身仍是非 root、只读根、无 capabilities、内部网络 |
 | `sandbox-image` | 只负责构建 `nanocode-sandbox:latest`，容器立即退出 |
 | `postgres` | 端口只发布到 `127.0.0.1:15432`，数据在 `pgdata` 卷 |
