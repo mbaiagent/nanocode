@@ -160,7 +160,9 @@ class Agent:
                     final = f"{LLM_FAILED_PREFIX}{e}"
                     break
                 self.usage.add(resp.usage)
-                content = resp.content or [text_block("(空回复)")]
+                content = resp.content
+                if not any(b.get("type") != "reasoning" for b in content):   # 只有思考、没有正文（#99）
+                    content = content + [text_block("(空回复)")]
                 self.messages.append(assistant_message(content))
                 self.emit("llm_response", step=step, content=content, stop_reason=resp.stop_reason,
                           usage=resp.usage.to_dict(), total_usage=self.usage.to_dict(),
