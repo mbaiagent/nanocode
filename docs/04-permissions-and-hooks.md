@@ -18,6 +18,7 @@
 
 ```
                      ┌─ 命中 deny 规则？ ─────────────▶ 拒绝
+                     ├─ 读敏感文件 且 不是 bypass？ ───▶ 询问（#136，宽泛 allow 规则也不放行）
                      ├─ plan 模式 且 不是只读工具？ ───▶ 拒绝（"请先给出方案"）
 工具调用 ──▶ check ──┤─ 命中 allow 规则？ ────────────▶ 允许
                      ├─ bypass 模式？ ────────────────▶ 允许
@@ -55,6 +56,23 @@ deny 永远优先：即使在 bypass 模式下，`bash(rm -rf*)` 规则也会生
 任务结束时，`review` 模式会汇总本轮改动（文件、diff、自动验证结果）；提交、推送本来就不在白名单里，所以最后一步仍然是你点头。
 
 **局限**：这是启发式规则，不是沙箱。测试命令会执行项目里的代码，包括 Agent 刚写的，所以"写一个会删文件的测试再跑 `pytest`"会被自动放行——汇总是事后给你看的。需要强隔离请用容器或虚拟机。完整讲解见第 11 章。
+
+## 敏感文件读取（#136）
+
+读操作默认免确认，但 `.env`、`*.pem`、`*.key`、`id_rsa` / `id_ed25519`、`.ssh/*`、`.netrc`、`.npmrc`、`.pypirc`、`.pgpass`、`.git-credentials`、`.aws/credentials`、`.kube/config`、`/proc/*/environ` 等文件一旦读进上下文，提示词注入就能把内容带走。所以：
+
+- `read_file`、`grep` 指向这些文件时一律**询问**，非交互时按**拒绝**处理。判断用真实路径，软链接绕不过去；`.env.example`、`*.pub` 不算。
+- 这道检查在 allow 规则之前：`read_file`、`bash(cat *)` 这样的宽泛规则不会顺带放开密钥文件。用户对某个具体文件点过"总是允许"的照常放行；bypass 模式不检查。
+- bash 里 `cat` / `head` / `tail` / `less` / `grep` / `sed` / `cp` / `base64` / `curl -d @file`、`< .env` 这类明显的读法也会触发询问。**这是启发式判断，不是沙箱**：`python -c "open('.env')"`、`bash -c`、变量拼接都看不穿。`grep -r` 扫目录也不会触发。
+
+模式可以配置（全部在 `permissions` 下）：
+
+```json
+{"permissions": {"sensitive_read": ["*.secret", "config/prod.yaml"],
+                 "sensitive_read_exclude": [".env"]}}
+```
+
+`sensitive_read` 追加模式；`sensitive_read_exclude` 去掉默认模式，写在项目配置里需要工作区信任确认。平台策略可以用 `"forbid": ["permissions.sensitive_read_exclude"]` 删掉用户和项目的排除项，再给出自己的列表（策略的列表合并进配置，优先级最高）。
 
 ## 规则
 
