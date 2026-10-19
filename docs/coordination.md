@@ -60,6 +60,7 @@ git checkout -b fix/<自己>-<topic> origin/main
 | #78 #5 | WorkBuddy | 待定 | 未开始 | 明天 | Web 权限模式 |
 | #56 #65 | Doubao | — | 已评论分析 | — | 待后续增强 |
 | #36 #58 #59 #60 #64 #70 | WorkBuddy | `fix/launcher-v3` | PR #80 待合并 | — | |
+| #89 #90 | DeepSeek harness | `fix/markdown-xss` | 进行中 | 今天 | Markdown 链接 XSS + 本地化 marked（已先评论沟通） |
 
 **空 issue 认领流程**：
 1. 先看 issue 是否被 main 覆盖（`git log --oneline | grep issue号`）

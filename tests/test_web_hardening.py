@@ -3,7 +3,9 @@
 import http.client
 import json
 import os
+import shutil
 import socket
+import subprocess
 import threading
 import time
 import unittest
@@ -147,6 +149,46 @@ class WebHardeningTest(unittest.TestCase):
         self.assertIn('"api/events?ticket="', html)     # 相对路径：页面挂在控制面的 /s/<会话>/ 前缀下也能用
         self.assertNotIn('"/api/', html)
         self.assertIn("es.onerror", html)   # 票据一次性，断线后必须自己重连
+
+    # ------------------------------------------------------------------ #89 #90 markdown 安全
+
+    def test_markdown_is_vendored_and_sanitized(self):
+        with open(os.path.join(STATIC, "index.html"), encoding="utf-8") as f:
+            html = f.read()
+        self.assertNotIn("cdn.jsdelivr.net", html)          # #90：不再从 CDN 加载
+        self.assertIn('src="marked.umd.js"', html)
+        self.assertIn('src="markdown-safe.js"', html)
+        self.assertIn("sanitizeHtml(marked.parse(esc(text)))", html)   # #89：渲染后必须清洗
+
+    def test_static_js_is_served_locally(self):
+        for name in ("marked.umd.js", "markdown-safe.js"):
+            status, body = self.req("GET", "/" + name)
+            self.assertEqual(status, 200)
+            self.assertGreater(len(body), 1000)
+
+    def test_csp_does_not_allow_external_scripts(self):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        c.request("GET", "/", headers=self.host())
+        r = c.getresponse()
+        r.read()
+        csp = r.getheader("content-security-policy") or ""
+        c.close()
+        self.assertIn("script-src 'self' 'unsafe-inline'", csp)
+        script_src = csp.split("script-src", 1)[1].split(";", 1)[0]
+        self.assertNotIn("http", script_src)                # #90：不放行任何外部域
+
+    @unittest.skipUnless(shutil.which("node"), "需要 node 才能跑 JS 纯函数单测")
+    def test_safe_url_blocks_javascript_and_data_schemes(self):
+        """对抗测试：协议白名单必须挡住 javascript:/data:/vbscript:/file:（#89）。"""
+        script = (
+            "const {safeUrl} = require(process.argv[1]);"
+            "const bad = ['javascript:alert(1)', 'JaVaScRiPt:alert(1)', 'java\\nscript:alert(1)',"
+            " '  javascript:alert(1)  ', 'data:text/html,x', 'vbscript:msgbox(1)', 'file:///etc/passwd'];"
+            "const good = ['https://example.com', 'http://a.b', 'mailto:a@b', '/docs/x', './a', '#x', '?q=1'];"
+            "for (const u of bad) if (safeUrl(u)) { console.error('allowed: ' + JSON.stringify(u)); process.exit(1); }"
+            "for (const u of good) if (!safeUrl(u)) { console.error('rejected: ' + JSON.stringify(u)); process.exit(1); }"
+        )
+        subprocess.run(["node", "-e", script, os.path.join(STATIC, "markdown-safe.js")], check=True)
 
 
 if __name__ == "__main__":
