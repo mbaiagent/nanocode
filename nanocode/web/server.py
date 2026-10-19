@@ -35,6 +35,7 @@ import json
 import os
 import queue
 import secrets
+import socketserver
 import threading
 import time
 import uuid
@@ -673,7 +674,16 @@ def make_server(session: Session, host: str = "127.0.0.1", port: int = 8765,
                 public_hosts=(), public_origins=()) -> tuple[ThreadingHTTPServer, WebApp]:
     app = WebApp(session)
     app.configure(host, port, public_hosts, public_origins)   # 先校验配置，失败就别绑端口了
-    server = ThreadingHTTPServer((host, port), make_handler(app))
+
+    class _WebHTTPServer(ThreadingHTTPServer):
+        def server_bind(self):
+            # HTTPServer.server_bind reverse-resolves the bind address via getfqdn;
+            # hosted macOS runners can stall there before listen() (issue #92).
+            socketserver.TCPServer.server_bind(self)
+            self.server_name = self.server_address[0]
+            self.server_port = self.server_address[1]
+
+    server = _WebHTTPServer((host, port), make_handler(app))
     server.daemon_threads = True
     app.configure(host, server.server_address[1], public_hosts, public_origins)   # 端口 0 时要用真实端口重算
     return server, app
