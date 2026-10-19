@@ -20,6 +20,7 @@
 
 ### 单机 nanocode / Web 面板
 
+- **安全 根目录 `.gitignore` 忽略密钥文件**（Fixes [#122](https://github.com/mbaiagent/nanocode/issues/122)）：`.env`、`.env.*`、`*.env`、`*.pem`、`*.key`、`*.p12`、`*.pfx`、`id_rsa*` / `id_ed25519*` / `id_ecdsa*` 在任何子目录都不会被 `git add -A` 带进提交；`*.env.example` 和 `*.pub` 照常提交。`tests/test_gitignore.py` 用 `git check-ignore` 验证。
 - **变化 `web_fetch` / `web_search` 遵守 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`**（[#137](https://github.com/mbaiagent/nanocode/pull/137)）：以前一律直连，现在设了代理就走代理（https 走 CONNECT，证书仍按域名校验）。本地仍会先解析并拦住内网地址；不过经你自己配的上游代理时，代理会再解析一次域名，防 DNS 重绑定就取决于那个代理。设了 `NANOCODE_EGRESS_PROXY=1`（平台沙箱）时，域名直接交给代理解析。
 - **安全 读取敏感文件默认需要确认**（[#147](https://github.com/mbaiagent/nanocode/pull/147)，Fixes [#136](https://github.com/mbaiagent/nanocode/issues/136)）：`.env`、私钥、`.netrc`、云凭据等读取时询问，非交互时拒绝；宽泛 allow 规则不放行；bash 常见读法启发式识别。新配置 `permissions.sensitive_read` / `permissions.sensitive_read_exclude`。
 - **安全 工具子进程不继承凭据**（[#146](https://github.com/mbaiagent/nanocode/pull/146)，Fixes [#134](https://github.com/mbaiagent/nanocode/issues/134)）：bash / verify / hook 子进程拿不到 `NANOCODE_*`、`NCS_*`（行为变化：本地模式下 `NANOCODE_API_KEY` 也不再传给子进程，厂商 Key 照常传）；平台模式下另外去掉厂商 Key 和像密钥的变量，Web 进程设为不可 dump。新增 `NANOCODE_TOOL_ENV_KEEP` 放行。
