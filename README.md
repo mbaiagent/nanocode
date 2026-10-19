@@ -29,7 +29,7 @@
 
 ## 亮点
 
-- **纯 Python 标准库**，零依赖，核心代码约 6200 行（含大量中文注释），每个文件开头都有讲解
+- **纯 Python 标准库**，零依赖，核心代码约 7100 行（含大量中文注释），每个文件开头都有讲解
 - **380+ 个单元测试**，覆盖循环的每个分支、两种协议的流式解析、检索管线、安全回归、评测框架自检，以及一个让文档和代码保持一致的测试
 - **可接入任何一家模型**：Claude、GPT、DeepSeek、通义千问、Kimi、智谱 GLM、硅基流动、OpenRouter、本地 Ollama，或任何 OpenAI / Anthropic 兼容的中转服务
 - **实现了 Claude Code 的核心机制**：Agent 循环、流式输出、文件/命令/搜索/读网页工具、权限模式与规则、Hooks、项目记忆、上下文压缩、待办清单、子 Agent、Skills、自定义斜杠命令、MCP、会话保存
@@ -254,6 +254,8 @@ nanocode --api-key sk-xxx                     # 直接给 API Key（更推荐用
 | `NANOCODE_WEB_DAILY_RUNS` | 每个自然日最多启动多少轮 Agent（含排队后执行的），默认 200，用完返回 429（`code: daily_budget`）。设为 `0` 不限 |
 | `NANOCODE_WEB_DAILY_LLM_CALLS` | 每个自然日最多调用多少次模型 API（Provider 层计数，一轮 Agent 可能调用很多次），默认 `0` 不限；到上限按"配额用尽"处理，不再重试 |
 | `NANOCODE_TRUST_PROXY` | 设为 `1` 时按 `X-Forwarded-For` 最左侧地址区分客户端。只在确实挂了反向代理时开（否则可被伪造）；挂了反代却不开，所有人会共用代理 IP 的一个限流桶 |
+| `NANOCODE_SEARCH_PROVIDER` `NANOCODE_SEARCH_BASE_URL` `NANOCODE_SEARCH_API_KEY` | `web_search` 的搜索源：`duckduckgo`（默认，零配置）、`searxng`（填地址）、`tavily` / `brave` / `serper` / `deepseek`（填 Key，`deepseek` 兼容 `/v1/search` 形状）。旧前缀 `NCS_SEARCH_*` 仍兼容 |
+| `NANOCODE_SEARCH_ALLOW_HTTP` `NANOCODE_SEARCH_ALLOW_PRIVATE` | 自建 SearXNG 在 http 或内网时打开：前者允许明文，后者放弃公网地址校验。只在完全可信的本地/内网环境使用 |
 
 ## 目录结构
 
@@ -273,7 +275,7 @@ nanocode/
 │   ├── search.py        glob / grep
 │   ├── rag_tool.py      search_docs（按含义检索文档）
 │   ├── web.py           web_fetch（读网页：默认每次确认，拒绝本机和内网地址）
-│   ├── web_search.py    web_search（联网搜索：provider 无关，配环境变量启用）
+│   ├── web_search.py    web_search（联网搜索：默认 DuckDuckGo，可切 SearXNG / Tavily / Brave / Serper）
 │   └── planning.py      todo_write / task（子 Agent）/ skill
 ├── agent.py           ★ 核心循环
 ├── rag.py             RAG：切块、BM25、向量、混合检索、增量索引
