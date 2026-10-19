@@ -20,7 +20,7 @@ from nanocode_server.security.github import GitHubError, GitHubOAuth, pkce_pair
 from nanocode_server.storage import Database, Store
 from support import PG_URL, Client, make_config
 
-ADMIN = {"id": 14838384, "login": "mbaiagent", "name": "MB", "avatar_url": "https://avatars.example/x.png"}
+ADMIN = {"id": 1000001, "login": "octo-admin", "name": "MB", "avatar_url": "https://avatars.example/x.png"}
 
 
 def profile(i, login):
@@ -29,7 +29,7 @@ def profile(i, login):
 
 def github_config(**kw):
     base = dict(auth="github", github_client_id=CLIENT_ID, github_client_secret=CLIENT_SECRET,
-                public_url="http://127.0.0.1:8700", admin_github_logins=["mbaiagent"], allow_unisolated=True)
+                public_url="http://127.0.0.1:8700", admin_github_logins=["octo-admin"], allow_unisolated=True)
     return make_config(**{**base, **kw})
 
 
@@ -53,10 +53,10 @@ class ConfigTest(unittest.TestCase):
 
     def test_github_needs_client_and_public_url(self):
         github_config().validate()
-        github_config(public_url="https://nanocode.aipulse.lol", host="127.0.0.1", launcher="docker").validate()
+        github_config(public_url="https://nanocode.example.com", host="127.0.0.1", launcher="docker").validate()
         for kw, msg in [({"github_client_secret": ""}, "CLIENT_SECRET"),
                         ({"public_url": ""}, "NCS_PUBLIC_URL"),
-                        ({"public_url": "http://nanocode.aipulse.lol"}, "https"),
+                        ({"public_url": "http://nanocode.example.com"}, "https"),
                         ({"public_url": "https://x.example/sub"}, "NCS_PUBLIC_URL"),
                         ({"github_oauth_url": "http://evil.example"}, "NCS_GITHUB_OAUTH_URL"),
                         ({"session_idle": 0}, "NCS_SESSION")]:
@@ -68,7 +68,7 @@ class ConfigTest(unittest.TestCase):
             make_config(auth="dev", host="0.0.0.0").validate()
 
     def test_https_cookies_use_host_prefix_and_secure(self):
-        auth = Authenticator(github_config(public_url="https://nanocode.aipulse.lol"))
+        auth = Authenticator(github_config(public_url="https://nanocode.example.com"))
         c = auth.session_cookie_for("tok")
         self.assertTrue(c.startswith("__Host-ncs_sid=tok; Path=/; HttpOnly; SameSite=Lax"), c)
         self.assertIn("; Secure", c)
@@ -118,7 +118,7 @@ class AccountsTest(unittest.TestCase):
 
     def test_bootstrap_admin_needs_no_invite(self):
         u = self.admin()
-        self.assertEqual((u.id, u.role, u.login), ("gh-14838384", "admin", "mbaiagent"))
+        self.assertEqual((u.id, u.role, u.login), ("gh-1000001", "admin", "octo-admin"))
 
     def test_bootstrap_by_numeric_id(self):
         self.cfg.admin_github_logins = ["id:42"]
@@ -176,10 +176,10 @@ class AccountsTest(unittest.TestCase):
         self.assertEqual((len(ok), len(errors)), (1, 7))
 
     def test_admin_login_name_squatting_is_not_promoted(self):
-        """原管理员改名后，别人注册了 mbaiagent 这个名字：不能因为名字对上就成为管理员。"""
+        """原管理员改名后，别人注册了 octo-admin 这个名字：不能因为名字对上就成为管理员。"""
         self.admin()
         with self.assertRaises(AccountError):
-            self.acc.github_login(profile(999, "mbaiagent"))       # 没邀请码 → 拒绝（不是引导管理员）
+            self.acc.github_login(profile(999, "octo-admin"))       # 没邀请码 → 拒绝（不是引导管理员）
 
     def test_disabled_user_cannot_log_in(self):
         _, code = self.acc.create_invite(self.admin())
@@ -332,7 +332,7 @@ class GitHubLoginEndToEndTest(unittest.TestCase):
         self.assertIn("ncs_sid", admin.cookies)
         self.assertNotIn("ncs_oauth", admin.cookies)                 # 用完就清
         me = admin.request("GET", "/api/me")[1]
-        self.assertEqual((me["user"], me["login"], me["role"], me["auth"]), ("gh-14838384", "mbaiagent", "admin", "github"))
+        self.assertEqual((me["user"], me["login"], me["role"], me["auth"]), ("gh-1000001", "octo-admin", "admin", "github"))
         self.assertEqual(admin.request("GET", "/admin")[0], 200)
 
         # 没邀请码的新人被拒
@@ -358,7 +358,7 @@ class GitHubLoginEndToEndTest(unittest.TestCase):
         self.assertEqual(users["gh-2"]["login"], "alice")
 
         # 停用 → 立即失效；不能停用自己，也不能停用别的管理员
-        self.assertEqual(admin.request("POST", "/api/admin/users/gh-14838384/status", {"status": "disabled"})[0], 400)
+        self.assertEqual(admin.request("POST", "/api/admin/users/gh-1000001/status", {"status": "disabled"})[0], 400)
         self.platform.store.update_user("gh-2", role="admin")
         self.assertEqual(admin.request("POST", "/api/admin/users/gh-2/status", {"status": "disabled"})[0], 400)
         self.platform.store.update_user("gh-2", role="user")
@@ -397,7 +397,7 @@ class GitHubLoginEndToEndTest(unittest.TestCase):
             self.gh.fail_token = False
         self.assertEqual(loc, "/login?error=github")
         b = Browser(self.port)
-        self.assertEqual(b.request("POST", "/api/login", {"user": "mbaiagent"})[0], 404)
+        self.assertEqual(b.request("POST", "/api/login", {"user": "octo-admin"})[0], 404)
         self.assertEqual(b.request("GET", "/api/auth/info")[1]["mode"], "github")
         self.assertEqual(b.request("GET", "/api/me")[0], 401)
         self.assertEqual(b.request("GET", "/admin")[2], "/login")
