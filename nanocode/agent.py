@@ -23,6 +23,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import os
 import threading
 import time
@@ -331,7 +333,7 @@ class Agent:
         return [p["result"] for p in plans]
 
     def _prepare(self, call: dict) -> dict:
-        plan = {"call": call, "tool": None, "result": None}
+        plan = {"call": call, "tool": None, "result": None, "path": ""}
         self.emit("tool_call", id=call["id"], name=call["name"], input=call["input"])
         if self.cancel.is_set():
             plan["result"] = self._finish(call, "用户中断了操作，工具未执行", True)
@@ -346,10 +348,11 @@ class Agent:
         if decision.behavior == "deny":
             plan["result"] = self._finish(call, f"权限被拒绝：{decision.reason}", True)
             return plan
+        plan["path"] = decision.path      # 批准的是这个真实路径；执行时复核，防 check/open 之间换链接（#42）
         if self.write_scope is not None and tool.name in EDIT_TOOLS:
             # norm_rel 统一分隔符和大小写：Windows 上 `pkg\\a.txt` 也要能匹配
             # `pkg/*` 这类范围，否则同一个文件会漏过范围检查（#35）
-            rel = norm_rel(safe_relpath(self.ctx.resolve(call["input"].get("path", "")), self.cwd))
+            rel = norm_rel(safe_relpath(decision.path or self.ctx.resolve(call["input"].get("path", "")), self.cwd))
             if not subcheck.in_scope(rel, self.write_scope):
                 plan["result"] = self._finish(call, f"{rel} 不在这个子任务允许修改的范围内：{self.write_scope or '(只读，不许改任何文件)'}", True)
                 return plan
@@ -368,7 +371,9 @@ class Agent:
             return
         if self._review_before is not None and tool.name in EDIT_TOOLS:
             review.remember(self._review_originals, self.cwd, self.ctx.resolve(str(call["input"].get("path", ""))))
-        result = tool.execute(call["input"], self.ctx)
+        # 每次调用一份带 approved_path 的副本：并行的只读调用各自复核各自的路径
+        ctx = dataclasses.replace(self.ctx, approved_path=plan["path"]) if plan.get("path") else self.ctx
+        result = tool.execute(call["input"], ctx)
         if tool.changes_workspace and not result.is_error:
             self._dirty = True
             if self._lesson is not None and tool.name in EDIT_TOOLS:   # 打回之后改了哪些文件，是候选里的证据

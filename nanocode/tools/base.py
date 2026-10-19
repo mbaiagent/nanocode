@@ -103,12 +103,54 @@ class ToolContext:
     cancel: threading.Event = field(default_factory=threading.Event)
     run_subagent: Optional[Callable[..., str]] = None   # (description, prompt, check="", allowed_paths=None) -> 结论 + 验收报告
     skills: dict = field(default_factory=dict)
+    # 权限判定时解析出的真实路径（用户批准的就是它）。Agent 每次调用路径类工具时
+    # 用一份带上它的副本，工具执行前用 resolve_checked() 复核（#42）。空 = 不复核。
+    approved_path: str = ""
 
     def __post_init__(self):
         self.cwd = os.path.realpath(self.cwd)
 
     def resolve(self, path: str) -> str:
         return resolve_path(self.cwd, path)
+
+    def resolve_checked(self, path: str) -> str:
+        """解析路径，并确认它仍是权限判定时的那个文件。
+
+        check 和 open 之间隔着用户确认（可能好几分钟）、PreToolUse hook、并行的子 Agent，
+        这期间把软链接换个指向，工具实际操作的就成了没被批准的文件（TOCTOU，#42）。
+        """
+        full = self.resolve(path)
+        if self.approved_path and not _same_path(full, self.approved_path):
+            raise ToolError(f"路径在权限确认之后变了：确认时是 {self.approved_path}，现在指向 {full}。"
+                            "为安全起见没有执行，请重新发起这次操作。")
+        return full
+
+
+def _same_path(a: str, b: str) -> bool:
+    if os.name == "nt":
+        a, b = os.path.normcase(a), os.path.normcase(b)
+    return a == b
+
+
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+def open_nofollow(path: str, mode: str = "rb", **kw):
+    """打开 resolve_checked() 给出的真实路径，最后一级不跟随软链接。
+
+    真实路径里本不该有软链接；复核之后到 open 之前要是有人把文件换成了软链接，
+    O_NOFOLLOW 会让 open 直接失败（ELOOP），而不是顺着链接去读写别处。
+    Windows 没有 O_NOFOLLOW，只能靠前面的复核。
+    """
+    flags = {"rb": os.O_RDONLY, "w": os.O_WRONLY | os.O_CREAT | os.O_TRUNC}[mode]
+    flags |= getattr(os, "O_BINARY", 0) | _NOFOLLOW
+    try:
+        fd = os.open(path, flags, 0o666)
+    except OSError as e:
+        if _NOFOLLOW and os.path.islink(path):
+            raise ToolError(f"{path} 在权限确认之后被换成了软链接，为安全起见没有执行。") from None
+        raise
+    return os.fdopen(fd, mode, **kw)
 
 
 class Tool:

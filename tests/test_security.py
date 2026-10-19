@@ -17,6 +17,7 @@ from nanocode.messages import text_block
 from nanocode.permissions import PermissionManager
 from nanocode.session import Options, Session, project_data_dir
 from nanocode.tools import Glob, Grep, ReadFile, SearchDocs, ToolContext, WriteFile
+from nanocode.tools.base import ToolError, open_nofollow
 from nanocode.trust import TrustStore, apply_trust, split_sensitive
 from nanocode.web.server import make_server
 
@@ -76,6 +77,72 @@ class PathPermissionTest(unittest.TestCase):
     def test_tool_context_uses_same_resolution(self):
         ctx = ToolContext(cwd=self.ws.dir)
         self.assertEqual(ctx.resolve("link/secret.txt"), os.path.realpath(os.path.join(self.outside.dir, "secret.txt")))
+
+
+class PermissionToctouTest(unittest.TestCase):
+    """#42：check 和 open 之间换软链接的指向，工具就会操作没被批准的文件。"""
+
+    def setUp(self):
+        self.ws = Workspace()
+        self.outside = Workspace()
+        os.makedirs(os.path.join(self.ws.dir, "inner"))
+        self.link = os.path.join(self.ws.dir, "link")
+        try:
+            os.symlink(os.path.join(self.ws.dir, "inner"), self.link, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("这个平台不能建软链接")
+
+    def tearDown(self):
+        self.ws.cleanup()
+        self.outside.cleanup()
+
+    def repoint(self, target):
+        (os.rmdir if os.name == "nt" else os.remove)(self.link)    # Windows 上目录链接要用 rmdir 删
+        os.symlink(target, self.link, target_is_directory=True)
+
+    def test_decision_carries_the_resolved_path(self):
+        d = PermissionManager(self.ws.dir).resolve(WriteFile(), {"path": "link/a.txt"})
+        self.assertEqual(d.path, os.path.realpath(os.path.join(self.ws.dir, "inner", "a.txt")))
+
+    def test_link_swapped_while_user_is_asked_is_refused(self):
+        def ask(name, input, shown):
+            self.repoint(self.outside.dir)      # 用户还在看确认框，链接已经被换到项目外
+            return "yes"
+        agent, _, _ = make_agent(self.ws, [[call("write_file", path="link/new.txt", content="pwned")],
+                                           [text_block("ok")]], mode="default", ask=ask)
+        agent.run("x")
+        result = agent.messages[2]["content"][0]
+        self.assertTrue(result.get("is_error"))
+        self.assertIn("权限确认之后变了", result["content"])
+        self.assertFalse(os.path.exists(os.path.join(self.outside.dir, "new.txt")))
+
+    def test_unchanged_link_still_works_after_approval(self):
+        agent, _, _ = make_agent(self.ws, [[call("write_file", path="link/new.txt", content="ok")],
+                                           [text_block("ok")]], mode="default", ask=lambda *a: "yes")
+        agent.run("x")
+        self.assertEqual(self.ws.read("inner/new.txt"), "ok")
+
+    def test_read_rechecks_the_approved_path(self):
+        self.outside.write("secret.txt", "TOP SECRET")
+        approved = os.path.realpath(os.path.join(self.ws.dir, "inner", "secret.txt"))
+        self.ws.write("inner/secret.txt", "harmless")
+        self.repoint(self.outside.dir)
+        ctx = ToolContext(cwd=self.ws.dir, approved_path=approved)
+        out = ReadFile().execute({"path": "link/secret.txt"}, ctx)
+        self.assertTrue(out.is_error)
+        self.assertNotIn("TOP SECRET", out.content)
+
+    @unittest.skipIf(os.name == "nt", "Windows 没有 O_NOFOLLOW")
+    def test_open_refuses_a_final_symlink(self):
+        target = self.outside.write("secret.txt", "TOP SECRET")
+        path = os.path.join(self.ws.dir, "inner", "f.txt")
+        os.symlink(target, path)
+        with self.assertRaises(ToolError):
+            open_nofollow(path, "rb")
+        with self.assertRaises(ToolError):
+            open_nofollow(path, "w", encoding="utf-8")
+        with open(target, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "TOP SECRET")
 
 
 class SymlinkReadEscapeTest(unittest.TestCase):
