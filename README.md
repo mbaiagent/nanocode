@@ -130,6 +130,26 @@ python3 -m nanocode
 
 想安装成命令：`pip install -e .`，之后直接用 `nanocode`。要求 Python ≥ 3.10。
 
+### 想先看骨架？`examples/minimal_agent.py`
+
+框架里有权限、hooks、上下文压缩、子 Agent 等一层层封装。`examples/minimal_agent.py` 把这些全部剥掉，只留 **约 260 行、零第三方依赖** 的 Agent 本质：
+
+```
+while 模型还想调工具:
+    执行工具，把结果放回对话
+否则返回最终回答
+```
+
+内置 `list_dir` / `read_file` / `bash` 三个工具，直接请求任意 OpenAI 兼容接口：
+
+```bash
+python3 examples/minimal_agent.py --mock "看看当前目录"   # 离线演示循环
+python3 examples/minimal_agent.py --base-url https://api.deepseek.com/v1 \
+    --model deepseek-chat "统计 README 有多少行"
+```
+
+建议配合 [第 01 章](docs/01-agent-loop.md) 阅读：先看懂这个文件，再回来看 `nanocode/agent.py` 多了哪些工程化处理。
+
 ## 接入真实模型
 
 | 厂商 | 命令 | API Key 环境变量 |
@@ -299,7 +319,7 @@ nanocode/
 ├── cli.py             终端界面
 └── web/               Web 界面：server.py（HTTP 服务 + SSE + 安全校验）、limits.py（/api/chat 限流与每日预算）、static/（调试面板 + 架构学习页）
 docs/                  分章节的架构讲解（建议按顺序读）
-examples/              MCP 服务器示例、扩展示例（extensions/：4 个 MCP 服务器 + 3 个技能 + 1 个命令）、RAG 评测（rag_eval/）
+examples/              MCP 服务器示例、最小 Agent（minimal_agent.py）、扩展示例（extensions/：4 个 MCP 服务器 + 3 个技能 + 1 个命令）、RAG 评测（rag_eval/）
 evals/agent_tasks/     Agent 任务评测：13 个任务、隐藏测试、参考答案、运行器
 verification/          真实环境验证清单与结果（连真实模型、浏览器实操）
 server/                多用户部署的控制面和模型网关（独立的包，见 server/README.md 和第 12 章）

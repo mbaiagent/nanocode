@@ -126,6 +126,26 @@ Default uses the mock model. Type any message and it will walk through a full Ag
 
 To install as a command: `pip install -e .`, then use `nanocode` directly. Requires Python ≥ 3.10.
 
+### Want the bare skeleton? `examples/minimal_agent.py`
+
+The framework layers on permissions, hooks, context compression, sub-agents, and more. `examples/minimal_agent.py` strips all of that away, leaving the essence of an Agent in **~260 lines with zero third-party dependencies**:
+
+```
+while the model still wants tools:
+    run the tool, append the result to the conversation
+otherwise return the final answer
+```
+
+It ships `list_dir` / `read_file` / `bash` and talks to any OpenAI-compatible endpoint:
+
+```bash
+python3 examples/minimal_agent.py --mock "list the current directory"   # offline loop demo
+python3 examples/minimal_agent.py --base-url https://api.deepseek.com/v1 \
+    --model deepseek-chat "count the lines in README.md"
+```
+
+Read it alongside [Chapter 01](docs/01-agent-loop.md): understand this file first, then see what engineering `nanocode/agent.py` adds on top.
+
 ## Connect a real model
 
 | Vendor | Command | API key env var |
@@ -289,7 +309,7 @@ nanocode/
 ├── cli.py             terminal UI
 └── web/               Web UI: server.py (HTTP + SSE + security checks), limits.py (/api/chat rate limit and daily budget), static/ (debug panel + architecture learn page)
 docs/                  chaptered architecture walkthrough (read in order)
-examples/              MCP server examples, extension examples (extensions/: 4 MCP servers + 3 skills + 1 command), RAG eval (rag_eval/)
+examples/              MCP server examples, minimal Agent (minimal_agent.py), extension examples (extensions/: 4 MCP servers + 3 skills + 1 command), RAG eval (rag_eval/)
 evals/agent_tasks/     Agent task eval: 13 tasks, hidden tests, reference answers, runner
 verification/          real-environment verification checklist and results (real model, browser)
 server/                multi-user control plane and model gateway (separate package, see server/README.md and Chapter 12)
