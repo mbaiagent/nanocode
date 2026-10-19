@@ -104,9 +104,10 @@ class Tool:
 
 bash、verify 命令、hook 的子进程环境由 `proc.tool_env()` 生成：
 
-- 一律去掉 `NANOCODE_*`、`NCS_*` 和各家模型的 Key 变量（`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`DEEPSEEK_API_KEY` 等）。nanocode 自己照常从环境读取，只是不往下传。
-- 平台模式（设了 `NANOCODE_WEB_TOKEN`）下，名字里带 `TOKEN`、`SECRET`、`PASSWORD`、`API_KEY`、`CREDENTIAL` 等字样的变量也去掉；确实要传给命令的，用 `NANOCODE_TOOL_ENV_KEEP=FOO,BAR` 显式放行。本地模式不动这类变量。
-- 平台模式下 Web 服务进程设为不可 dump（Linux `PR_SET_DUMPABLE=0`），同 uid 的子进程读不到它的 `/proc/<pid>/environ`。
+- 两种模式都去掉 `NANOCODE_*`、`NCS_*`，这两类不能放行。nanocode 自己照常从环境读取，只是不往下传。
+- 平台模式（设了 `NANOCODE_WEB_TOKEN`）下还去掉厂商 Key（`OPENAI_API_KEY` 等）和名字以 `_TOKEN`、`_SECRET`、`_PASSWORD`、`_API_KEY`、`_ACCESS_KEY`、`_CREDENTIALS` 等结尾的变量（按后缀匹配，`TOKENIZERS_PARALLELISM` 不受影响）。
+- 本地模式厂商 Key 和其他变量照常传下去。两种模式都可以用 `NANOCODE_TOOL_ENV_KEEP=FOO,BAR` 显式放行（包括厂商 Key）。
+- 平台模式下 Web 服务进程设为不可 dump（Linux `PR_SET_DUMPABLE=0`），同 uid 的子进程读不到它的 `/proc/<pid>/environ`；设置失败（如某些 gVisor 版本）会在 stderr 打警告。
 
 这只是减少泄漏面，不是沙箱：工具仍然以同一个用户身份运行，能读到的文件照样能读。
 

@@ -196,7 +196,7 @@ python3 examples/minimal_agent.py --base-url https://api.deepseek.com/v1 \
 | 本地 Ollama | `nanocode --provider ollama --model qwen2.5-coder` | 不需要 |
 | 任意兼容服务 | `nanocode --provider custom --protocol openai --base-url https://xxx/v1 --model <模型名>` | `NANOCODE_API_KEY` |
 
-模型名经常更新，请以各家官方文档为准。也可以把配置写进环境变量（`NANOCODE_PROVIDER`、`NANOCODE_MODEL`、`NANOCODE_BASE_URL`、`NANOCODE_API_KEY`）或 `.nanocode/settings.json`。
+模型名经常更新，请以各家官方文档为准。也可以把配置写进环境变量（`NANOCODE_PROVIDER`、`NANOCODE_MODEL`、`NANOCODE_BASE_URL`、`NANOCODE_API_KEY`）或 `.nanocode/settings.json`。注意：Agent 执行的 bash / verify / hook 子进程拿不到 `NANOCODE_*` 变量（包括 `NANOCODE_API_KEY`）；厂商 Key（如 `OPENAI_API_KEY`）本地模式照常可用，见下方 `NANOCODE_TOOL_ENV_KEEP`。
 
 **选模型的提醒**：Agent 非常依赖模型的工具调用能力。小模型（尤其是 7B 以下的本地模型）经常不会调用工具或参数格式出错，这时你会在调试面板里看到大量报错 —— 这本身也是很好的学习材料。
 
@@ -300,6 +300,7 @@ nanocode --api-key sk-xxx                     # 直接给 API Key（更推荐用
 | `NANOCODE_PUBLIC_HOST` `NANOCODE_PUBLIC_ORIGIN` | 放在反向代理后面时信任的对外地址，见下方「安全」 |
 | `NANOCODE_POLICY` | 平台策略文件（多用户部署时由平台只读挂载）：锁定模型去向、限制可选的权限模式、删除用户和项目配置里的指定键、打开审计日志；优先级高于一切配置和命令行参数，配置了却读不出来就拒绝启动。见 `policy.py` 和[第 12 章](docs/12-distributed-deployment.md#九实现状态) |
 | `NANOCODE_WEB_TOKEN` | Web 界面的 API 令牌，不设则每次启动随机生成；多用户部署时由控制面注入（至少 16 个字符） |
+| `NANOCODE_TOOL_ENV_KEEP` | 逗号分隔的变量名，照常传给 bash / verify / hook 子进程。这些子进程**一律拿不到** `NANOCODE_*`、`NCS_*`（不可放行）；平台模式（设了 `NANOCODE_WEB_TOKEN`）下还拿不到厂商 Key 和名字以 `_TOKEN`、`_SECRET`、`_PASSWORD`、`_API_KEY` 等结尾的变量，需要时在这里放行。本地模式厂商 Key 照常传下去（#134） |
 | `NANOCODE_WEB_RATE_PER_MIN` `NANOCODE_WEB_RATE_BURST` | `nanocode --web` 的 `/api/chat` 按客户端 IP 限流（令牌桶）：每分钟补充 10 次、最多连发 5 次（默认）。`#` 记忆和不调用模型的 `/命令` 不计入；超限返回 429 + `Retry-After`。设为 `0` 关闭 |
 | `NANOCODE_WEB_MAX_QUEUE` | 每个会话忙时最多排队几条消息，默认 3，满了返回 429（`code: queue_full`）。点"停止"会同时清空队列。设为 `0` 不限 |
 | `NANOCODE_WEB_MAX_QUEUE_TOTAL` | 所有会话加起来最多排队几条，默认 10，满了返回 429（`code: queue_full`）。设为 `0` 不限 |
