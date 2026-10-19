@@ -21,6 +21,7 @@
 - **修复** 刷新 / 重启后恢复聊天记录和工具卡片（[#88](https://github.com/mbaiagent/nanocode/pull/88)）；聊天中切换权限模式（[#87](https://github.com/mbaiagent/nanocode/pull/87)）；本地加载 marked 并过滤 `javascript:` 链接（[#91](https://github.com/mbaiagent/nanocode/pull/91)）；斜杠命令不再显示两次；macOS 本机绑定跳过反向 DNS（[#97](https://github.com/mbaiagent/nanocode/pull/97)）。
 - **修复 模型适配**：DeepSeek 思考模式回传 `reasoning_content`（[#101](https://github.com/mbaiagent/nanocode/pull/101)）；思考把 `max_tokens` 用光时加大预算重试一次（[#103](https://github.com/mbaiagent/nanocode/pull/103)，`NANOCODE_MAX_TOKENS_CEILING`）；DeepSeek 搜索改用官方端点（[#107](https://github.com/mbaiagent/nanocode/pull/107)）。
 - **安全** 执行前复核权限判定时的真实路径，堵住检查和打开之间换软链接（[#108](https://github.com/mbaiagent/nanocode/pull/108)，#42）。
+- **修复** 技能 / 自定义命令的 frontmatter 支持 YAML 块标量（`|`、`|-`、`>`、`>-` 等）和缩进续行，官方技能的 description 不再被解析成 `>` / `|-`（#109）。
 - **新增** `examples/minimal_agent.py`：约 260 行、零依赖的最小 Agent（[#116](https://github.com/mbaiagent/nanocode/pull/116)）。
 
 ### CI

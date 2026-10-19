@@ -117,6 +117,10 @@ description: 编写和执行数据库迁移
 
 这是三层披露：目录（总是在）→ SKILL.md（需要时加载）→ 附属文件（更需要时再读）。
 
+frontmatter 只解析顶层的 `键: 值`（不引入 PyYAML）。长描述可以用 YAML 块标量写，官方技能库就常这么写：
+`description: |-` 保留换行，`description: >` 把续行折叠成空格，后面跟缩进的续行即可；普通值后面的缩进续行也会按 YAML 折叠成一行。
+系统提示词的技能目录里，description 会压成一行显示。自定义斜杠命令的 frontmatter 用的是同一个解析器。
+
 技能可以放在两个地方：`~/.nanocode/skills/`（用户级，所有项目都能用）和 `<项目>/.nanocode/skills/`（项目级，同名时项目级优先）。
 用 `/skills` 命令或 Web 界面的「扩展」面板查看装了哪些、各来自哪里。`examples/extensions/` 里有三个现成的技能可以参考。
 
