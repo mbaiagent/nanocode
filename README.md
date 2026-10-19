@@ -272,6 +272,7 @@ nanocode/
 │   ├── search.py        glob / grep
 │   ├── rag_tool.py      search_docs（按含义检索文档）
 │   ├── web.py           web_fetch（读网页：默认每次确认，拒绝本机和内网地址）
+│   ├── web_search.py    web_search（联网搜索：provider 无关，配环境变量启用）
 │   └── planning.py      todo_write / task（子 Agent）/ skill
 ├── agent.py           ★ 核心循环
 ├── rag.py             RAG：切块、BM25、向量、混合检索、增量索引
