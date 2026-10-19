@@ -20,6 +20,7 @@ from .agent import Agent
 from .context import MEMORY_FILE, build_system_prompt, context_tokens, discover_commands, discover_skills, home_dir
 from .events import AuditWriter, EventBus, TraceWriter
 from . import policy as policy_mod
+from . import risk
 from . import verify as verify_mod
 from .hooks import HookRunner
 from .llm import PRESETS, LLMError, make_provider
@@ -152,7 +153,9 @@ class Session:
             log(f"权限模式 {mode} 不在平台允许的范围内，改用 {allowed_modes[0]}")
             mode = allowed_modes[0]
         self._perm_config = {"mode": mode, "allow": list(perms.get("allow", [])),
-                             "deny": list(perms.get("deny", [])), "allowed_modes": tuple(allowed_modes)}
+                             "deny": list(perms.get("deny", [])), "allowed_modes": tuple(allowed_modes),
+                             "sensitive_read": risk.sensitive_patterns(perms.get("sensitive_read") or (),
+                                                                       perms.get("sensitive_read_exclude") or ())}
         self.hooks = HookRunner(s.get("hooks"), self.cwd)
         try:
             self._verify_cfg = verify_mod.parse_config(s.get("verify"), opts.verify)
@@ -187,7 +190,8 @@ class Session:
             self.bus.subscribe(self._trace)
         pc = self._perm_config
         self.permissions = PermissionManager(self.cwd, mode=pc["mode"], allow=list(pc["allow"]),
-                                             deny=list(pc["deny"]), allowed_modes=pc["allowed_modes"])
+                                             deny=list(pc["deny"]), allowed_modes=pc["allowed_modes"],
+                                             sensitive_read=list(pc["sensitive_read"]))
         self.agent = Agent(self.provider, self.registry, self.permissions, self.hooks, self.bus, self.cwd,
                            system_prompt=self._system_prompt,
                            max_tokens=int(s.get("max_tokens", 8192)),

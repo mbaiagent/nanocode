@@ -43,6 +43,81 @@ def is_protected_path(rel: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------- 敏感文件读取（#136）
+#
+# 读操作默认免确认，但下面这些文件一旦被读进上下文，提示词注入就能把内容带走。
+# 读取它们默认要确认，非交互时按拒绝处理。配置 permissions.sensitive_read 可以追加模式，
+# permissions.sensitive_read_exclude 可以去掉默认模式（项目配置里写它需要信任确认，
+# 平台策略可以用 forbid 删掉用户的设置、再给出自己的）。按文件名或路径后缀匹配，大小写不敏感。
+
+SENSITIVE_READ = (
+    ".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+    "id_rsa.*", "id_ed25519.*", ".ssh/*", ".netrc", "_netrc", ".npmrc", ".pypirc", ".pgpass", ".git-credentials",
+    ".aws/credentials", ".aws/config", ".docker/config.json", ".kube/config", ".config/gcloud/*",
+    "/proc/*/environ", "*.keystore", "*.jks",
+)
+SENSITIVE_EXEMPT = (".env.example", ".env.sample", ".env.template", "*.pub")
+
+# bash 里明显"读文件内容"的命令（尽力而为：`python -c open(...)`、`bash -c`、变量展开都看不穿）
+_CONTENT_READERS = frozenset({"cat", "tac", "nl", "head", "tail", "less", "more", "most", "bat", "batcat", "view", "vi", "vim",
+                      "nano", "grep", "egrep", "fgrep", "rg", "ag", "sed", "awk", "gawk", "cut", "sort", "uniq",
+                      "strings", "xxd", "od", "hexdump", "base64", "base32", "cp", "scp", "rsync", "source", ".",
+                      "diff", "cmp", "wc", "tr", "paste", "column", "jq", "yq", "openssl", "ssh-keygen", "dd",
+                      "tee", "zcat", "file", "curl"})
+
+
+def sensitive_patterns(extra=(), exclude=()) -> list[str]:
+    ex = {e.lower() for e in exclude or ()}
+    pats = [p for p in SENSITIVE_READ if p.lower() not in ex]
+    pats += [p for p in extra or () if isinstance(p, str) and p and p.lower() not in ex]
+    return pats
+
+
+def is_sensitive_path(path: str, patterns=SENSITIVE_READ) -> bool:
+    """path 可以是绝对路径或相对路径。匹配文件名、任意后缀子路径，或整条路径（/proc/*/environ 这类）。"""
+    p = path.replace("\\", "/").lower()
+    parts = [x for x in p.split("/") if x not in ("", ".")]
+    if not parts:
+        return False
+    name = parts[-1]
+    if any(fnmatch.fnmatchcase(name, e) for e in SENSITIVE_EXEMPT):
+        return False
+    subs = ["/".join(parts[i:]) for i in range(len(parts))] + [p]
+    return any(fnmatch.fnmatchcase(sub, pat.lower()) for pat in patterns for sub in subs)
+
+
+def bash_sensitive_reads(command: str, patterns=SENSITIVE_READ) -> list[str]:
+    """bash 命令里明显在读敏感文件的参数（启发式）。返回命中的写法。"""
+    hits: list[str] = []
+    # 输入重定向 `< .env` 和 `$(< .env)`
+    for m in re.finditer(r"<\s*([^\s<>|;&()]+)", command):
+        tok = m.group(1).strip("'\"")
+        if not tok.startswith("&") and is_sensitive_path(os.path.expanduser(tok), patterns):
+            hits.append(tok)
+    for seg in re.split(r"&&|\|\||[;|&\n`]|\$\(|\)", command):
+        try:
+            toks = shlex.split(seg, posix=True)
+        except ValueError:
+            toks = seg.split()
+        while toks and ("=" in toks[0] and not toks[0].startswith("=")  # FOO=1 cat x
+                        or toks[0] in ("sudo", "env", "nice", "nohup", "time", "command", "exec", "xargs")):
+            toks = toks[1:]
+        if not toks:
+            continue
+        cmd = os.path.basename(toks[0])
+        if cmd not in _CONTENT_READERS:
+            continue
+        for t in toks[1:]:
+            cand = t.split("=", 1)[1] if t.startswith("-") and "=" in t else t
+            if cand.startswith("@"):        # curl -d @.env
+                cand = cand[1:]
+            if cand.startswith("-") or not cand:
+                continue
+            if is_sensitive_path(os.path.expanduser(cand), patterns):
+                hits.append(t)
+    return hits
+
+
 # ---------------------------------------------------------------- bash 命令
 
 _RISKY = [

@@ -204,7 +204,14 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 | `NCS_PLATFORM_BASE_URL` / `NCS_PLATFORM_API_KEY` / `NCS_PLATFORM_PROTOCOL` / `NCS_PLATFORM_MODELS` / `NCS_PLATFORM_LABEL` | 平台提供的模型 | — / — / `openai` / — / `平台模型` |
 | `NCS_ENABLE_MOCK_MODEL` | 提供演示模型 | `true` |
 | `NCS_ALLOW_PRIVATE_UPSTREAMS` | 允许 dev 模式下用户的 Key 指向内网 / 本机（如本机 Ollama）；与代理认证模式互斥 | `false` |
-| `NCS_DAILY_TOKENS` / `NCS_RPM` / `NCS_MAX_OUTPUT_TOKENS` | 每人每日平台模型 token 上限 / 每分钟请求上限 / 单次输出上限 | 2000000 / 30 / 8192 |
+| `NCS_DAILY_TOKENS` / `NCS_RPM` / `NCS_MAX_OUTPUT_TOKENS` | 每人每日平台模型 token 上限 / 每分钟请求上限 / 单次输出上限。网关令牌泄漏时，这两个上限决定最多能被消耗多少（#134） | 2000000 / 30 / 8192 |
+| `NANOCODE_TOOL_ENV_KEEP`（沙箱内） | 平台模式下默认从工具子进程环境里去掉厂商 Key 和名字像密钥的变量，这里用逗号列出要放行的；`NANOCODE_*` / `NCS_*` 不能放行（#134），见 [docs/configuration.md](../docs/configuration.md) | — |
+
+## 沙箱里的凭据（#134）
+
+- 沙箱里的 `NANOCODE_API_KEY` 不是用户的模型 Key，是网关令牌：签名载荷绑定用户、会话和本次启动的 web_token 摘要，会话停止、重启或删除后立即失效；有效期 `NCS_TOKEN_TTL` 同时是沙箱最长存活时间，到期前回收，下次访问带新令牌重启（这就是"续期"）。
+- 令牌不再继承给 bash / verify / hook 子进程，Web 服务进程不可 dump，`env`、`/proc/self/environ`、`/proc/<父进程>/environ` 都读不到。
+- 没有另外做更短的令牌加续期：续期只能凭当前令牌，拿到令牌的人同样能续，沙箱运行期间窗口不会变小。泄漏后的损失由 `NCS_RPM` 和 `NCS_DAILY_TOKENS` 封顶，停止会话即吊销。
 
 ## 局限（如实说明）
 

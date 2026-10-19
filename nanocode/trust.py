@@ -45,6 +45,9 @@ def split_sensitive(cfg: dict) -> tuple[dict, dict]:
     allow = (safe.get("permissions") or {}).pop("allow", None)
     if allow:
         sensitive["permissions.allow"] = allow
+    exclude = (safe.get("permissions") or {}).pop("sensitive_read_exclude", None)
+    if exclude:      # 去掉敏感文件保护只会更松（#136）
+        sensitive["permissions.sensitive_read_exclude"] = exclude
     emb = (safe.get("rag") or {}).pop("embedding", None)
     if emb:
         sensitive["rag.embedding"] = emb
@@ -56,6 +59,8 @@ def restore(safe: dict, sensitive: dict) -> dict:
     for key, value in sensitive.items():
         if key == "permissions.allow":
             cfg.setdefault("permissions", {})["allow"] = value
+        elif key == "permissions.sensitive_read_exclude":
+            cfg.setdefault("permissions", {})["sensitive_read_exclude"] = value
         elif key == "rag.embedding":
             cfg.setdefault("rag", {})["embedding"] = value
         else:
@@ -81,6 +86,8 @@ def describe(sensitive: dict, cwd: str = "") -> list[str]:
         lines.append(f"Agent 结束前会自动执行检查命令：{v.get('command') if isinstance(v, dict) else v}")
     if "permissions.allow" in sensitive:
         lines.append(f"免确认规则：{', '.join(sensitive['permissions.allow'])}")
+    if "permissions.sensitive_read_exclude" in sensitive:
+        lines.append(f"读取这些敏感文件不再确认：{', '.join(sensitive['permissions.sensitive_read_exclude'])}")
     if "mode" in sensitive:
         lines.append(f"权限模式改为：{sensitive['mode']}")
     for key in ("provider", "base_url", "protocol"):

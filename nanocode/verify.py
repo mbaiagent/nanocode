@@ -19,7 +19,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 
-from .proc import kill_tree, popen_kwargs, utf8_env
+from .proc import kill_tree, popen_kwargs, tool_env
 
 DEFAULT_RETRIES = 3
 DEFAULT_TIMEOUT = 300.0
@@ -74,7 +74,7 @@ def run(cfg: VerifyConfig, cwd: str) -> VerifyResult:
     started = time.time()
     p = subprocess.Popen(cfg.command, shell=True, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, encoding="utf-8", errors="replace",
-                         env=utf8_env(), **popen_kwargs())
+                         env=tool_env(), **popen_kwargs())
     try:
         out, _ = p.communicate(timeout=cfg.timeout)
     except subprocess.TimeoutExpired:

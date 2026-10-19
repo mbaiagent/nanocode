@@ -266,6 +266,8 @@ journalctl -u ncs-redis-keepalive.service --since -1d   # 看最近的结果
 
 ## 九、上线清单
 
+> 配好 CD 后，代码升级由 [cd.md](cd.md) 的流程自动完成（main 上 CI 通过 → 先沙箱机后平台机，失败自动回滚）；下面的手动升级只作兜底。
+
 - [x] 1. PR #124（#123 宿主机隔离）、PR #126（远程沙箱）、PR #130（Docker 网关兜底）已合并。
 - [ ] 2. 两台机器：系统更新、SSH 只允许密钥登录、开 swap。
 - [ ] 3. 沙箱机：装 Docker，构建沙箱镜像；跑 `ncs-sandbox-firewalld.sh`。

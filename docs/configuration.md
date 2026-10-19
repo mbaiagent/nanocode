@@ -150,3 +150,11 @@
 | `NCS_SEARCH_*` | 兼容旧名 | `web_search` 的旧前缀，新名是 `NANOCODE_SEARCH_*`（见 README） |
 | `NCS_REAP_INTERVAL` | **进行中**：[PR #133](https://github.com/mbaiagent/nanocode/pull/133)（未合并） | 回收线程间隔（默认 60 秒）；空闲时不查数据库，让托管 Postgres 能缩到零（[#131](https://github.com/mbaiagent/nanocode/issues/131)） |
 | 出站代理相关（issue 里暂称 `NCS_EGRESS_PROXY`） | **计划中**，变量名以 PR 为准 | 沙箱只放行 HTTP/HTTPS 的出站代理，默认关闭；**在 [#134](https://github.com/mbaiagent/nanocode/issues/134) 修完前不应在生产打开** |
+
+## 附：沙箱内 nanocode 进程的相关变量
+
+| 变量 | 默认 | 用在哪 | 说明 |
+|---|---|---|---|
+| `NANOCODE_TOOL_ENV_KEEP` | 空 | 沙箱 / 本地 nanocode | 逗号分隔的变量名，照常传给 bash / verify / hook 子进程（#134）。子进程一律拿不到 `NANOCODE_*`、`NCS_*`，这两类**不能放行**；平台模式（控制面注入了 `NANOCODE_WEB_TOKEN`）下还去掉厂商 Key 和名字以 `_TOKEN` / `_SECRET` / `_PASSWORD` / `_API_KEY` / `_ACCESS_KEY` 等结尾的变量（按后缀匹配，`TOKENIZERS_PARALLELISM` 这类不受影响），需要时在这里放行。平台模式下 nanocode 进程还会设 `PR_SET_DUMPABLE=0`，失败时在 stderr 打警告 |
+
+网关令牌（沙箱里的 `NANOCODE_API_KEY`）绑定用户、会话和本次启动，停止 / 重启即失效；有效期见 `NCS_TOKEN_TTL`，泄漏后的消耗由 `NCS_RPM` 和 `NCS_DAILY_TOKENS` 封顶。

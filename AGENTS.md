@@ -2,6 +2,8 @@
 
 给所有 AI agent（和人类贡献者）的项目指引。开工前读这个文件。
 
+> **接手日常维护（审 PR、处理 issue、巡检、部署）？先读 [docs/maintenance/agent-playbook.md](docs/maintenance/agent-playbook.md)**（[English summary](docs/maintenance/agent-playbook.en.md)）。权限边界、四个自动化流程、测试命令和隐私规则都在里面。
+
 ## 项目是什么
 
 nanocode 是一个**零第三方依赖的 Python 教学型 Coding Agent**。目标是用纯标准库把 Coding Agent 的核心闭环跑通，作为理解 Claude Code 等工具底层逻辑的入门样板。

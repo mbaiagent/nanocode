@@ -49,6 +49,80 @@ def utf8_env(base: dict | None = None) -> dict:
     return env
 
 
+# 工具子进程（bash、verify 命令、hook）不该继承 nanocode 自己的凭据（#134）。
+# 平台模式下沙箱环境里有网关令牌 NANOCODE_API_KEY 和面板令牌 NANOCODE_WEB_TOKEN：
+# 一次提示词注入只要 `env` 或 `cat /proc/self/environ` 就能拿走。nanocode 进程自己
+# 照常从 os.environ 读取，只是不往下传。
+_VENDOR_KEYS = frozenset({
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "DEEPSEEK_API_KEY",
+    "DASHSCOPE_API_KEY", "MOONSHOT_API_KEY", "ZHIPUAI_API_KEY", "SILICONFLOW_API_KEY",
+    "OPENROUTER_API_KEY",
+})
+# 两种模式都去掉、而且不能放行：nanocode / 平台自己的令牌和配置
+_NEVER_PREFIXES = ("NANOCODE_", "NCS_")
+# 平台模式（控制面注入了 NANOCODE_WEB_TOKEN）额外去掉：厂商 Key + 名字看起来是密钥的变量。
+# 按名字的后缀 / 整词匹配，不做子串匹配（TOKENIZERS_PARALLELISM 不该被误杀）。
+_SECRET_SUFFIXES = ("_API_KEY", "_APIKEY", "_TOKEN", "_SECRET", "_SECRET_KEY", "_SECRET_ACCESS_KEY", "_PASSWORD",
+                    "_PASSWD", "_CREDENTIALS", "_PRIVATE_KEY", "_ACCESS_KEY", "_AUTH")
+_SECRET_EXACT = frozenset({"TOKEN", "SECRET", "PASSWORD", "API_KEY", "APIKEY"})
+# 显式放行：NANOCODE_TOOL_ENV_KEEP=FOO,BAR（逗号分隔），两种模式都生效；NANOCODE_* / NCS_* 不能放行。
+KEEP_ENV = "NANOCODE_TOOL_ENV_KEEP"
+
+
+def _platform_mode(env: dict) -> bool:
+    return bool(env.get("NANOCODE_WEB_TOKEN"))
+
+
+def _looks_secret(name: str) -> bool:
+    return name in _SECRET_EXACT or name.endswith(_SECRET_SUFFIXES)
+
+
+def tool_env(base: dict | None = None) -> dict:
+    """给工具子进程（bash / verify / hook）的环境（#134）。
+
+    - 两种模式：去掉 NANOCODE_* / NCS_*（不可放行）。
+    - 平台模式：再去掉厂商 Key 和名字像密钥的变量，KEEP 里列出的除外。
+    - 本地模式：厂商 Key 等用户自己的变量照常传下去（跑自己的 LLM 应用测试要用）。
+    """
+    src = dict(os.environ if base is None else base)
+    strict = _platform_mode(src)
+    keep = {k.strip().upper() for k in src.get(KEEP_ENV, "").split(",") if k.strip()}
+    env = {}
+    for k, v in src.items():
+        up = k.upper()
+        if up.startswith(_NEVER_PREFIXES):
+            continue
+        if strict and up not in keep and (up in _VENDOR_KEYS or _looks_secret(up)):
+            continue
+        env[k] = v
+    return utf8_env(env)
+
+
+def harden_process() -> bool:
+    """平台模式下把本进程设为不可 dump（Linux PR_SET_DUMPABLE=0）。
+
+    子进程环境清理掉了，但同一个 uid 的子进程仍能读父进程的 /proc/<ppid>/environ、
+    /proc/<ppid>/mem —— 里面有启动时的完整环境。不可 dump 后这些文件归 root，
+    同 uid 的进程读不到，也不能 ptrace。exec 出来的子进程恢复默认，不影响 bash 正常工作。
+    本地模式不调用；非 Linux 静默跳过。
+    """
+    if not sys.platform.startswith("linux"):
+        return False
+    import ctypes
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        rc = libc.prctl(4, 0, 0, 0, 0)       # PR_SET_DUMPABLE = 4
+    except (OSError, AttributeError) as e:
+        print(f"警告：无法设置 PR_SET_DUMPABLE（{e}），工具子进程可能读到本进程的 /proc/<pid>/environ", file=sys.stderr)
+        return False
+    if rc != 0:
+        err = ctypes.get_errno()
+        print(f"警告：prctl(PR_SET_DUMPABLE, 0) 失败（errno {err}），工具子进程可能读到本进程的 /proc/<pid>/environ"
+              "（例如某些 gVisor 版本不支持）", file=sys.stderr)
+        return False
+    return True
+
+
 def popen_kwargs() -> dict:
     """Popen 的平台无关参数。
 
