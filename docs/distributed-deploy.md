@@ -75,7 +75,36 @@ flowchart LR
 
 - 两台机器各一个 `wg0`，私网 `10.77.0.0/24`（示例），`AllowedIPs` 只写对端的 `/32`。
 - 只有沙箱机需要对外多开一个 WireGuard UDP 端口，并且在防火墙里只允许平台机公网 IP 访问；平台机主动连出即可，不用开端口。
+- 平台机不开端口的前提是**隧道一直由平台机维持**：沙箱机发往平台机的流量（relay → 网关）只能沿着平台机连出时留下的 conntrack 状态回程。所以平台机的 `[Peer]` 里必须写 `PersistentKeepalive = 25`，让平台机每 25 秒发一个保活包，NAT / 防火墙状态不会过期。不写的话，隧道空闲一段时间后，沙箱机这一侧先发起的包会被平台机防火墙丢掉，表现为模型调用偶发超时。沙箱机一侧不需要这个参数。
 - 私钥只放在各自机器的 `/etc/wireguard/`（`chmod 600`），不进仓库，不进聊天记录。
+
+平台机 `/etc/wireguard/wg0.conf` 示例（密钥是占位符）：
+
+```ini
+[Interface]
+Address = 10.77.0.1/24
+PrivateKey = <平台机私钥>
+
+[Peer]
+PublicKey = <沙箱机公钥>
+Endpoint = 198.51.100.20:<wg-port>
+AllowedIPs = 10.77.0.2/32
+# 平台机不开 WireGuard 端口，靠它每 25 秒主动发包维持隧道和 conntrack 状态
+PersistentKeepalive = 25
+```
+
+沙箱机 `/etc/wireguard/wg0.conf` 示例：
+
+```ini
+[Interface]
+Address = 10.77.0.2/24
+ListenPort = <wg-port>
+PrivateKey = <沙箱机私钥>
+
+[Peer]
+PublicKey = <平台机公钥>
+AllowedIPs = 10.77.0.1/32
+```
 
 ### 3.2 沙箱代理
 
@@ -124,16 +153,21 @@ psql "postgresql://<user>:<password>@<db-host>-pooler.<region>.<provider-domain>
 
 - 只提供 TLS：连接串是 `rediss://`（两个 s）。
 - 免费版**不能选机房**。如果分到的机房离平台机远，每次 Redis 往返都多几十毫秒；限流计数这类用法能接受，不要在热路径上做大量串行调用。
-- **长时间不活跃会被关机**（关机前会发邮件通知），关了要去控制台手动开。所以它**需要保活**：平台机上一个 systemd timer，每 6 小时 `PING` 一次，失败写日志。
+- **长时间不活跃会被关机**（关机前会发邮件通知），关了要去控制台手动开。所以它**需要保活**：平台机上一个 systemd timer，每 6 小时 `PING` 一次；失败时除了写日志，还要通过 `OnFailure=` **触发告警**，否则保活坏了要等 Redis 被关机才会发现。
+
+> systemd unit 文件只支持整行注释（行首 `#` 或 `;`），**不支持行尾注释**：`#` 后面的内容会被当成值的一部分。下面的示例注释都单独占一行，照抄时不要挪到行尾。
 
 ```ini
 # /etc/systemd/system/ncs-redis-keepalive.service
 [Unit]
 Description=Keep managed Redis/Valkey awake
+# 失败（PING 不通、env 文件缺失等）时触发告警
+OnFailure=ncs-redis-keepalive-alert.service
 
 [Service]
 Type=oneshot
-EnvironmentFile=/etc/nanocode/keepalive.env   # 内含 NCS_REDIS_URL，root 只读 (chmod 600)
+# 内含 NCS_REDIS_URL，root 只读 (chmod 600)
+EnvironmentFile=/etc/nanocode/keepalive.env
 ExecStart=/bin/sh -c 'redis-cli -u "$NCS_REDIS_URL" --tls PING | grep -q PONG'
 ```
 
@@ -151,8 +185,24 @@ Persistent=true
 WantedBy=timers.target
 ```
 
+```ini
+# /etc/systemd/system/ncs-redis-keepalive-alert.service
+[Unit]
+Description=Alert: managed Redis/Valkey keepalive failed
+
+[Service]
+Type=oneshot
+# 内含 NCS_ALERT_WEBHOOK_URL（你的告警 webhook 地址），root 只读 (chmod 600)
+EnvironmentFile=/etc/nanocode/alert.env
+ExecStart=/bin/sh -c 'curl -fsS -m 10 -H "Content-Type: application/json" -d "{\"text\":\"ncs-redis-keepalive failed on %H\"}" "$NCS_ALERT_WEBHOOK_URL"'
+```
+
+告警渠道可以换成邮件（如 `mail -s ... <收件人>`）或任何 webhook；地址、收件人都放在 root 只读的 env 文件里，不写进 unit。
+
 ```bash
 sudo systemctl daemon-reload && sudo systemctl enable --now ncs-redis-keepalive.timer
+sudo systemd-analyze verify /etc/systemd/system/ncs-redis-keepalive*.service   # 检查 unit 语法
+sudo systemctl start ncs-redis-keepalive-alert.service                         # 手动发一条测试告警
 journalctl -u ncs-redis-keepalive.service --since -1d   # 看最近的结果
 ```
 
@@ -175,10 +225,10 @@ journalctl -u ncs-redis-keepalive.service --since -1d   # 看最近的结果
 
 | 现象 | 原因 | 影响 | 处理 |
 |---|---|---|---|
-| 新建会话失败 / 会话页打不开 | WireGuard 断了，或沙箱机 / 代理挂了 | 起不了新沙箱，已有会话的页面和模型调用都断 | `wg show` 看最近握手；`systemctl status` 看代理；控制面应返回明确的错误，而不是一直转圈 |
+| 新建会话失败 / 会话页打不开 | WireGuard 断了，或沙箱机 / 代理挂了；模型调用偶发超时多半是平台机 `[Peer]` 没配 `PersistentKeepalive` | 起不了新沙箱，已有会话的页面和模型调用都断 | `wg show` 看最近握手；`systemctl status` 看代理；控制面应返回明确的错误，而不是一直转圈 |
 | 第一个请求慢 1～2 秒 | Neon 缩到零后冷启动 | 只慢一下 | 预期行为，不处理 |
 | 数据库连不上（持续） | 免费额度用完、凭据轮换、服务端故障 | 登录、建会话都失败 | 看托管控制台；必要时临时切回单机 compose 自带的 PostgreSQL |
-| 限流 / 事件异常，Redis 报连接错误 | Aiven 因不活跃关机，或保活 timer 停了 | 限流计数失效 | 控制台开机；查 `ncs-redis-keepalive` 日志 |
+| 限流 / 事件异常，Redis 报连接错误 | Aiven 因不活跃关机，或保活 timer 停了 | 限流计数失效 | 保活失败应先收到 `OnFailure` 告警；控制台开机；查 `ncs-redis-keepalive` 日志 |
 | 沙箱能连到宿主机其它端口 | 防火墙没配或被 Docker 重置 | 安全事故 | 重跑 `ncs-sandbox-firewalld.sh` 和 `check-sandbox-isolation.sh` |
 
 ## 八、1 GB 小机器的内存预算（估算）
@@ -211,13 +261,13 @@ journalctl -u ncs-redis-keepalive.service --since -1d   # 看最近的结果
 - [ ] 1. PR #124（#123 宿主机隔离）合并；远程沙箱 PR 合并。
 - [ ] 2. 两台机器：系统更新、SSH 只允许密钥登录、开 swap。
 - [ ] 3. 沙箱机：装 Docker，构建沙箱镜像；跑 `ncs-sandbox-firewalld.sh`。
-- [ ] 4. 两台机器装 WireGuard，生成各自密钥对，配 `wg0`（`10.77.0.1` / `10.77.0.2`），`AllowedIPs` 只写对端 `/32`；沙箱机防火墙只对平台机 IP 开 WireGuard 端口；`wg show` 确认握手。
+- [ ] 4. 两台机器装 WireGuard，生成各自密钥对，配 `wg0`（`10.77.0.1` / `10.77.0.2`），`AllowedIPs` 只写对端 `/32`，平台机 `[Peer]` 加 `PersistentKeepalive = 25`；沙箱机防火墙只对平台机 IP 开 WireGuard 端口；`wg show` 确认握手。
 - [ ] 5. 配 firewalld `wg` zone（DROP，只放行对端访问指定端口）。
 - [ ] 6. 生成共享密钥（`openssl rand -hex 32`），分别写进两台机器 root 只读的 env 文件。
 - [ ] 7. 沙箱机启动沙箱代理（只听 `10.77.0.2`），用 systemd 管理、开机自启。
 - [ ] 8. 托管 Postgres：建项目和数据库，拿 pooled 连接串；托管 Valkey：建服务，拿 `rediss://` 连接串。都只写进平台机 root 只读的 `.env`，不进仓库、不进聊天、不进日志。
 - [ ] 9. 平台机 `.env`：`NCS_DATABASE_URL`、`NCS_REDIS_URL`、`NCS_LAUNCHER=remote` 以及代理地址和共享密钥（具体变量名以远程沙箱 PR 为准）；启动平台。
-- [ ] 10. 配 Redis 保活 timer；**不要**给 Postgres 配保活。
+- [ ] 10. 配 Redis 保活 timer 和 `OnFailure=` 告警 unit；`systemd-analyze verify` 通过，手动触发一次告警**确认能收到**；**不要**给 Postgres 配保活。
 - [ ] 11. 验证：`curl http://127.0.0.1:8700/healthz`；登录、建会话、打开 `/s/<id>/`、调一次模型；沙箱里跑 `check-sandbox-isolation.sh`；从公网扫沙箱机，确认只开 SSH 和 WireGuard。
 - [ ] 12. 演练回退：停掉 WireGuard，确认控制面报错清楚；恢复后新会话正常。
 
