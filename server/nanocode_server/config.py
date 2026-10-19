@@ -31,6 +31,33 @@ SAFE_MODES = [m for m in ALL_MODES if m != "bypass"]
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 
+_SIZE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:([KkMmGg])i?)?[Bb]?")
+
+
+def parse_size(size: str) -> int:
+    """容器大小写法转字节数：K8s 的 384Mi / 1Gi 和 Docker 的 384m / 1g / 512M 都认（都按 1024 进位，#119）。"""
+    m = _SIZE.fullmatch(str(size).strip())
+    if not m:
+        raise ValueError(f"看不懂的大小：{size!r}（例如 384Mi、512m、1Gi）")
+    mult = {"k": 2**10, "m": 2**20, "g": 2**30}.get((m.group(2) or "").lower(), 1)
+    return int(float(m.group(1)) * mult)
+
+
+def split_hostport(value: str) -> tuple[str, int]:
+    """'10.77.0.1:8701'、'http://10.77.0.1:8701'、'[fd00::1]:8701' → (主机, 端口)；不合法抛 ValueError。"""
+    v = value.strip()
+    if "://" in v:
+        u = urlparse(v)
+        if not u.hostname or not u.port:
+            raise ValueError(f"地址要带主机和端口：{value!r}")
+        return u.hostname, u.port
+    host, _, port = v.rpartition(":")
+    host = host.strip("[]")
+    if not host or not port.isdigit() or not 0 < int(port) < 65536:
+        raise ValueError(f"地址要写成 主机:端口：{value!r}")
+    return host, int(port)
+
+
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
@@ -98,7 +125,7 @@ class Config:
     trust_forwarded: bool = False           # 前面有反向代理（Caddy）时用 X-Forwarded-For 最后一项作客户端 IP
 
     # ------------------------------------------------------------ 沙箱
-    launcher: str = "auto"                  # auto / local / docker / k8s
+    launcher: str = "auto"                  # auto / local / docker / k8s / remote
     allow_unisolated: bool = False          # 显式承认"生产模式也没有隔离"的风险（NCS_ALLOW_UNISOLATED=1）
     sandbox_modes: list[str] = field(default_factory=lambda: list(SAFE_MODES))
     sandbox_mode: str = "default"
@@ -111,6 +138,8 @@ class Config:
     docker_subnet: str = "172.30.250.0/24"
     sandbox_cpu: str = "1"
     sandbox_memory: str = "2Gi"
+    sandbox_tmpfs: str = ""                 # Docker 沙箱 /tmp 的大小；空 = 512m 和沙箱内存一半里较小的（tmpfs 算在容器内存里，#119）
+    sandbox_pids: int = 512                 # Docker 沙箱的进程数上限
     sandbox_mcp_servers: dict = field(default_factory=dict)   # 平台给每个沙箱配的 MCP 服务器（用户和项目自己配的一律不生效）
     k8s_api: str = "https://kubernetes.default.svc"
     k8s_namespace: str = "nanocode-sandboxes"
@@ -118,7 +147,16 @@ class Config:
     k8s_storage_class: str = ""
     k8s_workspace_size: str = "10Gi"
 
-    # ------------------------------------------------------------ 模型网关
+    # ------------------------------------------------------------ 远程沙箱（NCS_LAUNCHER=remote）
+    # 控制面在一台机器、沙箱在另一台：沙箱主机上跑 `python -m nanocode_server sandbox-agent`，
+    # 两台之间走 WireGuard 之类的内网隧道（见 deploy/sandbox-host/）。
+    remote_agent_url: str = ""              # 控制面用：沙箱代理地址，例如 http://10.77.0.2:8790
+    remote_agent_secret: str = ""           # 两边共用的密钥（至少 32 个字符），控制面调用代理的接口时带上
+    remote_gateway_url: str = ""            # 沙箱访问网关用的地址；空 = 问沙箱代理（它在沙箱网桥上中继到网关）
+    agent_bind: str = ""                    # 沙箱代理用：监听地址，例如 10.77.0.2:8790（只能是内网地址，不能是 0.0.0.0）
+    agent_upstream_gateway: str = ""        # 沙箱代理用：真正的模型网关，例如 10.77.0.1:8701
+    agent_relay_bind: str = ""              # 沙箱代理用：中继监听的地址；空 = 沙箱网桥的地址
+
     gateway_host: str = "127.0.0.1"
     gateway_port: int = 8701
     gateway_url: str = ""                   # 沙箱访问网关的地址；空 = http://<gateway_host>:<gateway_port>
@@ -174,6 +212,14 @@ class Config:
             docker_subnet=_env("NCS_DOCKER_SUBNET", d.docker_subnet),
             sandbox_cpu=_env("NCS_SANDBOX_CPU", d.sandbox_cpu),
             sandbox_memory=_env("NCS_SANDBOX_MEMORY", d.sandbox_memory),
+            sandbox_tmpfs=_env("NCS_SANDBOX_TMPFS"),
+            sandbox_pids=_int("NCS_SANDBOX_PIDS", d.sandbox_pids),
+            remote_agent_url=_env("NCS_REMOTE_AGENT_URL"),
+            remote_agent_secret=_env("NCS_REMOTE_AGENT_SECRET"),
+            remote_gateway_url=_env("NCS_REMOTE_GATEWAY_URL"),
+            agent_bind=_env("NCS_AGENT_BIND"),
+            agent_upstream_gateway=_env("NCS_AGENT_UPSTREAM_GATEWAY"),
+            agent_relay_bind=_env("NCS_AGENT_RELAY_BIND"),
             sandbox_mcp_servers=_json_dict("NCS_SANDBOX_MCP_SERVERS"),
             k8s_api=_env("NCS_K8S_API", d.k8s_api),
             k8s_namespace=_env("NCS_K8S_NAMESPACE", d.k8s_namespace),
@@ -223,6 +269,30 @@ class Config:
         if self.session_ttl <= 0 or self.session_idle <= 0:
             raise ValueError("NCS_SESSION_TTL / NCS_SESSION_IDLE 必须大于 0")
 
+    def _validate_remote(self) -> None:
+        u = urlparse(self.remote_agent_url)
+        if u.scheme not in ("http", "https") or not u.hostname or u.path not in ("", "/"):
+            raise ValueError("NCS_LAUNCHER=remote 需要 NCS_REMOTE_AGENT_URL，例如 http://10.77.0.2:8790（走内网隧道）")
+        if len(self.remote_agent_secret) < 32:
+            raise ValueError("NCS_LAUNCHER=remote 需要 NCS_REMOTE_AGENT_SECRET（至少 32 个字符，和沙箱代理那边一致）")
+        if self.remote_gateway_url and urlparse(self.remote_gateway_url).scheme not in ("http", "https"):
+            raise ValueError("NCS_REMOTE_GATEWAY_URL 必须是 http(s):// 地址")
+
+    def validate_agent(self) -> None:
+        """沙箱代理（sandbox-agent）的启动检查：它能起停容器，接口只能开在内网地址上。"""
+        if len(self.remote_agent_secret) < 32:
+            raise ValueError("沙箱代理需要 NCS_REMOTE_AGENT_SECRET（至少 32 个字符，和控制面一致）")
+        try:
+            host, _ = split_hostport(self.agent_bind)
+        except ValueError:
+            raise ValueError("沙箱代理需要 NCS_AGENT_BIND=<内网地址>:<端口>，例如 10.77.0.2:8790") from None
+        if host in ("0.0.0.0", "::", "*", ""):
+            raise ValueError("NCS_AGENT_BIND 不能监听所有地址：沙箱代理能起停容器，只能开在内网隧道地址上（如 WireGuard 的 10.77.0.2）")
+        try:
+            split_hostport(self.agent_upstream_gateway)
+        except ValueError:
+            raise ValueError("沙箱代理需要 NCS_AGENT_UPSTREAM_GATEWAY=<网关地址>:<端口>，例如 10.77.0.1:8701") from None
+
     @property
     def sandbox_gateway_url(self) -> str:
         return (self.gateway_url or f"http://{self.gateway_host}:{self.gateway_port}").rstrip("/")
@@ -270,8 +340,10 @@ class Config:
             raise ValueError("NCS_ALLOW_PRIVATE_UPSTREAMS 仅限 dev 认证模式")
         if self.auth == "dev" and self.host not in LOOPBACK:
             raise ValueError("dev 认证（输入任意用户名登录）只能在只监听本机时使用，对外服务请用 NCS_AUTH=github 或 proxy")
-        if self.launcher not in ("auto", "local", "docker", "k8s"):
-            raise ValueError("NCS_LAUNCHER 只能是 auto / local / docker / k8s")
+        if self.launcher not in ("auto", "local", "docker", "k8s", "remote"):
+            raise ValueError("NCS_LAUNCHER 只能是 auto / local / docker / k8s / remote")
+        if launcher_needed and self.launcher == "remote":
+            self._validate_remote()
         if self.replicas < 1:
             raise ValueError("NCS_REPLICAS 至少为 1")
         # SQLite 是本地文件，多副本各写各的：登录写在这个副本、下一个请求落到那个副本，
@@ -301,6 +373,14 @@ class Config:
                 raise ValueError(f"NCS_DOCKER_SUBNET 不是合法网段：{self.docker_subnet!r}（例如 172.30.250.0/24）") from None
             if net.version != 4 or net.prefixlen > 28:
                 raise ValueError("NCS_DOCKER_SUBNET 必须是 IPv4 网段，且至少 /28")
+        try:
+            parse_size(self.sandbox_memory)
+            if self.sandbox_tmpfs:
+                parse_size(self.sandbox_tmpfs)
+        except ValueError as e:
+            raise ValueError(f"NCS_SANDBOX_MEMORY / NCS_SANDBOX_TMPFS：{e}") from None
+        if self.sandbox_pids < 16:
+            raise ValueError("NCS_SANDBOX_PIDS 至少 16")
         if self.sandbox_mode not in self.sandbox_modes:
             raise ValueError(f"NCS_SANDBOX_MODE={self.sandbox_mode} 不在 NCS_SANDBOX_MODES 里")
         servers = self.sandbox_mcp_servers
@@ -311,4 +391,4 @@ class Config:
             raise ValueError("NCS_PLATFORM_PROTOCOL 只能是 openai 或 anthropic")
 
 
-__all__ = ["Config", "ALL_MODES", "SAFE_MODES", "LOOPBACK", "AUTH_MODES"]
+__all__ = ["Config", "parse_size", "split_hostport", "ALL_MODES", "SAFE_MODES", "LOOPBACK", "AUTH_MODES"]

@@ -96,7 +96,10 @@ class RedisProtocolTest(unittest.TestCase):
 class ComposeConsistencyTest(unittest.TestCase):
     KNOWN = set(re.findall(r'"(NCS_[A-Z0-9_]+)"', read(REPO, "server", "nanocode_server", "config.py")))
     # 只在 compose 里用的变量（不是平台配置项）
-    COMPOSE_ONLY = {"NCS_HOST_DATA_DIR", "NCS_PG_PORT", "NCS_REDIS_PORT", "NCS_DOMAIN"}
+    COMPOSE_ONLY = {"NCS_HOST_DATA_DIR", "NCS_PG_PORT", "NCS_REDIS_PORT", "NCS_DOMAIN",
+                    # #119：数据库 / Redis / 容器的资源调参，只在 compose 里用
+                    "NCS_PG_SHARED_BUFFERS", "NCS_PG_MAX_CONNECTIONS", "NCS_REDIS_MAXMEMORY",
+                    "NCS_PG_MEM_LIMIT", "NCS_REDIS_MEM_LIMIT", "NCS_PLATFORM_MEM_LIMIT"}
 
     def setUp(self):
         self.compose = read(COMPOSE, "docker-compose.yml")
@@ -117,7 +120,7 @@ class ComposeConsistencyTest(unittest.TestCase):
         self.assertIn("NCS_DATABASE_URL: postgresql://", self.compose)
         self.assertIn("NCS_REDIS_URL: redis://", self.compose)
         self.assertIn('NCS_REPLICAS: "1"', self.compose)
-        self.assertIn("NCS_LAUNCHER: docker", self.compose)
+        self.assertIn("NCS_LAUNCHER: ${NCS_LAUNCHER:-docker}", self.compose)
 
     def test_data_dir_is_mounted_at_same_path(self):
         # 沙箱容器由宿主机 Docker 创建，绑定挂载用宿主机路径：容器内外必须同一个路径

@@ -390,7 +390,7 @@ class ControlApp(App):
         """经由模型网关测试 Key：控制面自己不访问任何模型厂商，出口只有网关一个。"""
         body = json.dumps({"protocol": up.protocol, "base_url": up.base_url, "api_key": up.api_key,
                            "model": up.model}).encode()
-        req = urllib.request.Request(self.sessions.gateway_url + "/internal/probe", data=body, method="POST",
+        req = urllib.request.Request(self.sessions.control_gateway_url + "/internal/probe", data=body, method="POST",
                                      headers={"content-type": "application/json",
                                               "authorization": f"Bearer {internal_key(self.cfg.secret_key)}"})
         try:

@@ -1,0 +1,176 @@
+# 沙箱放在另一台机器上（NCS_LAUNCHER=remote）
+
+平台机器（控制面 + 模型网关 + PostgreSQL + Redis，`deploy/compose`）和沙箱主机（只跑沙箱）分开。适合平台机器内存小、沙箱想单独扩容的情况。
+
+```
+浏览器 ─HTTPS─▶ 平台机器 nginx/Caddy ─▶ 控制面 :8700 ──WireGuard──▶ 沙箱主机 代理 10.77.0.2:8790 ─▶ 沙箱容器 :8765
+                                    模型网关 10.77.0.1:8701 ◀──WireGuard── 代理的网关中继 172.30.250.1:8701 ◀── 沙箱容器
+```
+
+- **沙箱代理**（`python -m nanocode_server sandbox-agent`）在沙箱主机上用 Docker 启动器起停容器，管理接口要带共用密钥 `NCS_REMOTE_AGENT_SECRET`（常量时间比较）。
+- 控制面的 `/s/<id>/` 转发到代理的 `/sbx/<id>/...`，代理再转给容器。凭的是每个沙箱自己的 web_token（和本机 Docker 时一样），代理密钥不能用来访问沙箱。
+- 沙箱只能连沙箱主机网桥上的一个端口（网关中继），中继转到平台机器的模型网关。**沙箱到不了 PostgreSQL / Redis / 控制面**，也出不了外网。
+
+## 安全要点
+
+| 风险 | 怎么挡 |
+|---|---|
+| Docker API 暴露 | 不暴露。Docker 只听本机 socket，远程只能调代理那几个接口 |
+| 代理接口暴露 | 只监听 WireGuard 地址（`NCS_AGENT_BIND`，配置检查拒绝 0.0.0.0），firewalld 只允许平台的隧道地址访问 |
+| 沙箱访问宿主机 / 隧道 | `deploy/firewall/ncs-sandbox-firewalld.sh`：沙箱网段只放行中继端口（#123）。代理接口 8790、sshd 都连不上 |
+| 沙箱访问数据库 | PG / Redis 只听平台机器的 127.0.0.1；沙箱的流量只能经中继到网关端口 |
+| 密钥在公网明文传输 | 代理接口是明文 HTTP，**只走 WireGuard**；公网上只多开一个 WireGuard 的 UDP 端口，只允许对端 IP |
+| 沙箱出外网 | internal 网络，同单机 |
+
+## 资源（1 vCPU / 1 GB 的沙箱主机）
+
+Docker 守护进程约 80–100 MB，代理约 30–40 MB。每个沙箱 `NCS_SANDBOX_MEMORY=384Mi`、`NCS_SANDBOX_TMPFS=96m`（/tmp 算在沙箱内存里），能同时跑 1–2 个；平台那边设 `NCS_MAX_SANDBOXES=2`。建议开 1 GB swap。延迟：两台机器之间每个页面请求多一个来回，模型调用也多一个来回（几十毫秒），事件流不受影响。
+
+## 步骤
+
+下面用 `<平台IP>` / `<沙箱主机IP>` 表示两台机器的公网 IP，隧道地址平台 `10.77.0.1`、沙箱主机 `10.77.0.2`，WireGuard 端口 `51820/udp`。
+
+### 1. 沙箱主机装 Docker CE（AlmaLinux / Rocky 8、9）
+
+```bash
+dnf -y install dnf-plugins-core
+dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+# Alma 8 自带的 podman / buildah / runc 和 containerd.io 冲突时加 --allowerasing
+dnf -y install --allowerasing docker-ce docker-ce-cli containerd.io docker-compose-plugin
+systemctl enable --now docker
+```
+
+### 2. 两台都装 WireGuard
+
+```bash
+dnf -y install wireguard-tools      # Alma 8 在 EPEL；Alma 9 在 AppStream
+modprobe wireguard && echo ok       # Alma 9 内核自带
+```
+
+Alma 8 上 `modprobe wireguard` 失败时：先装和当前内核同版本的 `kernel-modules-extra`（`dnf -y install kernel-modules-extra-$(uname -r)`）再试；还不行就用 ELRepo 的 `kmod-wireguard`。实在装不上，可以退回用 autossh 建 SSH 隧道（把代理端口和网关端口互相转发），但 WireGuard 更省事也更稳。
+
+各自生成密钥（私钥不要贴到任何地方）：
+
+```bash
+umask 077 && wg genkey | tee /etc/wireguard/private.key | wg pubkey > /etc/wireguard/public.key
+```
+
+平台机器 `/etc/wireguard/wg0.conf`：
+
+```ini
+[Interface]
+Address = 10.77.0.1/24
+ListenPort = 51820
+PostUp = wg set %i private-key /etc/wireguard/private.key
+
+[Peer]
+PublicKey = <沙箱主机 public.key 的内容>
+AllowedIPs = 10.77.0.2/32
+Endpoint = <沙箱主机IP>:51820
+PersistentKeepalive = 25
+```
+
+沙箱主机 `/etc/wireguard/wg0.conf`：
+
+```ini
+[Interface]
+Address = 10.77.0.2/24
+ListenPort = 51820
+PostUp = wg set %i private-key /etc/wireguard/private.key
+
+[Peer]
+PublicKey = <平台机器 public.key 的内容>
+AllowedIPs = 10.77.0.1/32
+Endpoint = <平台IP>:51820
+PersistentKeepalive = 25
+```
+
+两台都 `systemctl enable --now wg-quick@wg0`，然后 `ping 10.77.0.2` / `ping 10.77.0.1` 互通。
+
+### 3. firewalld
+
+**两台的公网 zone**：只允许对端 IP 连 WireGuard 端口。
+
+```bash
+# 平台机器上把 <对端IP> 换成 <沙箱主机IP>，沙箱主机上换成 <平台IP>
+firewall-cmd --permanent --zone=public --add-rich-rule='rule family="ipv4" source address="<对端IP>/32" port port="51820" protocol="udp" accept'
+```
+
+**隧道 zone**：按来源地址绑定（同 #123 的思路，来源优先于网卡），target=DROP，只开需要的端口。
+
+```bash
+# 沙箱主机：只允许平台 10.77.0.1 访问代理 8790
+firewall-cmd --permanent --new-zone=ncs-wg
+firewall-cmd --permanent --zone=ncs-wg --set-target=DROP
+firewall-cmd --permanent --zone=ncs-wg --add-source=10.77.0.1/32
+firewall-cmd --permanent --zone=ncs-wg --add-port=8790/tcp
+
+# 平台机器：只允许沙箱主机 10.77.0.2 访问网关 8701
+firewall-cmd --permanent --new-zone=ncs-wg
+firewall-cmd --permanent --zone=ncs-wg --set-target=DROP
+firewall-cmd --permanent --zone=ncs-wg --add-source=10.77.0.2/32
+firewall-cmd --permanent --zone=ncs-wg --add-port=8701/tcp
+
+firewall-cmd --reload
+```
+
+注意：`firewall-cmd --list-all` 里 `public` zone 的 `interfaces:` 为空时，eth0 走的是默认 zone（`firewall-cmd --get-default-zone`），确认它是 `public`，上面的 rich rule 才在 eth0 上生效。
+
+**沙箱网段**（沙箱主机上，代理第一次启动、建好沙箱网络之后）：
+
+```bash
+cd deploy/firewall
+NCS_DOCKER_SUBNET=172.30.250.0/24 NCS_GATEWAY_PORT=8701 ./ncs-sandbox-firewalld.sh
+```
+
+### 4. 共用密钥
+
+在沙箱主机上生成，直接写进两边的 `.env`，不要在终端或聊天里显示：
+
+```bash
+cd deploy/sandbox-host && cp .env.example .env && chmod 600 .env
+secret=$(openssl rand -hex 32)
+sed -i "s/^NCS_REMOTE_AGENT_SECRET=.*/NCS_REMOTE_AGENT_SECRET=${secret}/" .env
+# 平台机器的 deploy/compose/.env 里写同一个值（经 SSH 管道，不落终端）：
+printf '%s' "${secret}" | ssh root@<平台IP> 'read -r s; cd /path/to/nanocode/deploy/compose && sed -i "s/^NCS_REMOTE_AGENT_SECRET=.*/NCS_REMOTE_AGENT_SECRET=${s}/" .env'
+unset secret
+```
+
+### 5. 启动沙箱代理（沙箱主机）
+
+```bash
+cd deploy/sandbox-host
+# 编辑 .env：NCS_AGENT_BIND、NCS_AGENT_UPSTREAM_GATEWAY、资源设置
+mkdir -p /srv/nanocode
+docker compose up -d --build
+docker compose ps                     # agent 应变为 healthy
+# 验证沙箱网段只能到中继端口（中继在跑，应显示 8701 open，其它 timeout）
+../firewall/check-sandbox-isolation.sh
+```
+
+### 6. 平台切到远程沙箱（平台机器的 `deploy/compose/.env`）
+
+```bash
+NCS_LAUNCHER=remote
+NCS_REMOTE_AGENT_URL=http://10.77.0.2:8790
+NCS_REMOTE_AGENT_SECRET=<第 4 步写进去的值>
+NCS_REMOTE_GATEWAY_URL=http://172.30.250.1:8701   # 可省略：省略时启动时向代理查询；写上则代理暂时不在也能启动
+NCS_GATEWAY_HOST=10.77.0.1                       # 网关只监听隧道地址
+NCS_MAX_SANDBOXES=2
+```
+
+然后 `docker compose up -d`。验证：
+
+```bash
+curl -s http://127.0.0.1:8700/healthz                       # {"ok": true, "launcher": "remote", "isolated": true}
+curl -s http://10.77.0.2:8790/healthz                       # 平台机器上能连到代理
+```
+
+登录面板新建会话，能打开、能对话、换成自己的 Key 后能调用模型，就通了。平台机器上不再跑沙箱，`deploy/firewall` 那一步在平台机器上可以不做（沙箱镜像仍会在平台机器上构建一次，不会运行）。
+
+## 运维
+
+- **升级代理**：`docker compose up -d --build agent`。代理重启不停沙箱；重启后转发会按容器名找回正在跑的沙箱（令牌由沙箱自己核对）。
+- **平台重启**：控制面退出时让代理停掉全部沙箱，启动时对账，清掉数据库里已经没有的会话的沙箱。
+- **工作区**在沙箱主机的 `/srv/nanocode/sandboxes/<会话>/`，备份要备这台机器。
+- **代理连不上**：控制面把会话标成已停止，用户刷新时重试启动；`docker compose logs agent` 看原因。

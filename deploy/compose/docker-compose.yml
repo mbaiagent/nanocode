@@ -15,6 +15,9 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    # #119：小机器可以调低（1 GB 内存推荐 64MB / 20；平台连接池是 8）
+    command: ["postgres", "-c", "shared_buffers=${NCS_PG_SHARED_BUFFERS:-128MB}", "-c", "max_connections=${NCS_PG_MAX_CONNECTIONS:-100}"]
+    mem_limit: ${NCS_PG_MEM_LIMIT:-0}              # 0 = 不限
     environment:
       POSTGRES_DB: ncs
       POSTGRES_USER: ncs
@@ -33,7 +36,10 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     # 限流计数可以丢：不持久化。必须带密码（#72 / 45-postgres-redis.example.yaml 同理）
-    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?在 .env 里设置 REDIS_PASSWORD}", "--save", "", "--appendonly", "no"]
+    # maxmemory 0 = 不限；限流计数丢了无所谓，满了按 LRU 淘汰（#119）
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?在 .env 里设置 REDIS_PASSWORD}", "--save", "", "--appendonly", "no",
+              "--maxmemory", "${NCS_REDIS_MAXMEMORY:-0}", "--maxmemory-policy", "allkeys-lru"]
+    mem_limit: ${NCS_REDIS_MEM_LIMIT:-0}
     ports:
       - "127.0.0.1:${NCS_REDIS_PORT:-16379}:6379"
     healthcheck:
@@ -62,6 +68,7 @@ services:
     command: ["standalone"]          # 控制面 + 模型网关在一个进程里
     restart: unless-stopped
     network_mode: host
+    mem_limit: ${NCS_PLATFORM_MEM_LIMIT:-0}        # 只限平台进程本身；沙箱容器各有自己的上限（NCS_SANDBOX_MEMORY）
     # 要操作宿主机 Docker（docker.sock 本身就等于 root），并把工作区 chown 给沙箱里的 10001，
     # 所以以 root 运行。沙箱容器仍是非 root、只读根、无 capabilities、内部网络。
     user: "0:0"
@@ -79,7 +86,13 @@ services:
       NCS_DATABASE_URL: postgresql://ncs:${POSTGRES_PASSWORD}@127.0.0.1:${NCS_PG_PORT:-15432}/ncs
       NCS_REDIS_URL: redis://:${REDIS_PASSWORD}@127.0.0.1:${NCS_REDIS_PORT:-16379}/0
       NCS_REPLICAS: "1"
-      NCS_LAUNCHER: docker
+      # docker = 沙箱在本机；remote = 沙箱在另一台机器（deploy/sandbox-host/），这时还要设下面三个远程沙箱变量
+      # 和 NCS_GATEWAY_HOST（网关监听在隧道地址上，让沙箱主机的中继连得到）
+      NCS_LAUNCHER: ${NCS_LAUNCHER:-docker}
+      NCS_REMOTE_AGENT_URL: ${NCS_REMOTE_AGENT_URL:-}
+      NCS_REMOTE_AGENT_SECRET: ${NCS_REMOTE_AGENT_SECRET:-}
+      NCS_REMOTE_GATEWAY_URL: ${NCS_REMOTE_GATEWAY_URL:-}
+      NCS_GATEWAY_HOST: ${NCS_GATEWAY_HOST:-127.0.0.1}
       NCS_SANDBOX_IMAGE: ${NCS_SANDBOX_IMAGE:-nanocode-sandbox:latest}
       NCS_DOCKER_RUNTIME: ${NCS_DOCKER_RUNTIME:-}
       # #123：沙箱网桥名和网段固定下来，宿主机防火墙（deploy/firewall/）按它们只放行网关端口
@@ -87,6 +100,13 @@ services:
       NCS_DOCKER_SUBNET: ${NCS_DOCKER_SUBNET:-172.30.250.0/24}
       NCS_SANDBOX_CPU: ${NCS_SANDBOX_CPU:-1}
       NCS_SANDBOX_MEMORY: ${NCS_SANDBOX_MEMORY:-2Gi}
+      NCS_SANDBOX_TMPFS: ${NCS_SANDBOX_TMPFS:-}
+      NCS_SANDBOX_PIDS: ${NCS_SANDBOX_PIDS:-512}
+      NCS_IDLE_TIMEOUT: ${NCS_IDLE_TIMEOUT:-1800}
+      NCS_MAX_CONNECTIONS: ${NCS_MAX_CONNECTIONS:-256}
+      NCS_DAILY_TOKENS: ${NCS_DAILY_TOKENS:-2000000}
+      NCS_RPM: ${NCS_RPM:-30}
+      NCS_MAX_OUTPUT_TOKENS: ${NCS_MAX_OUTPUT_TOKENS:-8192}
       NCS_MAX_SANDBOXES: ${NCS_MAX_SANDBOXES:-50}
       NCS_MAX_SESSIONS_PER_USER: ${NCS_MAX_SESSIONS_PER_USER:-3}
       NCS_HOST: ${NCS_HOST:-127.0.0.1}           # 只听本机：对外由 Caddy 转发

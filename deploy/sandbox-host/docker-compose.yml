@@ -1,0 +1,62 @@
+# 沙箱主机：只跑沙箱代理 + 每个会话一个沙箱容器。控制面、网关、PostgreSQL、Redis 在另一台机器上
+# （deploy/compose，NCS_LAUNCHER=remote）。两台之间走 WireGuard，见同目录 README.md。
+#
+#   cp .env.example .env && 编辑 .env
+#   docker compose up -d --build
+
+name: nanocode-sandbox-host
+
+services:
+  # 只用来构建沙箱镜像：容器本身立即退出
+  sandbox-image:
+    image: ${NCS_SANDBOX_IMAGE:-nanocode-sandbox:latest}
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.sandbox
+    entrypoint: ["true"]
+    network_mode: none
+    restart: "no"
+
+  agent:
+    image: nanocode-sandbox-agent:latest
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.server
+      args:
+        EXTRAS: ""                   # 代理不连数据库 / Redis，不装驱动
+    command: ["sandbox-agent"]
+    restart: unless-stopped
+    # host 网络：代理要监听 WireGuard 地址、在沙箱网桥地址上开网关中继、直接访问沙箱容器的 IP
+    network_mode: host
+    # 操作宿主机 Docker（docker.sock 等于 root）并把工作区 chown 给沙箱里的 10001。
+    # 沙箱容器仍是非 root、只读根、无 capabilities、internal 网络
+    user: "0:0"
+    mem_limit: ${NCS_AGENT_MEM_LIMIT:-128m}
+    depends_on:
+      sandbox-image: {condition: service_completed_successfully}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # 宿主机路径和容器内路径必须相同：沙箱容器的绑定挂载用的是宿主机路径
+      - ${NCS_HOST_DATA_DIR:-/srv/nanocode}:${NCS_HOST_DATA_DIR:-/srv/nanocode}
+    environment:
+      NCS_DATA_DIR: ${NCS_HOST_DATA_DIR:-/srv/nanocode}
+      NCS_REMOTE_AGENT_SECRET: ${NCS_REMOTE_AGENT_SECRET:?在 .env 里设置 NCS_REMOTE_AGENT_SECRET（和平台那边一致，至少 32 个字符）}
+      NCS_AGENT_BIND: ${NCS_AGENT_BIND:?在 .env 里设置 NCS_AGENT_BIND（本机 WireGuard 地址:端口，例如 10.77.0.2:8790）}
+      NCS_AGENT_UPSTREAM_GATEWAY: ${NCS_AGENT_UPSTREAM_GATEWAY:?在 .env 里设置 NCS_AGENT_UPSTREAM_GATEWAY（平台的网关，例如 10.77.0.1:8701）}
+      NCS_AGENT_RELAY_BIND: ${NCS_AGENT_RELAY_BIND:-}
+      NCS_GATEWAY_PORT: ${NCS_GATEWAY_PORT:-8701}
+      NCS_TOKEN_TTL: ${NCS_TOKEN_TTL:-43200}
+      NCS_SANDBOX_IMAGE: ${NCS_SANDBOX_IMAGE:-nanocode-sandbox:latest}
+      NCS_DOCKER_RUNTIME: ${NCS_DOCKER_RUNTIME:-}
+      NCS_DOCKER_BRIDGE: ${NCS_DOCKER_BRIDGE:-ncs-sbx0}
+      NCS_DOCKER_SUBNET: ${NCS_DOCKER_SUBNET:-172.30.250.0/24}
+      NCS_SANDBOX_CPU: ${NCS_SANDBOX_CPU:-1}
+      NCS_SANDBOX_MEMORY: ${NCS_SANDBOX_MEMORY:-384Mi}
+      NCS_SANDBOX_TMPFS: ${NCS_SANDBOX_TMPFS:-}
+      NCS_SANDBOX_PIDS: ${NCS_SANDBOX_PIDS:-512}
+      NCS_MAX_CONNECTIONS: ${NCS_MAX_CONNECTIONS:-64}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,urllib.request;urllib.request.urlopen('http://%s/healthz' % os.environ['NCS_AGENT_BIND'],timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6

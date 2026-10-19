@@ -31,7 +31,7 @@ PYTHONPATH=server:. python3 -m nanocode_server demo --users 10
 |---|---|---|---|
 | 数据库 | SQLite 文件（数据目录下） | PostgreSQL：控制面和网关可以多副本 | `NCS_DATABASE_URL=postgresql://...`，需要 `pip install "psycopg[binary]"` |
 | 限流计数 | 进程内存 | Redis：多副本共享计数。redis-py 5.0+ 默认用 RESP2（URL 没写 protocol 时），兼容老版本 Redis（#72）；需要 RESP3 时 URL 加 `?protocol=3` | `NCS_REDIS_URL=redis://...`，需要 `pip install redis` |
-| 沙箱 | `auto`：本机子进程（**没有隔离**，只适合开发） | Docker 容器 / Kubernetes Pod | 构建沙箱镜像后 `auto` 会自动用 Docker；在 K8s 集群里自动用 K8s；也可以 `NCS_LAUNCHER=local/docker/k8s` 指定 |
+| 沙箱 | `auto`：本机子进程（**没有隔离**，只适合开发） | Docker 容器 / Kubernetes Pod | 构建沙箱镜像后 `auto` 会自动用 Docker；在 K8s 集群里自动用 K8s；也可以 `NCS_LAUNCHER=local/docker/k8s` 指定；沙箱放另一台机器用 `remote` |
 | 平台模型 | 只有演示模型和用户自己的 Key | 平台提供、平台付费的模型，按每人每日额度限制 | `NCS_PLATFORM_BASE_URL`、`NCS_PLATFORM_API_KEY`、`NCS_PLATFORM_MODELS` |
 | 登录 | 必须显式选择。`NCS_AUTH=dev`：输入任意用户名（只允许监听本机，开发用） | `NCS_AUTH=github`：GitHub 登录 + 邀请码注册（见下文"账号与登录"）；或 `NCS_AUTH=proxy`：前面放认证代理（oauth2-proxy 等对接 SSO） | `NCS_AUTH`，github 模式另需 `NCS_GITHUB_CLIENT_ID/SECRET`、`NCS_PUBLIC_URL` |
 
@@ -173,13 +173,17 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 | `NCS_GITHUB_OAUTH_URL` / `NCS_GITHUB_API_URL` | GitHub 地址，只在测试 / 冒烟时改成假的 GitHub（必须 https，本机地址除外） | `https://github.com` / `https://api.github.com` |
 | `NCS_AUTH_HEADER` / `NCS_PROXY_SECRET` | 代理模式：身份请求头 / 共享密钥 | `X-Auth-Request-Email` / — |
 | `NCS_PUBLIC_URL` | 对外地址：https 时 Cookie 加 Secure；github 模式下 OAuth 回调地址是 `<它>/auth/github/callback`，必须 https（本机地址除外） | — |
-| `NCS_LAUNCHER` | `auto` / `local` / `docker` / `k8s` | `auto` |
+| `NCS_LAUNCHER` | `auto` / `local` / `docker` / `k8s` / `remote`（沙箱在另一台机器，见 deploy/sandbox-host/） | `auto` |
 | `NCS_SANDBOX_IMAGE` | Docker 和 K8s 用的沙箱镜像 | `nanocode-sandbox:latest` |
 | `NCS_SANDBOX_MODES` / `NCS_SANDBOX_MODE` | 沙箱里允许的权限模式 / 启动模式；本机启动器不允许 `bypass` | 除 bypass 外全部 / `default` |
 | `NCS_SANDBOX_MCP_SERVERS` | 给每个沙箱配的 MCP 服务器，JSON 对象（格式同 settings.json 的 `mcpServers`）或 JSON 文件路径。用户和项目自己配的 MCP 服务器一律不生效（能执行命令）；命令要在沙箱镜像里存在，Docker / K8s 沙箱没有外网 | 空 |
 | `NCS_SANDBOX_CPU` / `NCS_SANDBOX_MEMORY` | 每个沙箱的资源上限 | `1` / `2Gi` |
 | `NCS_DOCKER_RUNTIME` / `NCS_DOCKER_NETWORK` | Docker 运行时（如 `runsc`）/ 沙箱网络名 | — / `ncs-sandboxes` |
 | `NCS_DOCKER_BRIDGE` / `NCS_DOCKER_SUBNET` | 沙箱网桥网卡名 / 沙箱网段（宿主机防火墙按它们写规则，见 deploy/firewall/；空 = Docker 自动分配） | `ncs-sbx0` / `172.30.250.0/24` |
+| `NCS_SANDBOX_TMPFS` / `NCS_SANDBOX_PIDS` | Docker 沙箱 /tmp 大小（算在沙箱内存里）/ 进程数上限（#119）；大小也认 `384m`、`1g` 写法 | 512m 与内存一半取小 / `512` |
+| `NCS_REMOTE_AGENT_URL` / `NCS_REMOTE_AGENT_SECRET` | `NCS_LAUNCHER=remote`：沙箱代理地址（走 WireGuard）/ 两边共用的密钥（≥32 字符），见 [deploy/sandbox-host/](../deploy/sandbox-host/README.md) | — |
+| `NCS_REMOTE_GATEWAY_URL` | 远程沙箱访问网关的地址（沙箱主机上的中继）；空 = 启动时问代理 | — |
+| `NCS_AGENT_BIND` / `NCS_AGENT_UPSTREAM_GATEWAY` / `NCS_AGENT_RELAY_BIND` | 沙箱代理（`python -m nanocode_server sandbox-agent`）：监听的隧道地址（不能是 0.0.0.0）/ 平台的网关 / 中继监听地址（空 = 沙箱网桥） | — |
 | `NCS_K8S_*` | 命名空间、运行时类、存储类、工作区大小、API 地址 | 见 `config.py` |
 | `NCS_MAX_SANDBOXES` / `NCS_MAX_SESSIONS_PER_USER` | 总容量 / 每人同时运行的会话数 | 200 / 3 |
 | `NCS_IDLE_TIMEOUT` / `NCS_TOKEN_TTL` | 空闲回收秒数 / 网关令牌有效期（也是沙箱最长存活时间） | 1800 / 43200 |
