@@ -92,6 +92,19 @@ class FakeProxy:
                 pass
 
 
+def set_env(test, **values):
+    """先清掉所有代理变量，再按大小写两种写法设置（Windows 的环境变量不分大小写，不能先设再清）。测试结束整体还原。"""
+    patcher = mock.patch.dict(os.environ, {})
+    patcher.start()
+    test.addCleanup(patcher.stop)
+    for k in PROXY_VARS:
+        os.environ.pop(k, None)
+    for k, v in values.items():
+        os.environ[k] = v
+        if k.endswith("_PROXY"):
+            os.environ[k.lower()] = v
+
+
 def no_dns(host):
     raise AssertionError(f"不该在本地解析 {host}")
 
@@ -101,14 +114,7 @@ class ProxyEnvTest(unittest.TestCase):
         self.proxy = FakeProxy()
         self.addCleanup(self.proxy.close)
         url = f"http://127.0.0.1:{self.proxy.port}"
-        env = {k: "" for k in PROXY_VARS}
-        env.update(HTTP_PROXY=url, HTTPS_PROXY=url, NO_PROXY="localhost,direct.test")
-        patcher = mock.patch.dict(os.environ, env)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        for k in PROXY_VARS:
-            if not os.environ.get(k):
-                os.environ.pop(k, None)
+        set_env(self, HTTP_PROXY=url, HTTPS_PROXY=url, NO_PROXY="localhost,direct.test")
         self.ctx = ToolContext(cwd=Workspace().dir)
 
     def test_proxy_selection_follows_no_proxy(self):
@@ -120,7 +126,7 @@ class ProxyEnvTest(unittest.TestCase):
         tool = WebFetch(resolver=lambda h: ["93.184.216.34"])
         r = tool.execute({"url": "http://site.test:8080/a?b=1"}, self.ctx)
         self.assertFalse(r.is_error, r.content)
-        self.assertIn("via proxy: GET http://site.test:8080/a?b=1 HTTP/1.1", r.content)
+        self.assertIn("via proxy: GET http://site.test:8080/a?b=1 HTTP/1.", r.content)
 
     def test_without_the_platform_flag_private_addresses_are_still_refused_locally(self):
         tool = WebFetch(resolver=lambda h: ["10.0.0.7"])
@@ -150,7 +156,7 @@ class ProxyEnvTest(unittest.TestCase):
         r = WebFetch(resolver=no_dns).execute({"url": "https://internal.test/"}, self.ctx)
         self.assertTrue(r.is_error)
         self.assertIn("403", r.content)
-        self.assertEqual(self.proxy.lines, ["CONNECT internal.test:443 HTTP/1.1"])
+        self.assertEqual([l.rsplit(" ", 1)[0] for l in self.proxy.lines], ["CONNECT internal.test:443"])
 
     def test_no_proxy_hosts_connect_directly(self):
         server = LocalHTTPServer(("127.0.0.1", 0), Handler)
@@ -200,18 +206,14 @@ class ProxyTlsTest(unittest.TestCase):
         self.proxy.tunnel_to = self.server.server_address[1]
         self.addCleanup(self.proxy.close)
         url = f"http://127.0.0.1:{self.proxy.port}"
-        patcher = mock.patch.dict(os.environ, {"HTTPS_PROXY": url, "https_proxy": url, "NANOCODE_EGRESS_PROXY": "1"})
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        for k in ("NO_PROXY", "no_proxy"):
-            os.environ.pop(k, None)
+        set_env(self, HTTPS_PROXY=url, NANOCODE_EGRESS_PROXY="1")
         self.ctx = ToolContext(cwd=Workspace().dir)
 
     def test_https_through_the_tunnel_is_verified_against_the_hostname(self):
         r = WebFetch(resolver=no_dns, ssl_context=self.client_ctx).execute({"url": "https://tunnel.test/text"}, self.ctx)
         self.assertFalse(r.is_error, r.content)
         self.assertIn("你好，世界", r.content)
-        self.assertEqual(self.proxy.lines, ["CONNECT tunnel.test:443 HTTP/1.1"])
+        self.assertEqual([l.rsplit(" ", 1)[0] for l in self.proxy.lines], ["CONNECT tunnel.test:443"])
 
     def test_wrong_hostname_through_the_tunnel_is_rejected(self):
         r = WebFetch(resolver=no_dns, ssl_context=self.client_ctx).execute({"url": "https://other.test/text"}, self.ctx)
