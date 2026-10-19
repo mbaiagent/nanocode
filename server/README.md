@@ -30,7 +30,7 @@ PYTHONPATH=server:. python3 -m nanocode_server demo --users 10
 | 组件 | 不配置时 | 配置后 | 怎么配置 |
 |---|---|---|---|
 | 数据库 | SQLite 文件（数据目录下） | PostgreSQL：控制面和网关可以多副本 | `NCS_DATABASE_URL=postgresql://...`，需要 `pip install "psycopg[binary]"` |
-| 限流计数 | 进程内存 | Redis：多副本共享计数 | `NCS_REDIS_URL=redis://...`，需要 `pip install redis` |
+| 限流计数 | 进程内存 | Redis：多副本共享计数。redis-py 5.0+ 默认用 RESP2（URL 没写 protocol 时），兼容老版本 Redis（#72）；需要 RESP3 时 URL 加 `?protocol=3` | `NCS_REDIS_URL=redis://...`，需要 `pip install redis` |
 | 沙箱 | `auto`：本机子进程（**没有隔离**，只适合开发） | Docker 容器 / Kubernetes Pod | 构建沙箱镜像后 `auto` 会自动用 Docker；在 K8s 集群里自动用 K8s；也可以 `NCS_LAUNCHER=local/docker/k8s` 指定 |
 | 平台模型 | 只有演示模型和用户自己的 Key | 平台提供、平台付费的模型，按每人每日额度限制 | `NCS_PLATFORM_BASE_URL`、`NCS_PLATFORM_API_KEY`、`NCS_PLATFORM_MODELS` |
 | 登录 | 开发模式：输入任意用户名（只允许监听本机） | 生产：前面放认证代理（oauth2-proxy 等对接 SSO） | `NCS_AUTH=proxy`、`NCS_PROXY_SECRET` |
@@ -128,6 +128,10 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 [verification/results/perf-loadtest.md](../verification/results/perf-loadtest.md)。
 在 100 个用户同时开会话的测试中全部成功；建会话的延迟随并发线性增长（约每 1 个沙箱 0.24 秒），是现在最明显的瓶颈。
 
+## 单机部署（docker compose）
+
+一台 Linux 服务器给一个团队用：`deploy/compose/` 起控制面 + 模型网关（一个进程）、PostgreSQL 16 和 Redis 7，沙箱用宿主机 Docker（每个会话一个容器，内部网络、非 root、只读根文件系统）。步骤、限制和 GitHub 登录（P1）还没做时的访问方式见 [deploy/compose/README.md](../deploy/compose/README.md)。
+
 ## 生产部署（Kubernetes）
 
 清单在 [`deploy/k8s/`](../deploy/k8s/)，镜像在 [`deploy/`](../deploy/)：
@@ -148,6 +152,7 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 | `NCS_SECRET_KEY` | 主密钥：签名令牌、加密用户的 Key。控制面和网关必须相同。开发模式不配会自动生成并保存在数据目录 | 生产必填 |
 | `NCS_DATA_DIR` | 数据目录（SQLite、本机 / Docker 沙箱的工作区） | `./ncs-data` |
 | `NCS_DATABASE_URL` / `NCS_REDIS_URL` | 见上表 | 空 |
+| `NCS_REPLICAS` | 副本数。大于 1 时必须配 PostgreSQL 和 Redis，否则拒绝启动（SQLite 多副本会脑裂，#72） | `1` |
 | `NCS_HOST` / `NCS_PORT` | 控制面监听地址 | `127.0.0.1` / `8700` |
 | `NCS_AUTH` | `dev`（登录页任意用户名，只限本机）/ `proxy`（认证代理） | `dev` |
 | `NCS_AUTH_HEADER` / `NCS_PROXY_SECRET` | 代理模式：身份请求头 / 共享密钥 | `X-Auth-Request-Email` / — |

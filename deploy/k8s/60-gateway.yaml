@@ -26,6 +26,7 @@ spec:
             - {name: NCS_AUTH, value: proxy}                # 网关不处理登录，只是让配置检查按生产要求来
             - {name: NCS_GATEWAY_HOST, value: "0.0.0.0"}
             - {name: NCS_GATEWAY_PORT, value: "8080"}
+            - {name: NCS_REPLICAS, value: "2"}              # 与上面的 replicas 一致
             - {name: NCS_PLATFORM_BASE_URL, value: "https://api.deepseek.com/v1"}
             - {name: NCS_PLATFORM_MODELS, value: "deepseek-chat"}
             - {name: NCS_DAILY_TOKENS, value: "2000000"}
