@@ -43,7 +43,7 @@ class Tool:
 
 `execute()` 包了一层：参数校验 → `run()` → 把所有异常变成 `ToolResult(..., is_error=True)`。
 
-## nanocode 的 11 个工具
+## nanocode 的 12 个工具
 
 | 工具 | 只读 | 作用 | 设计要点 |
 |---|---|---|---|
@@ -55,6 +55,7 @@ class Tool:
 | `grep` | ✓ | 按内容找 | 正则；`文件:行号: 内容` 格式 |
 | `search_docs` | | 按含义检索文档 | BM25 + 可选向量，见第 10 章；首次调用建索引并写入 `.nanocode/index/`，需要确认；已知确切名字时用 grep |
 | `web_fetch` | | 读一个网页 | 默认每次确认；拒绝本机和内网地址；HTML 转纯文本；见第 04 章 |
+| `web_search` | | 联网搜索 | provider 无关，配 `NCS_SEARCH_BASE_URL` + `NCS_SEARCH_API_KEY`；返回标题/URL/摘要，Agent 再用 web_fetch 抓详情 |
 | `todo_write` | ✓ | 待办清单 | 见第 06 章 |
 | `task` | ✓ | 子 Agent | 见第 06 章；可带 `check`、`allowed_paths` 做验收（第 11 章） |
 | `skill` | ✓ | 加载技能说明 | 见第 06 章 |
