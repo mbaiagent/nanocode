@@ -59,7 +59,7 @@ flowchart LR
 
 | 问题 | 影响 | 现在的缓解 | 跟踪 |
 |---|---|---|---|
-| 沙箱环境变量里有网关令牌 `NANOCODE_API_KEY` 和 `NANOCODE_WEB_TOKEN`，任何子进程（`env`、`/proc/self/environ`）都能读到 | 提示词注入后一条命令就能拿到。网关令牌不是真实 Key（签名、有过期、绑定会话代次、只能调平台网关），但仍能在有效期内消耗该用户的额度；web token 能驱动这个沙箱 | 沙箱没有外网；网关只在内网可达；停止 / 重启沙箱会让旧令牌失效 | [#134](https://github.com/mbaiagent/nanocode/issues/134) |
+| 沙箱环境变量里有网关令牌 `NANOCODE_API_KEY` 和 `NANOCODE_WEB_TOKEN`，任何子进程（`env`、`/proc/self/environ`）都能读到 | 提示词注入后一条命令就能拿到。网关令牌不是真实 Key（签名、有过期、绑定会话代次、只能调平台网关），但仍能在有效期内消耗该用户的额度；web token 能驱动这个沙箱 | bash / verify / hook 子进程拿不到 `NANOCODE_*`、`NCS_*`、厂商 Key 和像密钥的变量（`NANOCODE_TOOL_ENV_KEEP` 可放行后两类）；Web 进程不可 dump，读不到父进程 environ；沙箱没有外网；网关只在内网可达；停止 / 重启沙箱会让旧令牌失效；`NCS_RPM` / `NCS_DAILY_TOKENS` 封顶消耗。仍有残留：同进程内的 Python 工具、读得到的文件 | [#134](https://github.com/mbaiagent/nanocode/issues/134) |
 | 审计日志 `audit.jsonl` 写在沙箱数据目录，属主是 agent 用户 | 被攻陷的 agent 能改写或截断审计记录，只能作事后参考 | 无 | [#135](https://github.com/mbaiagent/nanocode/issues/135) |
 | 读文件默认放行，`.env`、`*.pem`、`*.key`、`id_rsa` / `id_ed25519`、`.netrc`、`.aws/credentials` 被读时不确认 | 提示词注入可以把这些内容读进上下文 | 读取这些文件默认询问、非交互拒绝，宽泛 allow 规则不放行；bash 常见读法启发式识别（`python -c`、`grep -r` 等看不穿）；模式可由 `permissions.sensitive_read(_exclude)` 和平台策略调整，见 [04 章](04-permissions-and-hooks.md#敏感文件读取136) | [#136](https://github.com/mbaiagent/nanocode/issues/136) |
 | 权限分类是字符串启发式：`bash -c "…"`、`xargs`、别名、变量展开看不穿；`risk.py` 只做正则识别 | 不能把 allow/deny 规则当成安全边界 | 容器隔离兜底；`review` 模式高风险永远确认 | 设计如此，见 [第 04 章](04-permissions-and-hooks.md)、[第 11 章](11-verification-loop.md) |

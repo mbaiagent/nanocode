@@ -29,7 +29,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 
-from .proc import utf8_env
+from .proc import tool_env
 
 EVENTS = ("UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop")
 
@@ -65,7 +65,7 @@ class HookRunner:
                 # AttributeError —— 一个 hook 打崩整轮对话（#32）。
                 p = subprocess.run(hook["command"], shell=True, input=data, capture_output=True,
                                    text=True, encoding="utf-8", errors="replace",
-                                   cwd=self.cwd, timeout=self.timeout, env=utf8_env())
+                                   cwd=self.cwd, timeout=self.timeout, env=tool_env())
             except (subprocess.TimeoutExpired, OSError) as e:
                 outcome.warnings.append(f"hook 没能运行（{type(e).__name__}）：{hook['command']}")
                 continue
