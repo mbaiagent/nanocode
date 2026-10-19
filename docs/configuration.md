@@ -85,7 +85,7 @@
 | `NCS_AGENT_RELAY_MAX_CONNECTIONS` | `128` | 代理 | 中继全局连接上限 |
 | `NCS_AGENT_RELAY_PER_SANDBOX` | `16` | 代理 | 每个沙箱（按来源 IP）的中继连接上限，要求 1 ≤ 它 ≤ 全局上限 |
 | `NCS_AGENT_RELAY_IDLE_TIMEOUT` | `300` | 代理 | 中继连接两个方向都没数据超过这么多秒就断开，至少 10 |
-| `NCS_EGRESS_PROXY` | `0` | 代理 | 出站代理开关：沙箱经它访问公网 HTTP/HTTPS，内网 / 元数据 / 本机地址一律拒绝；打开后给沙箱注入 `HTTP(S)_PROXY`、`NO_PROXY`、`NANOCODE_EGRESS_PROXY=1`。**[#134](https://github.com/mbaiagent/nanocode/issues/134) 修完前不在生产打开**；打开前防火墙脚本要带 `NCS_EGRESS_PORT`。见 [distributed-deploy.md 3.5](distributed-deploy.md#35-出站代理沙箱上网默认关) |
+| `NCS_EGRESS_PROXY` | `0` | 代理 | 出站代理开关：沙箱经它访问公网 HTTP/HTTPS，内网 / 元数据 / 本机地址一律拒绝；打开后给沙箱注入 `HTTP(S)_PROXY`、`NO_PROXY`、`NANOCODE_EGRESS_PROXY=1`。生产打开前确认镜像已包含 [#134](https://github.com/mbaiagent/nanocode/issues/134) 的修复（PR #146）；打开前防火墙脚本要带 `NCS_EGRESS_PORT`。见 [distributed-deploy.md 3.5](distributed-deploy.md#35-出站代理沙箱上网默认关) |
 | `NCS_EGRESS_BIND` | 空 = 和网关中继相同 | 代理 | 出站代理监听地址，拒绝 `0.0.0.0` / `::` |
 | `NCS_EGRESS_PORT` | `3128` | 代理 | 出站代理端口，不能等于 `NCS_GATEWAY_PORT` |
 | `NCS_EGRESS_ALLOWED_PORTS` | `80,443` | 代理 | 允许的目标端口（CONNECT 和明文 HTTP 共用） |
@@ -142,3 +142,11 @@
 | `NCS_SEARCH_*` | 兼容旧名 | `web_search` 的旧前缀，新名是 `NANOCODE_SEARCH_*`（见 README） |
 | `NCS_REAP_INTERVAL` | **进行中**：[PR #133](https://github.com/mbaiagent/nanocode/pull/133)（未合并） | 回收线程间隔（默认 60 秒）；空闲时不查数据库，让托管 Postgres 能缩到零（[#131](https://github.com/mbaiagent/nanocode/issues/131)） |
 | 工作区快照（B2 / S3 兼容对象存储） | **计划中**，变量名以 PR 为准 | 沙箱停止时把工作区打包上传、下次打开时恢复；对象存储凭据只在服务器上，不进沙箱 |
+
+## 附：沙箱内 nanocode 进程的相关变量
+
+| 变量 | 默认 | 用在哪 | 说明 |
+|---|---|---|---|
+| `NANOCODE_TOOL_ENV_KEEP` | 空 | 沙箱 / 本地 nanocode | 逗号分隔的变量名，照常传给 bash / verify / hook 子进程（#134）。子进程一律拿不到 `NANOCODE_*`、`NCS_*`，这两类**不能放行**；平台模式（控制面注入了 `NANOCODE_WEB_TOKEN`）下还去掉厂商 Key 和名字以 `_TOKEN` / `_SECRET` / `_PASSWORD` / `_API_KEY` / `_ACCESS_KEY` 等结尾的变量（按后缀匹配，`TOKENIZERS_PARALLELISM` 这类不受影响），需要时在这里放行。平台模式下 nanocode 进程还会设 `PR_SET_DUMPABLE=0`，失败时在 stderr 打警告 |
+
+网关令牌（沙箱里的 `NANOCODE_API_KEY`）绑定用户、会话和本次启动，停止 / 重启即失效；有效期见 `NCS_TOKEN_TTL`，泄漏后的消耗由 `NCS_RPM` 和 `NCS_DAILY_TOKENS` 封顶。

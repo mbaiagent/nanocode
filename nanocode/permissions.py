@@ -58,9 +58,13 @@ class PermissionManager:
     ask_fn: Optional[AskFn] = None
     session_allow: list[str] = field(default_factory=list)
     allowed_modes: tuple = ()     # 平台策略限定的可选模式（见 policy.py）；空 = 不限制
+    # 敏感文件读取（#136）：None = 默认模式表；配置可追加 / 排除，见 risk.SENSITIVE_READ
+    sensitive_read: Optional[list] = None
 
     def __post_init__(self):
         self.cwd = os.path.realpath(self.cwd)
+        if self.sensitive_read is None:
+            self.sensitive_read = list(risk.SENSITIVE_READ)
         if self.allowed_modes and self.mode not in self.allowed_modes:
             raise ValueError(f"权限模式 {self.mode} 不在平台允许的范围内：{', '.join(self.allowed_modes)}")
 
@@ -82,6 +86,30 @@ class PermissionManager:
         return decision
 
     def _decide(self, tool, target: str, full: str) -> Decision:
+        """先按原有顺序得出决策，再用敏感读取检查收紧（#136）：只会 allow → ask，不会放松。
+
+        deny（含 plan 拒绝）原样保留；ask 保留原来的理由和 high_risk，只在理由后追加一句；
+        allow（含宽泛 allow 规则）升级成 ask。用户对这个具体目标点过「总是允许」、或 bypass 模式不收紧。
+        非交互时 _ask 会把 ask 变成 deny。
+        """
+        decision = self._base_decide(tool, target, full)
+        if decision.behavior == "deny" or self.mode == "bypass":
+            return decision
+        sensitive = self._sensitive_read(tool, target, full)
+        if not sensitive:
+            return decision
+        note = f"读取敏感文件（{sensitive}），内容会进入模型上下文"
+        if decision.behavior == "ask":
+            decision.reason = f"{decision.reason}；另外会{note}"
+            return decision
+        inside = not getattr(tool, "path_target", False) or is_inside(self.cwd, full)
+        forms = [norm_rel(safe_relpath(full, os.path.realpath(self.cwd))) if inside else norm_rel(full)] \
+            if getattr(tool, "path_target", False) else [target]
+        if self._exactly_allowed(tool, target, forms):
+            return decision
+        return Decision("ask", f"{note}，需要确认", high_risk=decision.high_risk)
+
+    def _base_decide(self, tool, target: str, full: str) -> Decision:
         inside = True
         allow_forms = deny_forms = [target]
         if getattr(tool, "path_target", False):
@@ -135,6 +163,25 @@ class PermissionManager:
             if tool.name == "bash" and risk.classify_bash(target) == "safe":
                 return Decision("allow", "终审模式：白名单内的测试 / 只读命令自动放行")
         return Decision("ask", "需要用户确认")
+
+    def _sensitive_read(self, tool, target: str, full: str) -> str:
+        """读敏感文件时返回命中的路径写法；空串 = 不是。read_file / grep 看真实路径，bash 是启发式。"""
+        pats = self.sensitive_read or []
+        if not pats:
+            return ""
+        if tool.name == "bash":
+            hits = risk.bash_sensitive_reads(target, pats)
+            return ", ".join(hits[:3])
+        if getattr(tool, "path_target", False) and tool.is_read_only and full:
+            if risk.is_sensitive_path(full, pats) or (target and risk.is_sensitive_path(target, pats)):
+                return target or full
+        return ""
+
+    def _exactly_allowed(self, tool, target: str, forms: list[str]) -> bool:
+        """只认「总是允许」记下的精确规则（不带通配），宽泛的 allow 规则不算。"""
+        if tool.name == "bash":
+            return f"bash({target})" in self.session_allow
+        return any(f"{tool.name}({f})" in self.session_allow for f in forms)
 
     def _high_risk(self, tool, target: str, inside: bool, rel: str) -> str:
         """终审模式下的高风险判断，返回原因；空串 = 不算高风险。"""

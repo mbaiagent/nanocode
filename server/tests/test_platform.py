@@ -101,6 +101,31 @@ class PlatformTest(unittest.TestCase):
         self.assertNotIn("endpoint", listed)
         self.assertNotIn("web_token", listed)
 
+    def test_security_headers_on_control_pages_and_proxied_panel(self):
+        """#113：控制面页面有 CSP + 禁止被嵌；/s/ 转发的面板有平台给的 CSP，只允许同源嵌入。"""
+        c = self.client("heidi")
+        for path in ("/", "/login"):
+            status, _, h = c.request("GET", path, raw=True)
+            self.assertEqual(status, 200, path)
+            self.assertIn("frame-ancestors 'none'", h.get("content-security-policy", ""), path)
+            self.assertIn("frame-src 'self'", h["content-security-policy"], path)      # 主界面要嵌 /s/
+            self.assertEqual(h.get("x-frame-options"), "DENY", path)
+            self.assertEqual(h.get("x-content-type-options"), "nosniff", path)
+        sid = self.create(c)
+        for path in (f"/s/{sid}/?embed=1", f"/s/{sid}/api/state"):
+            status, _, h = c.request("GET", path, raw=True)
+            self.assertEqual(status, 200, path)
+            csp = h.get("content-security-policy", "")
+            self.assertIn("frame-ancestors 'self'", csp, path)
+            self.assertIn("script-src 'self' 'unsafe-inline'", csp, path)
+            self.assertNotIn("frame-ancestors 'none'", csp, path)
+            self.assertEqual(h.get("x-frame-options"), "SAMEORIGIN", path)
+            self.assertEqual(h.get("x-content-type-options"), "nosniff", path)
+        # 错误响应（别人的 / 不存在的会话）同样带面板那套头，iframe 里能显示出来
+        status, _, h = c.request("GET", "/s/0123456789abcdef/api/state", raw=True)
+        self.assertEqual(status, 404)
+        self.assertEqual(h.get("x-frame-options"), "SAMEORIGIN")
+
     def test_switch_model_keeps_conversation_and_routes_through_gateway(self):
         c = self.client("heidi")
         sid = self.create(c)

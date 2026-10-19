@@ -186,7 +186,7 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 | `NCS_REMOTE_GATEWAY_URL` | 远程沙箱访问网关的地址（沙箱主机上的中继）；空 = 启动时问代理 | — |
 | `NCS_AGENT_BIND` / `NCS_AGENT_UPSTREAM_GATEWAY` / `NCS_AGENT_RELAY_BIND` | 沙箱代理（`python -m nanocode_server sandbox-agent`）：监听的隧道地址（不能是 0.0.0.0）/ 平台的网关 / 中继监听地址（空 = 沙箱网桥） | — |
 | `NCS_AGENT_RELAY_MAX_CONNECTIONS` / `NCS_AGENT_RELAY_PER_SANDBOX` / `NCS_AGENT_RELAY_IDLE_TIMEOUT` | 沙箱代理的网关中继：全局连接上限 / 每个沙箱上限 / 空闲断开秒数 | `128` / `16` / `300` |
-| `NCS_EGRESS_PROXY` | 沙箱代理里的出站代理：沙箱经它访问公网 HTTP/HTTPS，内网、元数据、本机地址一律拒绝，并把 `HTTP(S)_PROXY` / `NO_PROXY` / `NANOCODE_EGRESS_PROXY=1` 注入沙箱。**生产环境等 #134 落地再开**，打开前先在防火墙放行端口。见 [distributed-deploy.md 3.5](../docs/distributed-deploy.md#35-出站代理沙箱上网默认关) | `0` |
+| `NCS_EGRESS_PROXY` | 沙箱代理里的出站代理：沙箱经它访问公网 HTTP/HTTPS，内网、元数据、本机地址一律拒绝，并把 `HTTP(S)_PROXY` / `NO_PROXY` / `NANOCODE_EGRESS_PROXY=1` 注入沙箱。生产打开前确认镜像已包含 #134 的修复（PR #146），打开前先在防火墙放行端口。见 [distributed-deploy.md 3.5](../docs/distributed-deploy.md#35-出站代理沙箱上网默认关) | `0` |
 | `NCS_EGRESS_BIND` / `NCS_EGRESS_PORT` | 出站代理的监听地址（空 = 和网关中继相同；不能是 0.0.0.0）/ 端口（不能等于网关端口） | 空 / `3128` |
 | `NCS_EGRESS_ALLOWED_PORTS` | 允许的目标端口（CONNECT 和明文 HTTP 共用） | `80,443` |
 | `NCS_EGRESS_MAX_CONNECTIONS` / `NCS_EGRESS_PER_SANDBOX` / `NCS_EGRESS_IDLE_TIMEOUT` | 出站代理：全局连接上限 / 每个沙箱上限 / 空闲断开秒数 | `64` / `8` / `120` |
@@ -200,7 +200,14 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 | `NCS_PLATFORM_BASE_URL` / `NCS_PLATFORM_API_KEY` / `NCS_PLATFORM_PROTOCOL` / `NCS_PLATFORM_MODELS` / `NCS_PLATFORM_LABEL` | 平台提供的模型 | — / — / `openai` / — / `平台模型` |
 | `NCS_ENABLE_MOCK_MODEL` | 提供演示模型 | `true` |
 | `NCS_ALLOW_PRIVATE_UPSTREAMS` | 允许 dev 模式下用户的 Key 指向内网 / 本机（如本机 Ollama）；与代理认证模式互斥 | `false` |
-| `NCS_DAILY_TOKENS` / `NCS_RPM` / `NCS_MAX_OUTPUT_TOKENS` | 每人每日平台模型 token 上限 / 每分钟请求上限 / 单次输出上限 | 2000000 / 30 / 8192 |
+| `NCS_DAILY_TOKENS` / `NCS_RPM` / `NCS_MAX_OUTPUT_TOKENS` | 每人每日平台模型 token 上限 / 每分钟请求上限 / 单次输出上限。网关令牌泄漏时，这两个上限决定最多能被消耗多少（#134） | 2000000 / 30 / 8192 |
+| `NANOCODE_TOOL_ENV_KEEP`（沙箱内） | 平台模式下默认从工具子进程环境里去掉厂商 Key 和名字像密钥的变量，这里用逗号列出要放行的；`NANOCODE_*` / `NCS_*` 不能放行（#134），见 [docs/configuration.md](../docs/configuration.md) | — |
+
+## 沙箱里的凭据（#134）
+
+- 沙箱里的 `NANOCODE_API_KEY` 不是用户的模型 Key，是网关令牌：签名载荷绑定用户、会话和本次启动的 web_token 摘要，会话停止、重启或删除后立即失效；有效期 `NCS_TOKEN_TTL` 同时是沙箱最长存活时间，到期前回收，下次访问带新令牌重启（这就是"续期"）。
+- 令牌不再继承给 bash / verify / hook 子进程，Web 服务进程不可 dump，`env`、`/proc/self/environ`、`/proc/<父进程>/environ` 都读不到。
+- 没有另外做更短的令牌加续期：续期只能凭当前令牌，拿到令牌的人同样能续，沙箱运行期间窗口不会变小。泄漏后的损失由 `NCS_RPM` 和 `NCS_DAILY_TOKENS` 封顶，停止会话即吊销。
 
 ## 局限（如实说明）
 
@@ -208,5 +215,5 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 - 容量满时直接拒绝，没有排队。
 - 审计日志写在沙箱里，Agent 能改，还不能当作可信审计（[#135](https://github.com/mbaiagent/nanocode/issues/135)）。沙箱环境变量里的令牌对子进程可见（[#134](https://github.com/mbaiagent/nanocode/issues/134)）。完整的安全边界见 [docs/security-model.md](../docs/security-model.md)。
 - 没有指标、链路追踪和告警，没有计费。管理后台只有 `/admin` 的邀请码和账号停用 / 启用。压测数据见上文「压测」。
-- Docker 沙箱的网络隔离依赖 Docker 的内部网络加宿主机防火墙（[deploy/firewall/](../deploy/firewall/README.md)，只放行网关端口）；Docker 沙箱默认也装不了依赖（出不了外网）。远程沙箱可以打开只放行 HTTP/HTTPS 的出站代理（`NCS_EGRESS_PROXY`，默认关，见 [distributed-deploy.md 3.5](../docs/distributed-deploy.md#35-出站代理沙箱上网默认关)），[#134](https://github.com/mbaiagent/nanocode/issues/134) 修完前不在生产打开；单机 Docker / K8s 模式还没有。
+- Docker 沙箱的网络隔离依赖 Docker 的内部网络加宿主机防火墙（[deploy/firewall/](../deploy/firewall/README.md)，只放行网关端口）；Docker 沙箱默认也装不了依赖（出不了外网）。远程沙箱可以打开只放行 HTTP/HTTPS 的出站代理（`NCS_EGRESS_PROXY`，默认关，见 [distributed-deploy.md 3.5](../docs/distributed-deploy.md#35-出站代理沙箱上网默认关)），默认关；单机 Docker / K8s 模式还没有。
 - 全部 `NCS_*` 变量（含上表没列的 `NCS_LOGIN_TTL`、`NCS_MAX_CONNECTIONS`、`NCS_ALLOW_UNISOLATED` 和 compose 专用变量）见 [docs/configuration.md](../docs/configuration.md)。

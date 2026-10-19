@@ -134,7 +134,7 @@ AllowedIPs = 10.77.0.1/32
 
 ### 3.5 出站代理（沙箱上网，默认关）
 
-> **生产环境暂时不要打开。** 打开的前提是 [#134](https://github.com/mbaiagent/nanocode/issues/134)：现在沙箱的环境变量里还有网关令牌（`NANOCODE_API_KEY`）和 `NANOCODE_WEB_TOKEN`，任何 bash 子进程都读得到。沙箱断网时这是主要的缓解手段；能上网之后，一次提示词注入（`env` + `curl`）就能把它们带出去。#134 落地（沙箱里只有短期、只能访问中继的令牌）之前，`NCS_EGRESS_PROXY` 保持 `0`，只在测试环境打开。相关：[#135](https://github.com/mbaiagent/nanocode/issues/135)（沙箱里的 agent 能改审计日志，出了事查不清）、[#136](https://github.com/mbaiagent/nanocode/issues/136)（读 `.env`、`*.key`、`id_*` 这类敏感文件默认应该先确认）。
+> **默认关，生产打开前先确认前置条件。** 能上网之后，一次提示词注入（`env` + `curl`）就可能把沙箱里的令牌带出去，所以前提是沙箱里的令牌拿不到：[#134](https://github.com/mbaiagent/nanocode/issues/134) 已经由 [PR #146](https://github.com/mbaiagent/nanocode/pull/146) 修复（bash / verify / hook 子进程不继承 `NANOCODE_*` 和像密钥的变量，Web 进程不可 dump，读不到父进程的 environ）。生产上打开之前，**确认沙箱镜像已经是包含 #146 的版本**，并接受剩下的残留风险：同一个进程里的 Python 工具、沙箱里读得到的文件。相关：[#135](https://github.com/mbaiagent/nanocode/issues/135)（审计日志可被沙箱篡改，已关闭）、[#136](https://github.com/mbaiagent/nanocode/issues/136)（读敏感文件默认要确认，已由 [PR #147](https://github.com/mbaiagent/nanocode/pull/147) 修复）。HTTP 代理变量不算密钥，#146 之后照样会传给 bash，所以 `pip` 和 `curl` 能走代理。
 
 **架构**：
 
@@ -178,7 +178,7 @@ AllowedIPs = 10.77.0.1/32
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `NCS_EGRESS_PROXY` | `0` | 开关。打开前先放行防火墙端口；生产环境等 #134 |
+| `NCS_EGRESS_PROXY` | `0` | 开关。打开前先放行防火墙端口；生产上要确认镜像已包含 #134 的修复（PR #146） |
 | `NCS_EGRESS_BIND` | 空 | 监听地址，空就和 relay 用同一个（沙箱网桥地址）。不能是 `0.0.0.0` / `::` |
 | `NCS_EGRESS_PORT` | `3128` | 监听端口，不能和 `NCS_GATEWAY_PORT` 相同 |
 | `NCS_EGRESS_ALLOWED_PORTS` | `80,443` | 允许的目标端口，CONNECT 和明文 HTTP 共用 |
@@ -191,7 +191,7 @@ AllowedIPs = 10.77.0.1/32
 
 **访问日志**：每条连接写一行 JSON 到沙箱代理的标准输出（`docker compose logs agent`；compose 里给日志限了 10 MB × 3），字段有 `egress`（会话编号）、`src`、`method`（`CONNECT` / `HTTP`）、`host`、`port`、`ip`、`result`（`ok` / `denied:…` / `error:…`）、`up`/`down`（字节数）和 `ms`。**URL 路径、查询串、请求头、请求体和响应都不记**，因为路径和头里常带令牌。
 
-**打开**（沙箱机，在测试环境；生产环境等 #134）：
+**打开**（沙箱机；生产上先确认镜像已包含 PR #146）：
 
 ```bash
 cd deploy/sandbox-host
@@ -216,7 +216,7 @@ NCS_GATEWAY_PORT=8701 NCS_EGRESS_PORT=3128 ./check-sandbox-isolation.sh
 
 **威胁说明**（打开之后还剩下的风险）：
 
-- **数据外传**：能上网就能往外发数据，这是允许上网的代价，域名白名单也只能缩小范围。所以前提是沙箱里没有值钱的东西（#134）。日志能事后追查发到了哪个域名、发了多少字节，但看不到内容。
+- **数据外传**：能上网就能往外发数据，这是允许上网的代价，域名白名单也只能缩小范围。所以前提是沙箱里的令牌拿不到（#134，PR #146 已修；同进程 Python 工具和读得到的文件仍是残留风险）。日志能事后追查发到了哪个域名、发了多少字节，但看不到内容。
 - **滥用出口 IP**：别的用户可以拿沙箱机的公网 IP 去爬站、刷接口。只放 80/443、每个沙箱 8 条连接，挡得住扫端口和发邮件（25），挡不住 HTTP 层的滥用。必要时用 `NCS_EGRESS_ALLOW_DOMAINS` 收紧成包仓库加代码托管平台。
 - **沙箱机自己的 DNS**：代理用的是系统解析器。宿主机要是装了 fake-ip 之类的透明代理（解析结果落在 `198.18.0.0/15`），所有请求都会被当作内网拒绝，这是安全的那一侧。
 - **CONNECT 里跑的不一定是 TLS**：到 443 的隧道里装什么协议，代理不检查。端口限制和地址检查照样生效。
@@ -355,6 +355,8 @@ journalctl -u ncs-redis-keepalive.service --since -1d   # 看最近的结果
 
 ## 九、上线清单
 
+> 配好 CD 后，代码升级由 [cd.md](cd.md) 的流程自动完成（main 上 CI 通过 → 先沙箱机后平台机，失败自动回滚）；下面的手动升级只作兜底。
+
 - [x] 1. PR #124（#123 宿主机隔离）、PR #126（远程沙箱）、PR #130（Docker 网关兜底）已合并。
 - [ ] 2. 两台机器：系统更新、SSH 只允许密钥登录、开 swap。
 - [ ] 3. 沙箱机：装 Docker，构建沙箱镜像；跑 `ncs-sandbox-firewalld.sh`。
@@ -366,7 +368,7 @@ journalctl -u ncs-redis-keepalive.service --since -1d   # 看最近的结果
 - [ ] 9. 平台机 `.env`：`NCS_LAUNCHER=remote`、`NCS_REMOTE_AGENT_URL`、`NCS_REMOTE_AGENT_SECRET`、`NCS_GATEWAY_HOST=10.77.0.1`（可选 `NCS_REMOTE_GATEWAY_URL`）；数据库和 Redis 地址目前要经本机 `docker-compose.override.yml` 传入（#132，见 [deployment-topology.md](deployment-topology.md#托管-postgres--redis)）；启动平台。
 - [ ] 10. 配 Redis 保活 timer 和 `OnFailure=` 告警 unit；`systemd-analyze verify` 通过，手动触发一次告警**确认能收到**；**不要**给 Postgres 配保活。
 - [ ] 11. 验证：`curl http://127.0.0.1:8700/healthz`；登录、建会话、打开 `/s/<id>/`、调一次模型；沙箱里跑 `check-sandbox-isolation.sh`；从公网扫沙箱机，确认只开 SSH 和 WireGuard。
-- [ ] 12. （可选，**等 #134 落地**）打开出站代理：`NCS_EGRESS_PROXY=1`，防火墙脚本带 `NCS_EGRESS_PORT`，用 `check-sandbox-isolation.sh` 验证，见 3.5。
+- [ ] 12. （可选，确认已部署包含 #134 修复的版本后）打开出站代理：`NCS_EGRESS_PROXY=1`，防火墙脚本带 `NCS_EGRESS_PORT`，用 `check-sandbox-isolation.sh` 验证，见 3.5。
 - [ ] 13. 演练回退：停掉 WireGuard，确认控制面报错清楚；恢复后新会话正常。
 
 ## 十、隐私提醒（本仓库是公开的）

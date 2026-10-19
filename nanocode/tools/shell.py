@@ -18,7 +18,7 @@ import threading
 import time
 
 from .base import Tool, ToolError, truncate
-from ..proc import WINDOWS, find_bash, kill_tree, popen_kwargs, utf8_env
+from ..proc import WINDOWS, find_bash, kill_tree, popen_kwargs, tool_env
 
 _MARK = "__NANOCODE_PWD__"
 _MSYS_PATH = re.compile(r"^/([A-Za-z])/(.*)$")
@@ -66,7 +66,7 @@ class Bash(Tool):
         script = f"{input['command']}\n__nc=$?\necho; echo {_MARK}; pwd; exit $__nc"
         proc = subprocess.Popen([bash, "-c", script], cwd=cwd, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                encoding="utf-8", errors="replace", env=utf8_env(), **popen_kwargs())
+                                encoding="utf-8", errors="replace", env=tool_env(), **popen_kwargs())
         # 必须边运行边读输出：如果等进程结束再读，输出超过管道缓冲区（约 64KB）时进程会卡死
         chunks: list[str] = []
         reader = threading.Thread(target=lambda: chunks.append(proc.stdout.read()), daemon=True)

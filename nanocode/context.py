@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime
 import os
 import platform
+import re
 
 from .messages import Message, estimate_tokens, has_tool_result, is_tool_result_message, text_of, user_message
 from .tools.base import is_inside, symlink_escapes
@@ -84,15 +85,84 @@ def load_memory(cwd: str) -> list[tuple[str, str]]:
     return out
 
 
+_BLOCK_SCALAR = re.compile(r"^([|>])([1-9]?)([+-]?)([1-9]?)\s*(#.*)?$")
+
+
+def _block_scalar(style: str, chomp: str, lines: list[str]) -> str:
+    """按 YAML 规则还原块标量：`|` 保留换行，`>` 把相邻行折叠成空格（空行变成换行）。
+
+    chomp：""（clip，末尾留一个换行）、"-"（strip，不留）、"+"（keep，全留）。
+    """
+    content = [ln.rstrip("\r") for ln in lines]
+    indent = min((len(ln) - len(ln.lstrip(" ")) for ln in content if ln.strip()), default=0)
+    content = [ln[indent:] if ln.strip() else "" for ln in content]
+    trailing = 0
+    while content and content[-1] == "":
+        content.pop()
+        trailing += 1
+    if style == "|":
+        body = "\n".join(content)
+    else:
+        # 相邻两行都是普通行：中间没空行折成空格，有 n 个空行就是 n 个换行；
+        # 任一边是更深缩进的行：换行原样保留（n 个空行就是 n+1 个换行）
+        out, prev, blanks = "", None, 0
+        for ln in content:
+            if ln == "":
+                blanks += 1
+                continue
+            more = ln.startswith((" ", "\t"))
+            if prev is None:
+                out += "\n" * blanks
+            elif not more and not prev:
+                out += "\n" * blanks if blanks else " "
+            else:
+                out += "\n" * (blanks + 1)
+            out += ln
+            prev, blanks = more, 0
+        body = out
+    if not body:
+        return ""
+    if chomp == "-":
+        return body
+    if chomp == "+":
+        return body + "\n" * (trailing + 1)
+    return body + "\n"
+
+
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
+    """解析 `---` 包起来的 frontmatter，只认顶层 `键: 值`（无第三方依赖）。
+
+    支持：单行值（两端引号会去掉）、块标量 `|` / `|-` / `|+` / `>` / `>-` / `>+`，
+    以及普通值后面的缩进续行（按 YAML 折叠成空格）。官方技能常用块标量写
+    description，以前会被解析成 ">" / "|-" 本身，续行还会变成假键（#109）。
+    """
     meta: dict = {}
     if text.startswith("---"):
         end = text.find("\n---", 3)
         if end != -1:
-            for line in text[3:end].strip().splitlines():
-                k, _, v = line.partition(":")
-                if k.strip():
-                    meta[k.strip()] = v.strip().strip('"\'')
+            lines = text[3:end].lstrip("\r\n").split("\n")
+            i = 0
+            while i < len(lines):
+                line = lines[i]
+                i += 1
+                if not line.strip() or line.lstrip().startswith("#") or line[:1] in (" ", "\t"):
+                    continue                        # 空行、注释、孤立的缩进行
+                k, sep, v = line.partition(":")
+                if not sep or not k.strip():
+                    continue
+                cont = []                           # 这个键后面的缩进续行（空行也算在块里）
+                while i < len(lines) and (not lines[i].strip() or lines[i][:1] in (" ", "\t")):
+                    cont.append(lines[i])
+                    i += 1
+                v = v.strip()
+                m = _BLOCK_SCALAR.match(v)
+                if m:
+                    meta[k.strip()] = _block_scalar(m.group(1), m.group(3), cont)
+                    continue
+                extra = [c.strip() for c in cont if c.strip()]
+                if extra and not (v[:1] in "\"'" and len(v) > 1 and v[-1] == v[0]):
+                    v = " ".join([v, *extra]) if v else " ".join(extra)
+                meta[k.strip()] = v.strip('"\'')
             text = text[end + 4:].lstrip("\n")
     return meta, text
 
@@ -168,7 +238,8 @@ def build_system_prompt(cwd: str, skills: dict | None = None, extra: str = "",
         mem = "\n\n".join(f"## 来自 {path}\n{content}" for path, content in memories)
         sections.append("# 项目记忆（用户写的指示，必须遵守）\n" + mem)
     if skills:
-        lines = "\n".join(f"- {s['name']}：{s['description']}" for s in skills.values())
+        # 块标量的 description 可能带换行，列表里压成一行（#109）
+        lines = "\n".join(f"- {s['name']}：{' '.join(str(s['description']).split())}" for s in skills.values())
         sections.append("# 可用技能（相关时先用 skill 工具加载完整说明）\n" + lines)
     if extra:
         sections.append(extra)

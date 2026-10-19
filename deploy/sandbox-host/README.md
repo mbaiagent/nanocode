@@ -11,7 +11,7 @@
 - **沙箱代理**（`python -m nanocode_server sandbox-agent`）在沙箱主机上用 Docker 启动器起停容器，管理接口要带共用密钥 `NCS_REMOTE_AGENT_SECRET`（常量时间比较）。
 - 控制面的 `/s/<id>/` 转发到代理的 `/sbx/<id>/...`，代理再转给容器。凭的是每个沙箱自己的 web_token（和本机 Docker 时一样），代理密钥不能用来访问沙箱。
 - 沙箱只能连沙箱主机网桥上的一个端口（网关中继），中继转到平台机器的模型网关。**沙箱到不了 PostgreSQL / Redis / 控制面**，也出不了外网。
-- 可选的**出站代理**（`NCS_EGRESS_PROXY=1`，默认关）：沙箱经它访问公网的 HTTP/HTTPS，内网、元数据和本机地址仍然到不了。见下面的「出站代理」一节。**生产环境等 [#134](https://github.com/mbaiagent/nanocode/issues/134) 落地再开。**
+- 可选的**出站代理**（`NCS_EGRESS_PROXY=1`，默认关）：沙箱经它访问公网的 HTTP/HTTPS，内网、元数据和本机地址仍然到不了。见下面的「出站代理」一节。生产打开前，先确认镜像已经包含 [#134](https://github.com/mbaiagent/nanocode/issues/134) 的修复（PR #146）。
 
 ## 安全要点
 
@@ -25,7 +25,7 @@
 | 沙箱出外网 | internal 网络，同单机；没有 DNS。打开出站代理后只能经代理访问 80/443，代理自己解析域名并拦内网 |
 | 经出站代理打内网（SSRF）/ DNS 重绑定 | 解析出的每个地址都要是公网，私网、CGNAT、本机、链路本地（含 `169.254.169.254`）、ULA、沙箱网段、`NCS_EGRESS_BLOCK_NETWORKS`、本机自己的地址一律拒绝；检查过哪个 IP 就连哪个，连上后再复核 |
 | 一个沙箱占满出站代理 | 每个沙箱 `NCS_EGRESS_PER_SANDBOX`（8），全局 `NCS_EGRESS_MAX_CONNECTIONS`（64），空闲 `NCS_EGRESS_IDLE_TIMEOUT`（120 秒），请求头 10 秒内要发完 |
-| 能上网后把沙箱里的令牌外传 | **还没挡住**，这就是出站代理默认关的原因：要等 #134（沙箱里只放短期、只能访问中继的令牌）。相关 #135、#136 |
+| 能上网后把沙箱里的令牌外传 | #134（PR #146）：工具子进程拿不到令牌，Web 进程不可 dump。残留风险是同进程的 Python 工具和读得到的文件，所以出站代理仍然默认关。相关 #135、#136（PR #147） |
 | 一个沙箱占满网关中继 | 中继每条连接有空闲超时（`NCS_AGENT_RELAY_IDLE_TIMEOUT`，默认 300 秒）和半关闭时限；全局上限 `NCS_AGENT_RELAY_MAX_CONNECTIONS`（128），每个沙箱上限 `NCS_AGENT_RELAY_PER_SANDBOX`（16） |
 
 ## 资源（1 vCPU / 1 GB 的沙箱主机）
@@ -177,7 +177,7 @@ curl -s http://10.77.0.2:8790/healthz                       # 平台机器上能
 
 沙箱默认完全断网，`web_search` 和 `web_fetch` 会报 `Could not resolve host`。打开出站代理后，沙箱里的 `web_fetch`、`web_search`、`pip`、`git`、`curl` 都经它访问公网 HTTP/HTTPS，模型调用仍然走网关中继（`NO_PROXY`）。设计、SSRF 拦截表、全部变量和威胁说明见 [docs/distributed-deploy.md 3.5](../../docs/distributed-deploy.md#35-出站代理沙箱上网默认关)。
 
-> 生产环境先别开，等 #134 落地：现在沙箱环境变量里还有网关令牌和 web 令牌，能上网就能被提示词注入带出去。
+> 默认关。生产打开前，先确认沙箱镜像已经包含 #134 的修复（PR #146，工具子进程拿不到令牌），并接受残留风险，见 distributed-deploy.md 3.5。
 
 在测试环境打开：
 
@@ -199,7 +199,7 @@ NCS_GATEWAY_PORT=8701 NCS_EGRESS_PORT=3128 ../firewall/check-sandbox-isolation.s
 
 ## 运维
 
-- **升级代理**：`docker compose up -d --build agent`。代理重启不停沙箱；重启后转发会按容器名找回正在跑的沙箱（令牌由沙箱自己核对）。
+- **升级代理**：配好 CD 后由 [docs/cd.md](../../docs/cd.md) 的流程自动部署，手动升级只作兜底：`docker compose up -d --build agent`。代理重启不停沙箱；重启后转发会按容器名找回正在跑的沙箱（令牌由沙箱自己核对）。
 - **平台重启**：控制面退出时让代理停掉全部沙箱，启动时对账，清掉数据库里已经没有的会话的沙箱。
 - **工作区**在沙箱主机的 `/srv/nanocode/sandboxes/<会话>/`，备份要备这台机器。
 - **代理连不上**：控制面把会话标成已停止，用户刷新时重试启动；`docker compose logs agent` 看原因。

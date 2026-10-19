@@ -842,6 +842,10 @@ def serve(session: Session, host: str = "127.0.0.1", port: int = 8765,
           public_hosts=(), public_origins=()) -> None:
     server, app = make_server(session, host, port, public_hosts, public_origins)
     port = server.server_address[1]
+    if os.environ.get("NANOCODE_WEB_TOKEN"):
+        # 平台沙箱：同 uid 的工具子进程不能再读本进程的 /proc/<pid>/environ（#134）
+        from ..proc import harden_process
+        harden_process()
     if host in ("0.0.0.0", "::"):
         print("警告：服务监听在所有网卡上，局域网内的人只要拿到页面就能操作 Agent。除非你清楚后果，请用默认的 127.0.0.1。")
     if host not in LOCAL_HOSTS and not os.environ.get("NANOCODE_WEB_TOKEN"):

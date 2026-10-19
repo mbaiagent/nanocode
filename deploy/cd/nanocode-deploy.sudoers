@@ -1,0 +1,4 @@
+# /etc/sudoers.d/nanocode-deploy（0440，visudo -cf 检查后再放）
+# deploy 用户只能以 root 跑部署脚本的这几种参数，别的都不行。
+Defaults:deploy !requiretty, env_reset
+deploy ALL=(root) NOPASSWD: /usr/local/sbin/nanocode-deploy deploy *, /usr/local/sbin/nanocode-deploy status, /usr/local/sbin/nanocode-deploy rollback
