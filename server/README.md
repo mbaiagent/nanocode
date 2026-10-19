@@ -67,10 +67,11 @@ Docker 沙箱：非 root、只读根文件系统、去掉全部 capabilities、�
 
 ```
 nanocode_server/
-├── __main__.py        命令行：单机 / 只启动控制面 / 只启动网关 / 多用户模拟
+├── __main__.py        命令行：一体启动（控制面 + 网关）/ 只启动控制面 / 只启动网关 / 沙箱代理 / 多用户模拟 / 压测
 ├── platform.py        组装：所有组件在这里创建和连接
 ├── config.py          配置（NCS_* 环境变量）、可选组件的选择、启动前的安全检查
-├── models.py          领域对象：会话、凭证、可选模型、上游
+├── models.py          领域对象：会话、凭证、可选模型、上游、账号、邀请码
+├── sandbox_agent.py   沙箱代理：跑在沙箱主机上替控制面起停容器，含网关中继（NCS_LAUNCHER=remote 的另一端）
 ├── web/               HTTP
 │   ├── framework.py     很小的路由框架：路由、请求、响应、流式输出
 │   ├── control.py       控制面接口：认证和跨站检查集中在一处，每个接口几行
@@ -80,11 +81,11 @@ nanocode_server/
 │   ├── catalog.py       模型目录：演示 / 平台 / 用户自己的 Key；添加 Key 的校验
 │   ├── sessions.py      会话生命周期：创建、启动、换模型、停止、回收
 │   └── upstream.py      访问模型厂商：地址安全检查（防 SSRF）、流式读取、用量计量
-├── runtime/           沙箱启动器：local / docker / kubernetes，同一个接口
+├── runtime/           沙箱启动器：local / docker / kubernetes / remote（经沙箱代理），同一个接口
 ├── storage/           SQL 存储（SQLite 和 PostgreSQL 同一套代码）、限流（内存 / Redis）
-├── security/          签名令牌、API Key 加密、身份认证
+├── security/          签名令牌、API Key 加密、身份认证、账号与邀请码（accounts.py）、GitHub OAuth（github.py）
 ├── demo.py            多用户模拟（含一个假的 OpenAI 兼容模型）
-└── static/            页面：登录、主界面（会话列表 + 对话 + 模型与密钥）
+└── static/            页面：登录、主界面（会话列表 + 对话 + 模型与密钥）、管理页（admin.html）
 ```
 
 ### 几个关键的安全设计
@@ -140,7 +141,7 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 
 ## 单机部署（docker compose）
 
-一台 Linux 服务器给一个团队用：`deploy/compose/` 起控制面 + 模型网关（一个进程）、PostgreSQL 16 和 Redis 7，沙箱用宿主机 Docker（每个会话一个容器，内部网络、非 root、只读根文件系统）。步骤、限制和 GitHub 登录（P1）还没做时的访问方式见 [deploy/compose/README.md](../deploy/compose/README.md)。
+一台 Linux 服务器给一个团队用：`deploy/compose/` 起控制面 + 模型网关（一个进程）、PostgreSQL 16 和 Redis 7，沙箱用宿主机 Docker（每个会话一个容器，内部网络、非 root、只读根文件系统）。登录用 GitHub OAuth + 邀请码（见上文和 [docs/auth-and-admin.md](../docs/auth-and-admin.md)）。步骤见 [deploy/compose/README.md](../deploy/compose/README.md)；沙箱放到另一台机器、数据库用托管服务的分布式形态见 [docs/deployment-topology.md](../docs/deployment-topology.md) 和 [docs/distributed-deploy.md](../docs/distributed-deploy.md)。
 
 ## 生产部署（Kubernetes）
 
@@ -198,6 +199,7 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 
 - **K8s 清单没有在真实集群里跑过**：YAML 和代码的一致性有测试，Pod 创建流程用假的 API 服务器测过；gVisor、NetworkPolicy、oauth2-proxy 的实际效果需要在你的集群里验证。单机上的 Docker、PostgreSQL、Redis 都实测过。
 - 容量满时直接拒绝，没有排队。
-- 审计日志写在沙箱里，Agent 能改，还不能当作可信审计。
-- 没有指标、链路追踪和告警，没有压测数据，没有计费和管理后台。
-- Docker 沙箱的网络隔离依赖 Docker 的内部网络，没有像 NetworkPolicy 那样按端口精细控制；Docker 沙箱默认也装不了依赖（出不了外网），需要的话给沙箱网络加一个包镜像代理。
+- 审计日志写在沙箱里，Agent 能改，还不能当作可信审计（[#135](https://github.com/mbaiagent/nanocode/issues/135)）。沙箱环境变量里的令牌对子进程可见（[#134](https://github.com/mbaiagent/nanocode/issues/134)）。完整的安全边界见 [docs/security-model.md](../docs/security-model.md)。
+- 没有指标、链路追踪和告警，没有计费。管理后台只有 `/admin` 的邀请码和账号停用 / 启用。压测数据见上文「压测」。
+- Docker 沙箱的网络隔离依赖 Docker 的内部网络加宿主机防火墙（[deploy/firewall/](../deploy/firewall/README.md)，只放行网关端口）；Docker 沙箱默认也装不了依赖（出不了外网）。只放行 HTTP/HTTPS 的出站代理在计划中，[#134](https://github.com/mbaiagent/nanocode/issues/134) 修完前不在生产打开。
+- 全部 `NCS_*` 变量（含上表没列的 `NCS_LOGIN_TTL`、`NCS_MAX_CONNECTIONS`、`NCS_ALLOW_UNISOLATED` 和 compose 专用变量）见 [docs/configuration.md](../docs/configuration.md)。
