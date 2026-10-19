@@ -29,6 +29,7 @@
 
 ### 文档
 
+- **新增 维护交接手册** `docs/maintenance/agent-playbook.md`（附英文摘要）：别的 agent 或人可以直接接手审 PR、处理 issue、巡检和部署；`AGENTS.md` 加了入口。
 - 新增 [docs/distributed-deploy.md](docs/distributed-deploy.md)（[#125](https://github.com/mbaiagent/nanocode/pull/125)）：平台机 + 沙箱机 + 托管 Postgres / Valkey，含 Neon 冷启动 / libpq 版本坑、Valkey 保活与告警。
 - 新增 [docs/cloud-agent-architecture.md](docs/cloud-agent-architecture.md)（[#127](https://github.com/mbaiagent/nanocode/pull/127)）：主流云端编程 Agent 架构调研。
 - 新增 [文档索引](docs/README.md)、[配置参考](docs/configuration.md)、[部署拓扑](docs/deployment-topology.md)、[登录与管理](docs/auth-and-admin.md)、[安全模型](docs/security-model.md) 和本文件。
