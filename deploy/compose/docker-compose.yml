@@ -1,8 +1,9 @@
-# 单机部署：控制面 + 模型网关（一个进程）+ PostgreSQL + Redis + Docker 沙箱。
+# 单机部署：[可选 Caddy（自动 HTTPS，--profile caddy）] + 控制面 + 模型网关（一个进程）+ PostgreSQL + Redis + Docker 沙箱。
 # 用法见同目录 README.md。只支持 Linux 宿主机（用了 network_mode: host）。
 #
 #   cp .env.example .env && 编辑 .env
-#   docker compose up -d --build
+#   docker compose up -d --build                    # 前面已有 nginx 等反向代理（见 nginx.example.conf）
+#   docker compose --profile caddy up -d --build    # 用自带的 Caddy 占 80/443、自动申请证书
 #
 # 为什么平台用 host 网络：Docker 启动器要（1）把模型网关监听在沙箱内部网络的网桥地址上，
 # （2）直接访问沙箱容器在内部网络里的 IP。这两件事都要在宿主机的网络命名空间里做。
@@ -85,12 +86,19 @@ services:
       NCS_SANDBOX_MEMORY: ${NCS_SANDBOX_MEMORY:-2Gi}
       NCS_MAX_SANDBOXES: ${NCS_MAX_SANDBOXES:-50}
       NCS_MAX_SESSIONS_PER_USER: ${NCS_MAX_SESSIONS_PER_USER:-3}
-      NCS_HOST: ${NCS_HOST:-127.0.0.1}
+      NCS_HOST: ${NCS_HOST:-127.0.0.1}           # 只听本机：对外由 Caddy 转发
       NCS_PORT: ${NCS_PORT:-8700}
       NCS_GATEWAY_PORT: ${NCS_GATEWAY_PORT:-8701}
-      NCS_AUTH: ${NCS_AUTH:-dev}
+      NCS_AUTH: ${NCS_AUTH:-github}
+      NCS_PUBLIC_URL: https://${NCS_DOMAIN:?在 .env 里设置 NCS_DOMAIN}
+      NCS_GITHUB_CLIENT_ID: ${NCS_GITHUB_CLIENT_ID:-}
+      NCS_GITHUB_CLIENT_SECRET: ${NCS_GITHUB_CLIENT_SECRET:-}
+      NCS_ADMIN_GITHUB_LOGINS: ${NCS_ADMIN_GITHUB_LOGINS:-}
+      NCS_GITHUB_OAUTH_URL: ${NCS_GITHUB_OAUTH_URL:-https://github.com}
+      NCS_GITHUB_API_URL: ${NCS_GITHUB_API_URL:-https://api.github.com}
+      NCS_LOGIN_PER_MINUTE: ${NCS_LOGIN_PER_MINUTE:-10}
+      NCS_TRUST_FORWARDED: "1"                    # 前面是 Caddy：X-Forwarded-For 最后一项是真实客户端 IP
       NCS_PROXY_SECRET: ${NCS_PROXY_SECRET:-}
-      NCS_PUBLIC_URL: ${NCS_PUBLIC_URL:-}
       NCS_ENABLE_MOCK_MODEL: ${NCS_ENABLE_MOCK_MODEL:-true}
     healthcheck:
       test: ["CMD", "python", "-c", "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:%s/healthz' % os.environ.get('NCS_PORT','8700'),timeout=3)"]
@@ -98,5 +106,22 @@ services:
       timeout: 5s
       retries: 6
 
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["caddy"]              # 可选：机器上已有 nginx 时不启用
+    restart: unless-stopped
+    network_mode: host               # 直接占用宿主机 80/443，并访问只听 127.0.0.1 的控制面
+    depends_on:
+      platform: {condition: service_started}
+    environment:
+      NCS_DOMAIN: ${NCS_DOMAIN}
+      NCS_PORT: ${NCS_PORT:-8700}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data              # 证书：删了会重新申请，注意 Let's Encrypt 频率限制
+      - caddy_config:/config
+
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:

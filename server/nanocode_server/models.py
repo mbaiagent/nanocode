@@ -75,4 +75,52 @@ class Upstream:
     extra_headers: dict = field(default_factory=dict)
 
 
-__all__ = ["Session", "Credential", "ModelOption", "Upstream", "ACTIVE_STATUSES"]
+@dataclass
+class User:
+    """平台账号。id 就是其他表里的 owner：GitHub 用户是 gh-<数字 id>，迁移来的老数据是原来的用户名。"""
+    id: str
+    login: str                         # 给人看的名字：GitHub login / 开发模式用户名 / 代理给的邮箱
+    name: str = ""
+    email: str = ""
+    avatar_url: str = ""
+    role: str = "user"                 # user / admin
+    status: str = "active"             # active / disabled
+    invite_id: str = ""
+    created: float = 0.0
+    last_login: float = 0.0
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role == "admin"
+
+    def public(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class Invite:
+    """邀请码。库里只存哈希，明文只在创建时返回一次。"""
+    id: str
+    code_hint: str                     # 末 4 位，方便管理员认
+    note: str = ""
+    created_by: str = ""
+    created: float = 0.0
+    expires: float = 0.0               # 0 = 不过期
+    max_uses: int = 1
+    uses: int = 0
+    revoked: int = 0
+
+    def state(self, now: float) -> str:
+        if self.revoked:
+            return "revoked"
+        if self.expires and self.expires <= now:
+            return "expired"
+        if self.uses >= self.max_uses:
+            return "used"
+        return "active"
+
+    def public(self, now: float) -> dict:
+        return {**asdict(self), "revoked": bool(self.revoked), "state": self.state(now)}
+
+
+__all__ = ["Session", "Credential", "ModelOption", "Upstream", "User", "Invite", "ACTIVE_STATUSES"]

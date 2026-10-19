@@ -14,7 +14,9 @@ import threading
 
 from .config import Config
 from .runtime import Launcher, make_launcher
+from .security.accounts import Accounts
 from .security.auth import Authenticator
+from .security.github import GitHubOAuth
 from .security.secretbox import SecretBox
 from .services.catalog import ModelCatalog
 from .services.sessions import SessionManager
@@ -37,7 +39,7 @@ class Platform:
         self.store = open_store(cfg)
         self.limiter = make_rate_limiter(cfg)
         self.catalog = ModelCatalog(cfg, self.store, SecretBox(cfg.secret_key))
-        self.launcher = self.sessions = self.control = self.gateway = None
+        self.launcher = self.sessions = self.control = self.gateway = self.accounts = None
         self.control_server = self.gateway_server = None
         self._stop = threading.Event()
         if role in ("all", "control"):
@@ -46,8 +48,12 @@ class Platform:
             if role == "all" and bind and cfg.gateway_host in ("127.0.0.1", "localhost"):
                 cfg.gateway_host = bind
             self.sessions = SessionManager(cfg, self.store, self.launcher, self.catalog, log)
-            self.control = ControlApp(cfg, self.store, Authenticator(cfg), self.catalog, self.sessions,
-                                      self.launcher, self.limiter.backend)
+            self.accounts = Accounts(cfg, self.store)
+            github = (GitHubOAuth(cfg.github_client_id, cfg.github_client_secret, cfg.github_callback_url,
+                                  cfg.github_oauth_url, cfg.github_api_url) if cfg.auth == "github" else None)
+            self.control = ControlApp(cfg, self.store, Authenticator(cfg, self.accounts), self.catalog, self.sessions,
+                                      self.launcher, self.limiter.backend, self.accounts,
+                                      make_rate_limiter(cfg, cfg.login_per_minute, "ncs:login:"), github)
         if role in ("all", "gateway"):
             self.gateway = GatewayApp(cfg, self.store, self.catalog, self.limiter)
 

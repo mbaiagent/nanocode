@@ -72,13 +72,23 @@ const current = () => state.sessions.find((s) => s.id === state.currentId) || nu
 
 function renderUser() {
   const me = state.me;
-  $("#user-name").textContent = me.user;
-  $("#user-role").textContent = me.auth === "dev" ? "开发模式登录" : "单点登录";
+  const who = me.login || me.user;
+  $("#user-name").textContent = who;
+  const roles = { dev: "开发模式登录", github: "GitHub 登录", proxy: "单点登录" };
+  $("#user-role").textContent = (roles[me.auth] || "") + (me.role === "admin" ? " · 管理员" : "");
   const av = $("#avatar");
-  av.textContent = me.user[0].toUpperCase();
-  av.style.background = colorFor(me.user);
-  $("#hello").textContent = `你好，${me.user}`;
-  $("#logout").hidden = me.auth !== "dev";
+  av.textContent = who[0].toUpperCase();
+  av.style.background = colorFor(who);
+  if (me.avatar_url && /^https:\/\//.test(me.avatar_url)) {
+    av.textContent = "";
+    const img = document.createElement("img");
+    img.src = me.avatar_url; img.alt = ""; img.width = 28; img.height = 28;
+    img.style.borderRadius = "50%";
+    av.append(img);
+  }
+  $("#hello").textContent = `你好，${me.name || who}`;
+  $("#logout").hidden = me.auth === "proxy";
+  $("#admin-link").hidden = me.role !== "admin";
   const p = me.platform;
   $("#facts").innerHTML = [
     `<span class="badge ${p.isolated ? "accent" : ""}" title="沙箱启动器">沙箱：${esc(p.launcher)}${p.isolated ? "（隔离）" : "（本机进程，无隔离）"}</span>`,

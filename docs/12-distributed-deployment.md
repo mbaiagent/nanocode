@@ -284,7 +284,7 @@ nanocode 核心坚持只用标准库，这是学习项目的特点，应该保�
 方案 A 已经实现成可以运行的平台：nanocode 本体的改动在 `nanocode/` 里，控制面和模型网关是独立的包 [`server/`](../server/README.md)，镜像和 Kubernetes 清单在 [`deploy/`](../deploy/)。一台电脑上就能跑：
 
 ```bash
-PYTHONPATH=server:. python3 -m nanocode_server               # 打开 http://127.0.0.1:8700，登录页输入任意用户名
+NCS_AUTH=dev PYTHONPATH=server:. python3 -m nanocode_server    # 打开 http://127.0.0.1:8700，登录页输入任意用户名
 PYTHONPATH=server:. python3 -m nanocode_server demo --users 10   # 模拟 10 个用户同时使用，检查互相隔离
 ```
 

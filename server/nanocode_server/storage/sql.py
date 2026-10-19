@@ -22,9 +22,9 @@ import time
 import uuid
 from contextlib import contextmanager
 
-from ..models import ACTIVE_STATUSES, Credential, Session
+from ..models import ACTIVE_STATUSES, Credential, Invite, Session, User
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # 顺序迁移：结构每次变化在这里追加一条，全部幂等（重跑不能出错），
 # 因为多副本滚动升级时新旧副本会同时对同一个 PostgreSQL 跑迁移（#64）。
@@ -47,6 +47,35 @@ MIGRATIONS: list[list[str]] = [
         owner TEXT NOT NULL, day TEXT NOT NULL, requests BIGINT NOT NULL DEFAULT 0,
         input_tokens BIGINT NOT NULL DEFAULT 0, output_tokens BIGINT NOT NULL DEFAULT 0,
         billable_tokens BIGINT NOT NULL DEFAULT 0, PRIMARY KEY (owner, day))"""],
+    # v2：账号（P1）。users.id 就是其他表的 owner，老数据不用改 owner 列：把出现过的
+    # owner 字符串回填成 legacy 账号（之前 dev / proxy 模式下的用户名或邮箱）。
+    ["""CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY, login TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+        email TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '',
+        role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active',
+        invite_id TEXT NOT NULL DEFAULT '', created DOUBLE PRECISION NOT NULL DEFAULT 0,
+        last_login DOUBLE PRECISION NOT NULL DEFAULT 0)""",
+     "CREATE INDEX IF NOT EXISTS users_login ON users (login)",
+     """CREATE TABLE IF NOT EXISTS identities (
+        provider TEXT NOT NULL, subject TEXT NOT NULL, user_id TEXT NOT NULL,
+        created DOUBLE PRECISION NOT NULL DEFAULT 0, PRIMARY KEY (provider, subject))""",
+     "CREATE INDEX IF NOT EXISTS identities_user ON identities (user_id)",
+     """CREATE TABLE IF NOT EXISTS auth_sessions (
+        token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, created DOUBLE PRECISION NOT NULL,
+        last_seen DOUBLE PRECISION NOT NULL, expires DOUBLE PRECISION NOT NULL,
+        ip TEXT NOT NULL DEFAULT '', user_agent TEXT NOT NULL DEFAULT '', revoked INTEGER NOT NULL DEFAULT 0)""",
+     "CREATE INDEX IF NOT EXISTS auth_sessions_user ON auth_sessions (user_id)",
+     """CREATE TABLE IF NOT EXISTS invites (
+        id TEXT PRIMARY KEY, code_hash TEXT NOT NULL UNIQUE, code_hint TEXT NOT NULL,
+        note TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL DEFAULT '',
+        created DOUBLE PRECISION NOT NULL, expires DOUBLE PRECISION NOT NULL DEFAULT 0,
+        max_uses INTEGER NOT NULL DEFAULT 1, uses INTEGER NOT NULL DEFAULT 0, revoked INTEGER NOT NULL DEFAULT 0)""",
+     # 回填：WHERE 不能省——SQLite 里 INSERT … SELECT … ON CONFLICT 不带 WHERE 会有语法歧义
+     """INSERT INTO users (id, login, role, status) SELECT o, o, 'user', 'active' FROM (
+        SELECT owner AS o FROM sessions UNION SELECT owner FROM credentials UNION SELECT owner FROM usage) t
+        WHERE o IS NOT NULL AND o <> '' ON CONFLICT (id) DO NOTHING""",
+     """INSERT INTO identities (provider, subject, user_id) SELECT 'legacy', id, id FROM users
+        WHERE id <> '' ON CONFLICT (provider, subject) DO NOTHING"""],
 ]
 
 
@@ -259,7 +288,7 @@ def utc_day(now: float | None = None) -> str:
 
 
 class Store:
-    """三张表的读写：会话、凭证、用量。"""
+    """各表的读写：会话、凭证、用量、账号、登录会话、邀请码。"""
 
     SESSION_FIELDS = {"title", "model_ref", "status", "endpoint", "web_token", "last_active", "started", "error"}
 
@@ -424,6 +453,113 @@ class Store:
         u = ({k: int(v) for k, v in rows[0].items()} if rows else
              {"requests": 0, "input_tokens": 0, "output_tokens": 0, "billable_tokens": 0})
         return {**u, "total_tokens": u["input_tokens"] + u["output_tokens"], "day": day}
+
+    # ------------------------------------------------------------------ 账号
+
+    USER_FIELDS = {"login", "name", "email", "avatar_url", "role", "status", "last_login"}
+
+    def get_user(self, uid: str) -> User | None:
+        rows = self.db.execute("SELECT * FROM users WHERE id = ?", (uid,))
+        return User(**rows[0]) if rows else None
+
+    def list_users(self) -> list[User]:
+        return [User(**r) for r in self.db.execute("SELECT * FROM users ORDER BY created, id")]
+
+    def login_taken(self, login: str, provider: str, exclude: str = "") -> bool:
+        """有没有别的账号（同一个登录方式、不是 exclude）已经用着这个名字。"""
+        return bool(self.db.execute(
+            "SELECT 1 FROM users u JOIN identities i ON i.user_id = u.id "
+            "WHERE LOWER(u.login) = ? AND i.provider = ? AND u.id <> ?", (login.lower(), provider, exclude)))
+
+    def create_user(self, u: User, provider: str, subject: str) -> bool:
+        """建账号并绑定登录方式。这个登录方式已经绑过（并发首次登录）返回 False，什么也不写。"""
+        u.created = u.created or time.time()
+        if self.db.update("INSERT INTO identities (provider, subject, user_id, created) VALUES (?, ?, ?, ?) "
+                          "ON CONFLICT (provider, subject) DO NOTHING", (provider, subject, u.id, u.created)) != 1:
+            return False
+        self.db.execute("INSERT INTO users (id, login, name, email, avatar_url, role, status, invite_id, created, "
+                        "last_login) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING",
+                        (u.id, u.login, u.name, u.email, u.avatar_url, u.role, u.status, u.invite_id,
+                         u.created, u.last_login))
+        return True
+
+    def user_for_identity(self, provider: str, subject: str) -> User | None:
+        rows = self.db.execute("SELECT u.* FROM users u JOIN identities i ON i.user_id = u.id "
+                               "WHERE i.provider = ? AND i.subject = ?", (provider, subject))
+        return User(**rows[0]) if rows else None
+
+    def update_user(self, uid: str, **fields) -> None:
+        unknown = set(fields) - self.USER_FIELDS
+        if unknown:
+            raise ValueError(f"不能更新这些字段：{unknown}")
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self.db.execute(f"UPDATE users SET {cols} WHERE id = ?", (*fields.values(), uid))
+
+    # ------------------------------------------------------------------ 登录会话
+
+    def create_auth_session(self, token_hash: str, uid: str, expires: float, ip: str, user_agent: str,
+                            now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        self.db.execute("INSERT INTO auth_sessions (token_hash, user_id, created, last_seen, expires, ip, user_agent) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)", (token_hash, uid, now, now, expires, ip[:64], user_agent[:200]))
+
+    def auth_session_user(self, token_hash: str, idle: float, now: float | None = None) -> tuple[User, float] | None:
+        """有效的登录会话 → (账号, 上次活动时间)。撤销、过期、闲置太久、账号被停用都算无效。"""
+        now = time.time() if now is None else now
+        rows = self.db.execute(
+            "SELECT u.*, s.last_seen AS _seen FROM auth_sessions s JOIN users u ON u.id = s.user_id "
+            "WHERE s.token_hash = ? AND s.revoked = 0 AND s.expires > ? AND s.last_seen > ? AND u.status = 'active'",
+            (token_hash, now, now - idle))
+        if not rows:
+            return None
+        row = dict(rows[0])
+        seen = row.pop("_seen")
+        return User(**row), seen
+
+    def touch_auth_session(self, token_hash: str, now: float) -> None:
+        self.db.execute("UPDATE auth_sessions SET last_seen = ? WHERE token_hash = ?", (now, token_hash))
+
+    def revoke_auth_session(self, token_hash: str) -> None:
+        self.db.execute("UPDATE auth_sessions SET revoked = 1 WHERE token_hash = ?", (token_hash,))
+
+    def revoke_user_sessions(self, uid: str) -> int:
+        return self.db.update("UPDATE auth_sessions SET revoked = 1 WHERE user_id = ? AND revoked = 0", (uid,))
+
+    # ------------------------------------------------------------------ 邀请码
+
+    def create_invite(self, inv: Invite, code_hash: str) -> Invite:
+        inv.id = inv.id or _new_id()
+        inv.created = inv.created or time.time()
+        self.db.execute("INSERT INTO invites (id, code_hash, code_hint, note, created_by, created, expires, max_uses) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (inv.id, code_hash, inv.code_hint, inv.note,
+                                                            inv.created_by, inv.created, inv.expires, inv.max_uses))
+        return inv
+
+    def list_invites(self) -> list[Invite]:
+        rows = self.db.execute("SELECT id, code_hint, note, created_by, created, expires, max_uses, uses, revoked "
+                               "FROM invites ORDER BY created DESC")
+        return [Invite(**r) for r in rows]
+
+    def redeem_invite(self, code_hash: str, now: float | None = None) -> str | None:
+        """原子地用掉一次邀请码，返回邀请码 id；无效 / 用完 / 过期 / 撤销返回 None。
+
+        查和扣在同一条 UPDATE 的 WHERE 里：两个人同时用一个单次邀请码，只有一个能成功。
+        """
+        now = time.time() if now is None else now
+        rows = self.db.execute("SELECT id FROM invites WHERE code_hash = ?", (code_hash,))
+        if not rows:
+            return None
+        iid = rows[0]["id"]
+        ok = self.db.update("UPDATE invites SET uses = uses + 1 WHERE id = ? AND revoked = 0 AND uses < max_uses "
+                            "AND (expires = 0 OR expires > ?)", (iid, now)) == 1
+        return iid if ok else None
+
+    def release_invite(self, iid: str) -> None:
+        """邀请码扣了但账号没建成（并发首次登录）：把这次退回去。"""
+        self.db.execute("UPDATE invites SET uses = uses - 1 WHERE id = ? AND uses > 0", (iid,))
+
+    def revoke_invite(self, iid: str) -> bool:
+        return self.db.update("UPDATE invites SET revoked = 1 WHERE id = ?", (iid,)) == 1
 
     def close(self) -> None:
         self.db.close()

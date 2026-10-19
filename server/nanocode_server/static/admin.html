@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>管理 · nanocode</title>
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  .admin { max-width: 960px; margin: 0 auto; padding: 24px 20px 60px; }
+  .admin h1 { font-size: 20px; margin: 0 0 4px; }
+  .admin h2 { font-size: 16px; margin: 28px 0 10px; }
+  .admin table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  .admin th, .admin td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border, #e5e7eb); vertical-align: middle; }
+  .admin .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; }
+  .admin .row .field { margin: 0; }
+  .admin code.new { font-size: 15px; padding: 6px 10px; display: inline-block; user-select: all; }
+  .admin .muted { color: var(--muted, #6b7280); }
+</style>
+</head>
+<body>
+<main class="admin">
+  <div class="row" style="justify-content:space-between">
+    <div><h1>管理</h1><div class="muted">邀请码与账号</div></div>
+    <a class="btn" href="/">返回</a>
+  </div>
+
+  <h2>新建邀请码</h2>
+  <form id="inv-form" class="row" novalidate>
+    <div class="field"><label for="note">备注</label><input id="note" class="input" maxlength="200" placeholder="给谁的"></div>
+    <div class="field"><label for="uses">可用次数</label><input id="uses" class="input" type="number" min="1" max="1000" value="1" style="width:90px"></div>
+    <div class="field"><label for="days">有效天数（0 = 不过期）</label><input id="days" class="input" type="number" min="0" max="365" value="7" style="width:120px"></div>
+    <button class="btn primary" type="submit">生成</button>
+  </form>
+  <div class="form-error" id="err" role="alert"></div>
+  <div id="new-code" hidden>
+    <p>新邀请码（只显示这一次，请现在复制）：<code class="new" id="code"></code></p>
+  </div>
+
+  <h2>邀请码</h2>
+  <table><thead><tr><th>末 4 位</th><th>备注</th><th>已用 / 次数</th><th>过期</th><th>状态</th><th></th></tr></thead>
+    <tbody id="invites"></tbody></table>
+
+  <h2>账号</h2>
+  <table><thead><tr><th>登录名</th><th>id</th><th>角色</th><th>状态</th><th>最近登录</th><th></th></tr></thead>
+    <tbody id="users"></tbody></table>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const STATES = { active: "可用", used: "已用完", expired: "已过期", revoked: "已撤销" };
+const fmt = (t) => (t ? new Date(t * 1000).toLocaleString() : "—");
+async function api(method, path, body) {
+  const r = await fetch(path, { method, headers: body ? { "content-type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+  if (r.status === 401) { location.href = "/login"; throw new Error("未登录"); }
+  const d = await r.json();
+  if (!d.ok) throw new Error(d.error || `HTTP ${r.status}`);
+  return d;
+}
+function cell(tr, text) { const td = document.createElement("td"); td.textContent = text; tr.append(td); return td; }
+function button(td, label, onclick) {
+  const b = document.createElement("button"); b.className = "btn"; b.textContent = label;
+  b.onclick = async () => { try { await onclick(); await load(); } catch (e) { $("#err").textContent = e.message; } };
+  td.append(b);
+}
+async function load() {
+  const [inv, users] = await Promise.all([api("GET", "/api/admin/invites"), api("GET", "/api/admin/users")]);
+  const ti = $("#invites"); ti.replaceChildren();
+  for (const i of inv.invites) {
+    const tr = document.createElement("tr");
+    cell(tr, "…" + i.code_hint); cell(tr, i.note || "—"); cell(tr, `${i.uses} / ${i.max_uses}`);
+    cell(tr, i.expires ? fmt(i.expires) : "不过期"); cell(tr, STATES[i.state] || i.state);
+    const td = cell(tr, "");
+    if (i.state === "active") button(td, "撤销", () => api("POST", `/api/admin/invites/${encodeURIComponent(i.id)}/revoke`, {}));
+    ti.append(tr);
+  }
+  const tu = $("#users"); tu.replaceChildren();
+  for (const u of users.users) {
+    const tr = document.createElement("tr");
+    cell(tr, u.login); cell(tr, u.id); cell(tr, u.role === "admin" ? "管理员" : "用户");
+    cell(tr, u.status === "active" ? "正常" : "已停用"); cell(tr, fmt(u.last_login));
+    const td = cell(tr, "");
+    if (u.role !== "admin") {
+      const next = u.status === "active" ? "disabled" : "active";
+      button(td, next === "disabled" ? "停用" : "启用", () => api("POST", `/api/admin/users/${encodeURIComponent(u.id)}/status`, { status: next }));
+    }
+    tu.append(tr);
+  }
+}
+$("#inv-form").onsubmit = async (e) => {
+  e.preventDefault(); $("#err").textContent = "";
+  try {
+    const d = await api("POST", "/api/admin/invites", { note: $("#note").value, max_uses: Number($("#uses").value), expires_days: Number($("#days").value) });
+    $("#code").textContent = d.code; $("#new-code").hidden = false;
+    await load();
+  } catch (err) { $("#err").textContent = err.message; }
+};
+load().catch((e) => { $("#err").textContent = e.message; });
+</script>
+</body>
+</html>
