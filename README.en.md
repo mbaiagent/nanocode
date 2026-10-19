@@ -253,7 +253,7 @@ Precedence: `~/.nanocode/settings.json` (yours, always on) → project `.nanocod
 |---|---|---|
 | `"provider"` `"model"` `"base_url"` `"protocol"` `"headers"` | which model, how to connect | `provider` `base_url` `protocol` `headers` require trust (API key goes there) |
 | `"mode"` | permission mode: `default` `accept_edits` `plan` `review` `bypass` | requires trust |
-| `"permissions"` | `{"allow": [...], "deny": [...]}` rules, e.g. `"bash(git status*)"` | `allow` requires trust; `deny` always active |
+| `"permissions"` | `{"allow": [...], "deny": [...], "sensitive_read": [...], "sensitive_read_exclude": [...]}`: rules like `"bash(git status*)"`; `sensitive_read` adds sensitive-file patterns that need confirmation to read, `sensitive_read_exclude` removes default ones (see [chapter 4](docs/04-permissions-and-hooks.md)) | `allow` and `sensitive_read_exclude` require trust; `deny` and `sensitive_read` always active |
 | `"hooks"` | lifecycle hooks, see Chapter 04 | requires trust |
 | `"mcpServers"` | MCP servers, see Chapter 07 | requires trust |
 | `"verify"` | auto-verify command, string or `{"command": ..., "max_retries": 3, "timeout": 300}` | requires trust |

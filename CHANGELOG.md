@@ -17,6 +17,7 @@
 
 ### 单机 nanocode / Web 面板
 
+- **安全 读取敏感文件默认需要确认**（[#147](https://github.com/mbaiagent/nanocode/pull/147)，Fixes [#136](https://github.com/mbaiagent/nanocode/issues/136)）：`.env`、私钥、`.netrc`、云凭据等读取时询问，非交互时拒绝；宽泛 allow 规则不放行；bash 常见读法启发式识别。新配置 `permissions.sensitive_read` / `permissions.sensitive_read_exclude`。
 - **安全 工具子进程不继承凭据**（[#146](https://github.com/mbaiagent/nanocode/pull/146)，Fixes [#134](https://github.com/mbaiagent/nanocode/issues/134)）：bash / verify / hook 子进程拿不到 `NANOCODE_*`、`NCS_*`（行为变化：本地模式下 `NANOCODE_API_KEY` 也不再传给子进程，厂商 Key 照常传）；平台模式下另外去掉厂商 Key 和像密钥的变量，Web 进程设为不可 dump。新增 `NANOCODE_TOOL_ENV_KEEP` 放行。
 - **新增 多会话并行运行**（[#112](https://github.com/mbaiagent/nanocode/pull/112)）：`NANOCODE_WEB_MAX_RUNS`、`NANOCODE_WEB_MAX_RUNS_PER_CLIENT`、`NANOCODE_WEB_MAX_LIVE_SESSIONS`。
 - **新增** 自带登录页（`NANOCODE_HTPASSWD`）代替 Basic Auth 弹窗；`/model` 运行时切换模型；`web_search` 支持多个搜索源，默认 DuckDuckGo（[#94](https://github.com/mbaiagent/nanocode/pull/94)）。
