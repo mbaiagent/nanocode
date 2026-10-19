@@ -32,6 +32,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Optional
 
+from .tools.base import norm_rel, safe_relpath
 from .tools.search import glob_to_regex, walk_files
 
 DEFAULT_INCLUDE = ["**/*.md", "**/*.markdown", "**/*.txt", "**/*.rst"]
@@ -297,7 +298,7 @@ class DocIndex:
     def _scan(self) -> dict[str, list[int]]:
         found = {}
         for path in walk_files(self.root):
-            rel = os.path.relpath(path, self.root).replace(os.sep, "/")
+            rel = norm_rel(safe_relpath(path, self.root))
             if any(rx.match(rel) for rx in self.include):
                 st = os.stat(path)
                 if st.st_size <= 2_000_000:

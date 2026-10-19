@@ -16,6 +16,29 @@ import os
 
 from .base import Tool, ToolContext, ToolError
 
+# 猜不出就照这个顺序试，只为在报错里告诉模型"大概是哪种"，不是为了偷偷换种编码读
+_GUESSES = ("gb18030", "big5", "shift_jis", "cp1252")
+
+
+def _decode(raw: bytes, path: str) -> str:
+    """把文件字节解成文本；不是 UTF-8 就明确报错。
+
+    以前是 `raw.decode("utf-8", "replace")`：GBK 文件被换成一屏幕 \\ufffd，却照样
+    is_error=False 地交给模型，模型对着乱码改文件（#45）。宁可让它知道读不了。
+    """
+    try:
+        return raw.decode("utf-8-sig")          # 带 BOM 的 UTF-8：把 BOM 吃掉，别混进第一行
+    except UnicodeDecodeError:
+        pass
+    for enc in _GUESSES:
+        try:
+            raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        raise ToolError(f"{path} 不是 UTF-8 编码（按 {enc} 能读通）。请先用 iconv 或编辑器把它转成 UTF-8，"
+                        f"再读取或修改——按 \\ufffd 猜出来的内容只会让模型改错地方。") from None
+    raise ToolError(f"{path} 不是 UTF-8 编码，也看不出是哪种编码。请转换成 UTF-8 后重试。") from None
+
 
 def _mark_read(ctx: ToolContext, path: str) -> None:
     ctx.state.setdefault("read_files", {})[path] = os.path.getmtime(path)
@@ -58,7 +81,7 @@ class ReadFile(Tool):
             raw = f.read()
         if b"\x00" in raw[:8000]:
             raise ToolError(f"{path} 看起来是二进制文件，无法以文本读取")
-        lines = raw.decode("utf-8", "replace").splitlines()
+        lines = _decode(raw, path).splitlines()
         offset = max(1, input.get("offset", 1))
         limit = input.get("limit", 2000)
         chunk = lines[offset - 1: offset - 1 + limit]
@@ -94,7 +117,9 @@ class WriteFile(Tool):
         if existed:
             _check_fresh(ctx, path)
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        # newline=""：按原样写。默认的文本模式会把 \n 翻译成系统换行符，Windows 上
+        # 内容里本来就有的 \r\n 会被写成 \r\r\n（#45）。
+        with open(path, "w", encoding="utf-8", newline="") as f:
             f.write(input["content"])
         _mark_read(ctx, path)
         n = input["content"].count("\n") + 1
@@ -125,19 +150,33 @@ class EditFile(Tool):
         path = ctx.resolve(input["path"])
         if not os.path.exists(path):
             raise ToolError(f"文件不存在：{path}（新建文件请用 write_file）")
+        # 同样 newline=""：读入时保留文件原本的换行符，写回时才不会把 LF 文件整篇改成
+        # CRLF（Windows 默认），产出一大片无意义的 diff（#45）。
+        # 先解编码再查"有没有读过"：非 UTF-8 的文件根本读不进来，此时报"必须先 read_file"
+        # 会把人引到一条走不通的路上（原来这里是 UnicodeDecodeError 直接穿出去）。
+        with open(path, "rb") as f:
+            raw = f.read()
+        if b"\x00" in raw[:8000]:
+            raise ToolError(f"{path} 看起来是二进制文件，不能用 edit_file 修改")
+        text = _decode(raw, path)
         _check_fresh(ctx, path)
         old, new = input["old_string"], input["new_string"]
         if old == new:
             raise ToolError("old_string 和 new_string 相同，没有需要修改的内容")
-        with open(path, encoding="utf-8") as f:
-            text = f.read()
         count = text.count(old)
+        if count == 0 and "\r\n" in text and "\n" in old:
+            # 文件是 CRLF，模型给的 old_string 一般只有 \n：换行符对不上就永远改不动，
+            # 按 CRLF 再匹配一次。反过来的方向（文件是 LF）不受影响。
+            crlf_old = old.replace("\r\n", "\n").replace("\n", "\r\n")
+            crlf_new = new.replace("\r\n", "\n").replace("\n", "\r\n")
+            if text.count(crlf_old):
+                old, new, count = crlf_old, crlf_new, text.count(crlf_old)
         if count == 0:
             raise ToolError("在文件中找不到 old_string。请确认缩进和空白完全一致，必要时重新 read_file。")
         if count > 1 and not input.get("replace_all"):
             raise ToolError(f"old_string 在文件中出现了 {count} 次。请带上更多上下文让它唯一，或设置 replace_all=true。")
         text = text.replace(old, new) if input.get("replace_all") else text.replace(old, new, 1)
-        with open(path, "w", encoding="utf-8") as f:
+        with open(path, "w", encoding="utf-8", newline="") as f:
             f.write(text)
         _mark_read(ctx, path)
         line = text[: text.find(new)].count("\n") + 1 if new else 0

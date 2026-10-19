@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from . import risk
-from .tools.base import is_inside, norm_rel, resolve_path
+from .tools.base import is_inside, norm_rel, resolve_path, safe_relpath
 
 MODES = ("default", "accept_edits", "plan", "review", "bypass")
 EDIT_TOOLS = {"write_file", "edit_file"}
@@ -81,7 +81,7 @@ class PermissionManager:
             # 防止 `~/x`、软链接、`src/../../etc/x` 这类写法绕过检查
             full = resolve_path(self.cwd, target or ".")
             inside = is_inside(self.cwd, full)
-            norm = norm_rel(os.path.relpath(full, os.path.realpath(self.cwd))) if inside else norm_rel(full)
+            norm = norm_rel(safe_relpath(full, os.path.realpath(self.cwd))) if inside else norm_rel(full)
             allow_forms = [norm]                 # allow 只认规范化路径：宁可多问一次
             deny_forms = [target, norm, full]    # deny 任一写法命中都拒绝：宁可多拦一次
         redirects = redirect_targets(target) if tool.name == "bash" else []
@@ -157,7 +157,7 @@ class PermissionManager:
             # 等于让用户在不知情的情况下批准一次外部读写（#42）。
             full = resolve_path(self.cwd, target)
             inside = is_inside(self.cwd, full)
-            rel = norm_rel(os.path.relpath(full, os.path.realpath(self.cwd))) if inside else norm_rel(full)
+            rel = norm_rel(safe_relpath(full, os.path.realpath(self.cwd))) if inside else norm_rel(full)
             if rel != target and target.replace("\\", "/") != rel:
                 shown = f"{target} → {full}" + ("" if inside else "（项目外）")
         answer = self.ask_fn(tool.name, input, shown)
@@ -174,7 +174,7 @@ class PermissionManager:
             elif getattr(tool, "path_target", False) and target:
                 full = resolve_path(self.cwd, target)
                 inside = is_inside(self.cwd, full)
-                norm = norm_rel(os.path.relpath(full, os.path.realpath(self.cwd))) if inside else norm_rel(full)
+                norm = norm_rel(safe_relpath(full, os.path.realpath(self.cwd))) if inside else norm_rel(full)
                 rule = f"{tool.name}({norm})"
                 note = "，仅限这个路径" if inside else "，仅限这个文件（项目外）"
             else:

@@ -15,7 +15,7 @@ from __future__ import annotations
 import difflib
 import os
 
-from .tools.base import norm_rel
+from .tools.base import norm_rel, safe_relpath
 
 MAX_ORIGINAL_BYTES = 200_000
 MAX_FILES = 30
@@ -40,7 +40,7 @@ def remember(originals: dict, cwd: str, path: str) -> None:
     """写文件工具动手之前调用：这个文件本轮第一次被改，就记下原文。"""
     # 必须用和 subcheck.snapshot 相同的规范化（/ 分隔）：Windows 上 relpath 给
     # `pkg\\a.txt`，快照给 `pkg/a.txt`，同一个文件会在终审里出现两次（#45）
-    rel = norm_rel(os.path.relpath(path, cwd))
+    rel = norm_rel(safe_relpath(path, cwd))
     if rel not in originals:
         originals[rel] = read_text(path)
 

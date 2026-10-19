@@ -5,7 +5,7 @@ import os
 import time
 import unittest
 
-from helpers import Workspace, call, make_agent
+from helpers import Workspace, call, make_agent, py
 
 from nanocode import verify as v
 from nanocode.messages import text_block
@@ -13,7 +13,9 @@ from nanocode.session import Options, Session
 from nanocode.trust import TrustStore, apply_trust, describe, split_sensitive
 
 # a.txt 的内容必须是 good；不对就把当前内容打印出来并失败
-CHECK = 'test "$(cat a.txt)" = good || { echo "a.txt 内容是: $(cat a.txt)"; exit 1; }'
+# 必须是 good；不对就把当前内容打印出来并失败。写成 Python 是为了 Windows 上也能跑
+# （cmd 里没有 `cat`、没有 `$(...)`），见 #45。
+CHECK = py("import sys; t = open('a.txt').read().strip(); print('a.txt 内容是: ' + t); sys.exit(0 if t == 'good' else 1)")
 
 
 def write(content):
@@ -145,7 +147,7 @@ class VerifyLoopTest(unittest.TestCase):
         self.assertEqual(kinds(ev), [])
 
     def test_feedback_keeps_the_end_of_long_output(self):
-        cmd = "python3 -c \"print('x' * 20000); print('最后一行才是真正的报错'); raise SystemExit(1)\""
+        cmd = py("print('x' * 20000); print('最后一行才是真正的报错'); raise SystemExit(1)")
         agent, prov, ev = self.agent([write("x"), say(), say()], command=cmd)
         agent.run("改")
         sent = json.dumps(prov.calls[2]["messages"], ensure_ascii=False)

@@ -276,6 +276,7 @@ nanocode/
 ├── trust.py           workspace trust: untrusted project config doesn't take effect without consent
 ├── policy.py          platform policy: read-only mount in multi-user deployments, overrides user and project config
 ├── hooks.py           lifecycle hooks
+├── proc.py            cross-platform subprocess: spawn, kill whole tree (no killpg on Windows)
 ├── verify.py          auto-verify: run checks after edits, loop back on failure
 ├── subcheck.py        sub-agent acceptance: modification scope, file snapshot, system-generated report
 ├── risk.py            review-mode risk classification: whitelist auto-allow, high-risk always confirm

@@ -37,7 +37,7 @@ from .messages import (Usage, assistant_message, text_block, text_of, tool_resul
 from .permissions import EDIT_TOOLS, PermissionManager
 from . import lessons, review, subcheck
 from . import verify as verify_mod
-from .tools.base import ToolContext, ToolRegistry, norm_rel, truncate
+from .tools.base import ToolContext, ToolRegistry, norm_rel, safe_relpath, truncate
 
 
 LLM_FAILED_PREFIX = "模型调用失败："   # 模型接口出错（配额、网络、服务故障）导致任务中止时，最终回答的开头；评测靠它区分"模型没做好"和"根本没调通"
@@ -292,7 +292,7 @@ class Agent:
         if self.write_scope is not None and tool.name in EDIT_TOOLS:
             # norm_rel 统一分隔符和大小写：Windows 上 `pkg\\a.txt` 也要能匹配
             # `pkg/*` 这类范围，否则同一个文件会漏过范围检查（#35）
-            rel = norm_rel(os.path.relpath(self.ctx.resolve(call["input"].get("path", "")), self.cwd))
+            rel = norm_rel(safe_relpath(self.ctx.resolve(call["input"].get("path", "")), self.cwd))
             if not subcheck.in_scope(rel, self.write_scope):
                 plan["result"] = self._finish(call, f"{rel} 不在这个子任务允许修改的范围内：{self.write_scope or '(只读，不许改任何文件)'}", True)
                 return plan
@@ -315,7 +315,7 @@ class Agent:
         if tool.changes_workspace and not result.is_error:
             self._dirty = True
             if self._lesson is not None and tool.name in EDIT_TOOLS:   # 打回之后改了哪些文件，是候选里的证据
-                self._lesson["files"].add(os.path.relpath(self.ctx.resolve(str(call["input"].get("path", ""))), self.cwd))
+                self._lesson["files"].add(safe_relpath(self.ctx.resolve(str(call["input"].get("path", ""))), self.cwd))
         content = truncate(result.content)
         if self.hooks.has("PostToolUse"):
             out = self.hooks.run("PostToolUse", {"tool_name": tool.name, "tool_input": call["input"],

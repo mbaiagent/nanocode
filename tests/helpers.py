@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import sys
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -60,6 +61,15 @@ class Workspace:
 
     def cleanup(self):
         shutil.rmtree(self.dir, ignore_errors=True)
+
+
+def py(code: str) -> str:
+    """一条跨平台能跑的 shell 命令：Windows 上没有 `ls` / `sleep` / `python3`。
+
+    只在同一份测试要在 Windows 上跑时才需要它（#45）。code 里请用单引号，
+    外面这层是双引号 —— cmd 和 bash 都认双引号，认单引号的只有 bash。
+    """
+    return f'"{sys.executable}" -c "{code}"'
 
 
 def make_agent(ws, replies, mode="bypass", hooks=None, ask=None, **kw):

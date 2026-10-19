@@ -1,9 +1,11 @@
 """工具与权限测试。"""
 
+import os
 import threading
 import unittest
+from unittest import mock
 
-from helpers import Workspace
+from helpers import Workspace, py
 
 from nanocode.permissions import PermissionManager
 from nanocode.tools import Bash, EditFile, Glob, Grep, ReadFile, ToolContext, WriteFile
@@ -71,25 +73,88 @@ class ToolTest(unittest.TestCase):
     def test_bash_cwd_persists_and_exit_code(self):
         self.ws.write("sub/f.txt", "")
         Bash().execute({"command": "cd sub"}, self.ctx)
-        self.assertIn("f.txt", Bash().execute({"command": "ls"}, self.ctx).content)
+        self.assertIn("f.txt", Bash().execute({"command": py("import os; print(*os.listdir('.'))")}, self.ctx).content)
         self.assertIn("[退出码 3]", Bash().execute({"command": "exit 3"}, self.ctx).content)
 
     def test_bash_timeout_and_cancel(self):
-        r = Bash().execute({"command": "sleep 5", "timeout": 1}, self.ctx)
+        r = Bash().execute({"command": py("import time; time.sleep(5)"), "timeout": 1}, self.ctx)
         self.assertTrue(r.is_error)
         self.assertIn("超时", r.content)
         threading.Timer(0.3, self.ctx.cancel.set).start()
-        r = Bash().execute({"command": "sleep 5"}, self.ctx)
+        r = Bash().execute({"command": py("import time; time.sleep(5)")}, self.ctx)
         self.assertIn("中断", r.content)
 
     def test_bash_large_output_no_deadlock(self):
-        r = Bash().execute({"command": "python3 -c \"print('x' * 200000)\"", "timeout": 10}, self.ctx)
+        r = Bash().execute({"command": py("print('x' * 200000)"), "timeout": 10}, self.ctx)
         self.assertFalse(r.is_error)
         self.assertIn("省略", r.content)
 
     def test_truncate(self):
         self.assertEqual(truncate("abc", 10), "abc")
         self.assertIn("省略", truncate("a" * 100, 10))
+
+
+class EncodingAndNewlineTest(unittest.TestCase):
+    """#45：非 UTF-8 要明确报错（不能产出 \\ufffd 却说成功），换行符不能被动过。"""
+
+    def setUp(self):
+        self.ws = Workspace()
+        self.ctx = ToolContext(cwd=self.ws.dir)
+
+    def tearDown(self):
+        self.ws.cleanup()
+
+    def _write_bytes(self, rel, data):
+        path = os.path.join(self.ws.dir, rel)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    def test_non_utf8_read_reports_instead_of_mangling(self):
+        self._write_bytes("gbk.txt", "你好".encode("gb18030"))
+        r = ReadFile().execute({"path": "gbk.txt"}, self.ctx)
+        self.assertTrue(r.is_error)
+        self.assertIn("UTF-8", r.content)          # 说清楚是什么问题
+        self.assertNotIn("\ufffd", r.content)      # 不是一屏幕乱码还标着成功
+
+    def test_non_utf8_edit_reports_instead_of_crashing(self):
+        self._write_bytes("gbk.txt", "你好".encode("gb18030"))
+        r = EditFile().execute({"path": "gbk.txt", "old_string": "好", "new_string": "坏"}, self.ctx)
+        self.assertTrue(r.is_error)                # 原来是 UnicodeDecodeError 直接穿出去
+        self.assertIn("UTF-8", r.content)
+
+    def test_crlf_file_survives_edit(self):
+        """整篇 LF → CRLF 是 Windows 上最大的一类无意义 diff。"""
+        path = self._write_bytes("a.py", b"x = 1\r\ny = 2\r\n")
+        self.assertFalse(ReadFile().execute({"path": "a.py"}, self.ctx).is_error)
+        r = EditFile().execute({"path": "a.py", "old_string": "x = 1", "new_string": "x = 2"}, self.ctx)
+        self.assertFalse(r.is_error, r.content)
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), b"x = 2\r\ny = 2\r\n")
+
+    def test_write_keeps_crlf(self):
+        """内容里的 \\r\\n 不能再被翻译成 \\r\\r\\n。"""
+        r = WriteFile().execute({"path": "a.py", "content": "x = 1\r\ny = 2\r\n"}, self.ctx)
+        self.assertFalse(r.is_error, r.content)
+        with open(os.path.join(self.ws.dir, "a.py"), "rb") as f:
+            self.assertEqual(f.read(), b"x = 1\r\ny = 2\r\n")
+
+    def test_grep_tells_which_files_it_skipped(self):
+        self._write_bytes("gbk.txt", "关键字".encode("gb18030"))
+        self.ws.write("ok.py", "关键字 = 1\n")
+        r = Grep().execute({"pattern": "关键字"}, self.ctx)
+        self.assertFalse(r.is_error, r.content)
+        self.assertIn("ok.py", r.content)
+        # 原来是静默跳过：模型以为"项目里根本没有这个字符串"，其实是 grep 没看那个文件
+        self.assertIn("非 UTF-8", r.content)
+        self.assertIn("gbk.txt", r.content)
+
+    def test_windows_without_bash_says_so(self):
+        """没有真 bash 时明确报错，而不是跑去用 WSL 的 bash.exe。"""
+        with mock.patch("nanocode.tools.shell.find_bash", return_value=None):
+            r = Bash().execute({"command": "echo hi"}, self.ctx)
+        self.assertTrue(r.is_error)
+        self.assertIn("Git for Windows", r.content)
 
 
 class PermissionTest(unittest.TestCase):

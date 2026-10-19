@@ -8,7 +8,7 @@ import time
 import unittest
 from unittest import mock
 
-from helpers import ScriptedProvider, Workspace, call, make_agent
+from helpers import ScriptedProvider, Workspace, call, make_agent, py
 
 from nanocode.context import (compact_messages, context_tokens, drop_dangling_tool_results,
                               find_compact_split, load_memory)
@@ -80,7 +80,7 @@ class AgentLoopTest(unittest.TestCase):
 
     def test_multiple_tools_in_one_step(self):
         agent, _, events = make_agent(self.ws, [
-            [call("bash", command="sleep 0.6"), call("bash", command="sleep 0.6")],
+            [call("bash", command=py("import time; time.sleep(0.6)")), call("bash", command=py("import time; time.sleep(0.6)"))],
             [text_block("ok")],
         ])
         # bash 不是只读工具 → 串行；这里只验证结果顺序与调用顺序一致
@@ -127,7 +127,7 @@ class AgentLoopTest(unittest.TestCase):
         self.assertIn("最大步数", agent.run("x"))
 
     def test_cancel(self):
-        agent, _, _ = make_agent(self.ws, [[call("bash", command="sleep 10")], [text_block("不应该到这")]])
+        agent, _, _ = make_agent(self.ws, [[call("bash", command=py("import time; time.sleep(10)"))], [text_block("不应该到这")]])
         import threading
         threading.Timer(0.3, agent.cancel.set).start()
         start = time.time()
@@ -148,7 +148,7 @@ class AgentLoopTest(unittest.TestCase):
             "PostToolUse": [{"matcher": "write_file", "command": "echo 记得格式化 >&2; exit 2"}],
         }
         agent, provider, _ = make_agent(self.ws, [
-            [call("bash", command="ls"), call("write_file", path="a.txt", content="1")],
+            [call("bash", command=py("import os; print(*os.listdir('.'))")), call("write_file", path="a.txt", content="1")],
             [text_block("ok")],
         ], hooks=hooks)
         agent.run("x")
