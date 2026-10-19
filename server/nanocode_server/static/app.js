@@ -376,6 +376,33 @@ $("#app").addEventListener("click", (e) => { if (e.target === $("#app")) closeDr
 
 // ============================================================ 启动
 
+// 自适应轮询（#145）：refreshSessions 每次都要查库（/api/me + /api/sessions），
+// 可见但长时间无变化的页签不能一直每 10 秒唤醒数据库（托管 Postgres 缩不到零）。
+// 无变化时间隔 10s→20s→40s→60s 封顶；有变化、回到前台或用户操作时立刻回到 10s。
+// 隐藏页签本来就不轮询（下面的 document.hidden 判断）。
+let pollMs = 10000, pollTimer = 0, lastPollSig = "";
+function pollSig() { return JSON.stringify([state.me && state.me.usage, state.sessions]); }
+function schedulePoll() {
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(async () => {
+    if (!document.hidden) {
+      try {
+        await refreshSessions();
+        const sig = pollSig();
+        pollMs = (sig === lastPollSig) ? Math.min(pollMs * 2, 60000) : 10000;
+        lastPollSig = sig;
+      } catch { /* 网络抖动不断轮询，下次按原间隔重试 */ }
+    }
+    schedulePoll();
+  }, pollMs);
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  pollMs = 10000;                                    // 回到前台：立即刷新一次，间隔重置
+  refreshSessions().then(() => { lastPollSig = pollSig(); }).catch(() => {});
+  schedulePoll();
+});
+
 window.addEventListener("hashchange", route);
-loadAll().then(route);
-setInterval(() => { if (!document.hidden) refreshSessions(); }, 10000);
+loadAll().then(() => { lastPollSig = pollSig(); route(); });
+schedulePoll();
