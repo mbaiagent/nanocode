@@ -54,19 +54,48 @@ def _terminate(proc: subprocess.Popen) -> None:
         pass
 
 
-def _wait_gone(pid: int, timeout: float) -> bool:
-    """等 pid 消失。不属于我们（或者已经退出）也返回 True：kill(pid, 0) 会抛 PermissionError。
+def _pid_alive(pid: int) -> bool:
+    """这个 pid 还活着吗。
 
-    注意 kill(pid, 0) 对僵尸也返回成功：如果 pid 恰好是当前进程没回收的子进程，这里会
-    等满宽限期、再给一具尸体补一发 SIGKILL。真沙箱不会这样（控制面重启后旧沙箱被
+    POSIX 用 `kill(pid, 0)`：不投递信号，只做存在性检查。
+    Windows 上 `os.kill(pid, 0)` **不是**存在性检查 —— signal.CTRL_C_EVENT 的值就是 0，
+    它会往目标进程所在的进程组广播 Ctrl+C；沙箱通常和控制面共享同一个 console，
+    于是控制面自己收到 KeyboardInterrupt，整轮测试/服务被中断（#92）。
+    Windows 改用 OpenProcess + GetExitCodeProcess 查 STILL_ACTIVE，只查不发信号。
+    """
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, PermissionError):
+            return False
+        return True
+    import ctypes
+    from ctypes import wintypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return False                      # 进程不存在（或者无权访问：那也不是我们能杀的了）
+    try:
+        code = wintypes.DWORD()
+        return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _wait_gone(pid: int, timeout: float) -> bool:
+    """等 pid 消失。不属于我们（或者已经退出）也返回 True。
+
+    注意 POSIX 的 kill(pid, 0) 对僵尸也返回成功：如果 pid 恰好是当前进程没回收的子进程，
+    这里会等满宽限期、再给一具尸体补一发 SIGKILL。真沙箱不会这样（控制面重启后旧沙箱被
     init/launchd 收养并回收），代价只是多等几秒；不要用 waitpid 去"确认"——那会把别人的
     子进程回收掉，别人的 wait() 就永远拿不到退出码了。
     """
     deadline = time.time() + timeout
     while time.time() < deadline:
-        try:
-            os.kill(pid, 0)
-        except (ProcessLookupError, PermissionError):
+        if not _pid_alive(pid):
             return True
         time.sleep(0.1)
     return False
@@ -207,11 +236,13 @@ class LocalLauncher(Launcher):
         self.procs[spec.session_id] = proc
         self._write_pid(spec.session_id, proc.pid, port, spec.web_token)
         endpoint = f"http://127.0.0.1:{port}"
+        log_path = os.path.join(base, "sandbox.log")
         try:
-            wait_ready(endpoint, spec.web_token, self.ready_timeout, alive=lambda: proc.poll() is None)
+            wait_ready(endpoint, spec.web_token, self.ready_timeout, alive=lambda: proc.poll() is None,
+                       log_path=log_path)
         except LaunchError as e:
             self.stop(spec.session_id)
-            raise LaunchError(f"{e}（日志：{os.path.join(base, 'sandbox.log')}）") from None
+            raise LaunchError(f"{e}（日志：{log_path}）") from None
         return endpoint
 
     def stop(self, session_id: str) -> None:

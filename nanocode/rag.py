@@ -298,8 +298,10 @@ class DocIndex:
     def _scan(self) -> dict[str, list[int]]:
         found = {}
         for path in walk_files(self.root):
-            rel = norm_rel(safe_relpath(path, self.root))
-            if any(rx.match(rel) for rx in self.include):
+            # 展示/存储用真实大小写（Windows 上 norm_rel 会把 README.md 变成 readme.md，
+            # 搜索结果看起来像另一个文件）；规则匹配用 norm_rel，大小写不敏感（#35 #92）
+            rel = safe_relpath(path, self.root).replace(os.sep, "/")
+            if any(rx.match(norm_rel(rel)) for rx in self.include):
                 st = os.stat(path)
                 if st.st_size <= 2_000_000:
                     found[rel] = [st.st_mtime_ns, st.st_size]

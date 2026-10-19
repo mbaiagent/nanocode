@@ -12,8 +12,41 @@ import ntpath
 import os
 import shutil
 import subprocess
+import sys
 
 WINDOWS = os.name == "nt"
+
+
+def force_utf8_stdio() -> None:
+    """把本进程的 stdout / stderr 切成 UTF-8。
+
+    Windows 上输出被重定向（管道、文件、CI 日志）时默认用本机代码页 cp1252，
+    打印中文或 `⚠` / `✗` 这类符号会直接 UnicodeEncodeError 把整个进程打断 ——
+    CLI、评测脚本都踩得到。`errors="replace"` 是最后一道保险：真遇到编不出的字符
+    也只掉一个字符，不至于让一轮跑完的评测在最后打印时崩掉。
+
+    stdout 被替换成 StringIO 之类（测试里很常见）时没有 reconfigure，忽略即可。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
+def utf8_env(base: dict | None = None) -> dict:
+    """给子进程的环境变量：让 Python 子进程按 UTF-8 读写 stdio。
+
+    nanocode 一律按 UTF-8 解码子进程输出（`encoding="utf-8"`），但 Windows 上
+    Python 子进程的 stdout 默认还是本机代码页：子进程只要打印中文（mock 生成的
+    示例脚本、hook 脚本、verify 命令、MCP 服务器、评测的 check.py）就会
+    UnicodeEncodeError 崩掉，看起来就像"命令没输出 / 检查没通过"。
+
+    只影响 Python 写的子进程，别的程序无感；显式设了 PYTHONIOENCODING 的以用户为准。
+    """
+    env = dict(os.environ if base is None else base)
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    return env
 
 
 def popen_kwargs() -> dict:

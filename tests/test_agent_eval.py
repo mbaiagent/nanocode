@@ -65,7 +65,8 @@ class CheckerTest(unittest.TestCase):
                     for name in os.listdir(naive):
                         shutil.copy(os.path.join(naive, name), os.path.join(work, name))
                     visible = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", work, "-p", "test_*.py"],
-                                             cwd=work, capture_output=True, text=True, timeout=60)
+                                             cwd=work, capture_output=True, text=True, encoding="utf-8",
+                                             errors="replace", timeout=60)
                     if task["trap"] == "caught_by_visible":
                         self.assertNotEqual(visible.returncode, 0, "这类陷阱应该被可见测试抓到，否则跑检查没有意义")
                     else:
@@ -115,7 +116,8 @@ class VerifySensitivityTest(unittest.TestCase):
     剧本：先写出典型的第一次尝试（naive/），如果收到检查失败的反馈，再改成参考答案。
     注意这不是真实模型的结果，只证明评测本身有区分度；真实数据要用 run.py 配真实模型去跑。"""
 
-    VISIBLE_TESTS = f"{shlex.quote(sys.executable)} -m unittest discover -s . -p 'test_*.py'"
+    # 双引号 cmd 和 bash 都认；单引号只有 bash 认（#92）
+    VISIBLE_TESTS = f'"{sys.executable}" -m unittest discover -s . -p "test_*.py"'
 
     def attempt(self, task_id, verify):
         task = run.load_tasks(task_id)[0]

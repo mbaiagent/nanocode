@@ -67,9 +67,10 @@ class RiskClassifierTest(unittest.TestCase):
                 self.assertTrue(risk.is_protected_path(p), p)
             self.assertFalse(risk.is_protected_path("src/a.py"))
             self.assertEqual(risk.classify_bash("cat .ENV"), "unknown")     # 终审模式下不会免确认执行
-        # POSIX 保持大小写敏感：那是另一个文件
-        self.assertFalse(risk.is_protected_path(".ENV"))
-        self.assertEqual(risk.classify_bash("cat .ENV"), "safe")
+        # POSIX 保持大小写敏感：那是另一个文件（Windows 磁盘本来就不区分大小写）
+        if os.name != "nt":
+            self.assertFalse(risk.is_protected_path(".ENV"))
+            self.assertEqual(risk.classify_bash("cat .ENV"), "safe")
 
     def test_reason_is_human_readable(self):
         self.assertEqual(risk.risk_reason("rm -rf x"), "删除或覆盖文件")
@@ -297,7 +298,8 @@ class WiringTest(unittest.TestCase):
         env = dict(os.environ, NANOCODE_HOME=os.path.join(d, "home"),
                    PYTHONPATH=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         return subprocess.run([sys.executable, "-m", "nanocode", "--provider", "mock", *args, "-p", "创建文件 hello.py"],
-                              cwd=d, env=env, capture_output=True, text=True, timeout=60)
+                              cwd=d, env=env, capture_output=True, text=True, timeout=60,
+                              encoding="utf-8", errors="replace")
 
     def test_cli_accepts_review_mode_and_prints_the_summary(self):
         r = self.run_cli("--mode", "review")

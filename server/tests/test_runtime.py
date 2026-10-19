@@ -301,6 +301,26 @@ class GatewayUrlTest(unittest.TestCase):
         self.assertEqual(self.manager(make_config(gateway_port=8701)).gateway_url, "http://172.18.0.1:8701")
 
 
+class ReadyErrorMessageTest(unittest.TestCase):
+    """沙箱起不来时，报错要能说明白为什么，同时不能把沙箱令牌漏出去（#92）。"""
+
+    def test_log_tail_is_included_and_token_redacted(self):
+        from nanocode_server.runtime.base import _log_tail
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "sandbox.log")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("启动 http://127.0.0.1:9/?token=SUPERSECRET\nTraceback: boom\n")
+        tail = _log_tail(path)
+        self.assertIn("Traceback: boom", tail)
+        self.assertNotIn("SUPERSECRET", tail)
+        self.assertIn("token=***", tail)
+
+    def test_missing_or_empty_log_is_silent(self):
+        from nanocode_server.runtime.base import _log_tail
+        self.assertEqual(_log_tail(""), "")
+        self.assertEqual(_log_tail("/definitely/not/here.log"), "")
+
+
 class LocalLauncherTest(unittest.TestCase):
     def test_refuses_bypass(self):
         """本机子进程没有隔离，不能允许 bypass 模式。"""

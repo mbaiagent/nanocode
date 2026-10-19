@@ -4,12 +4,15 @@ import json
 import os
 import unittest
 
-from helpers import Workspace, call, make_agent
+from helpers import Workspace, call, make_agent, py
 
 from nanocode import subcheck
 from nanocode.messages import text_block
 
-CHECK = 'test "$(cat a.txt)" = good || { echo "a.txt 内容是: $(cat a.txt)"; exit 1; }'
+# 跨平台：Windows 上没有 `test` / `$(cat ...)`（#92）
+CHECK = py("import sys; t = open('a.txt').read().strip(); ok = t == 'good'; "
+           "(None if ok else sys.stderr.write('a.txt 内容是: ' + t)); "
+           "sys.exit(0 if ok else 1)")
 
 
 def say(text):

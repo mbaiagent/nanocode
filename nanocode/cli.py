@@ -23,6 +23,7 @@ import threading
 
 from . import review as review_mod
 from .llm import LLMError
+from .proc import force_utf8_stdio
 from .session import Options, Session
 
 C = {"dim": "\033[2m", "bold": "\033[1m", "red": "\033[31m", "green": "\033[32m", "yellow": "\033[33m",
@@ -211,6 +212,8 @@ def _safe_send(session: Session, prompt: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows 上 stdout 被重定向时默认是 cp1252，打印中文/符号会 UnicodeEncodeError（#92）
+    force_utf8_stdio()
     p = argparse.ArgumentParser(prog="nanocode", description="一个用来学习 Agent 架构的迷你编程 Agent")
     p.add_argument("-p", "--print", dest="prompt", help="单次模式：执行这条指令后退出")
     p.add_argument("--provider", help="厂商预设：mock / anthropic / openai / deepseek / qwen / kimi / glm / "

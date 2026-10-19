@@ -13,6 +13,10 @@
 import json
 import sys
 
+# 协议是每行一条 JSON、按 UTF-8 收发。Windows 上管道默认 cp1252，
+# 中文工具说明写出去就会 UnicodeEncodeError，客户端只会看到"服务器连不上"（#92）。
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 TOOLS = [
     {
         "name": "word_count",

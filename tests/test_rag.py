@@ -177,7 +177,7 @@ class IndexTest(unittest.TestCase):
 
     def test_corrupt_index_is_ignored(self):
         os.makedirs(os.path.dirname(self.store))
-        with open(self.store, "w") as f:
+        with open(self.store, "w", encoding="utf-8") as f:
             f.write("{坏的")
         self.assertEqual(DocIndex(self.ws.dir, store=self.store).refresh()["added"], 2)
 

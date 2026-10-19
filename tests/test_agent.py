@@ -142,10 +142,13 @@ class AgentLoopTest(unittest.TestCase):
         self.assertEqual(roles(agent.messages), ["user", "assistant", "user", "assistant"])
 
     def test_hooks(self):
+        # 用 py() 而不是 echo/exit：Windows 上 shell=True 是 cmd，`>&2; exit 2` 那套语法不认（#92）
         hooks = {
-            "UserPromptSubmit": [{"command": "echo 今天是测试日"}],
-            "PreToolUse": [{"matcher": "bash", "command": "echo 禁止使用 bash >&2; exit 2"}],
-            "PostToolUse": [{"matcher": "write_file", "command": "echo 记得格式化 >&2; exit 2"}],
+            "UserPromptSubmit": [{"command": py("print('今天是测试日')")}],
+            "PreToolUse": [{"matcher": "bash",
+                            "command": py("import sys; sys.stderr.write('禁止使用 bash'); sys.exit(2)")}],
+            "PostToolUse": [{"matcher": "write_file",
+                             "command": py("import sys; sys.stderr.write('记得格式化'); sys.exit(2)")}],
         }
         agent, provider, _ = make_agent(self.ws, [
             [call("bash", command=py("import os; print(*os.listdir('.'))")), call("write_file", path="a.txt", content="1")],
@@ -160,7 +163,10 @@ class AgentLoopTest(unittest.TestCase):
 
     def test_stop_hook_forces_continue(self):
         marker = os.path.join(self.ws.dir, "stopped_once")
-        hooks = {"Stop": [{"command": f"test -f {marker} || (touch {marker}; echo 测试还没跑 >&2; exit 2)"}]}
+        # 第一次拦住（exit 2），写过标记之后放行；同样要跨平台（#92）
+        code = (f"import os, sys; p = {marker!r}; exists = os.path.exists(p); "
+                "open(p, 'a').close(); sys.stderr.write('测试还没跑'); sys.exit(0 if exists else 2)")
+        hooks = {"Stop": [{"command": py(code)}]}
         agent, provider, _ = make_agent(self.ws, [[text_block("做完了")], [text_block("真的做完了")]], hooks=hooks)
         self.assertEqual(agent.run("x"), "真的做完了")
         self.assertEqual(len(provider.calls), 2)
@@ -277,7 +283,19 @@ class ContextTest(unittest.TestCase):
         self.assertEqual(contents[-2:], ["用 4 空格缩进", "这个包用 pytest"])
 
 
-class MCPTest(unittest.TestCase):
+class ResolveCommandTest(unittest.TestCase):
+    """文档里的示例写的是 python3，Windows 上通常只有 python —— 找不到就退回当前解释器（#92）。"""
+
+    def test_known_interpreter_falls_back_to_this_one(self):
+        from nanocode.mcp import _resolve_command
+        with mock.patch("nanocode.mcp.shutil.which", return_value=None):
+            self.assertEqual(_resolve_command("python3"), sys.executable)
+            self.assertEqual(_resolve_command("python"), sys.executable)
+
+    def test_other_commands_are_left_alone(self):
+        from nanocode.mcp import _resolve_command
+        with mock.patch("nanocode.mcp.shutil.which", return_value=None):
+            self.assertEqual(_resolve_command("definitely-not-a-command"), "definitely-not-a-command")
     def test_demo_server(self):
         ws = Workspace()
         try:
