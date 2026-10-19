@@ -112,6 +112,7 @@ class Config:
     max_sandboxes: int = 200
     max_sessions_per_user: int = 3
     idle_timeout: int = 1800
+    reap_interval: int = 60                 # 回收线程多久醒一次；没有运行中的沙箱时醒了也不查库（#131）
     token_ttl: int = 12 * 3600              # 网关令牌有效期 = 沙箱最长存活时间
     login_ttl: int = 7 * 24 * 3600          # 开发模式登录 Cookie 的有效期
 
@@ -209,6 +210,7 @@ class Config:
             max_sandboxes=_int("NCS_MAX_SANDBOXES", d.max_sandboxes),
             max_sessions_per_user=_int("NCS_MAX_SESSIONS_PER_USER", d.max_sessions_per_user),
             idle_timeout=_int("NCS_IDLE_TIMEOUT", d.idle_timeout),
+            reap_interval=_int("NCS_REAP_INTERVAL", d.reap_interval),
             token_ttl=_int("NCS_TOKEN_TTL", d.token_ttl),
             login_ttl=_int("NCS_LOGIN_TTL", d.login_ttl),
             github_client_id=_env("NCS_GITHUB_CLIENT_ID"),
@@ -413,6 +415,8 @@ class Config:
         if launcher_needed and self.launcher == "remote":
             self._validate_remote()
         self._validate_object_store()
+        if self.reap_interval < 1:
+            raise ValueError("NCS_REAP_INTERVAL 至少 1 秒")
         if self.replicas < 1:
             raise ValueError("NCS_REPLICAS 至少为 1")
         # SQLite 是本地文件，多副本各写各的：登录写在这个副本、下一个请求落到那个副本，
