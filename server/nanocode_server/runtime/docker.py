@@ -21,6 +21,7 @@ import socket
 import time
 from urllib.parse import quote
 
+from ..config import parse_size
 from .base import SANDBOX_PORT, Launcher, LaunchError, SandboxSpec, wait_ready
 
 DOCKER_SOCKET = "/var/run/docker.sock"
@@ -88,12 +89,7 @@ class DockerClient:
         return self.request("GET", f"/images/{quote(image, safe='')}/json")[0] == 200
 
 
-def _bytes(size: str) -> int:
-    units = {"Ki": 2**10, "Mi": 2**20, "Gi": 2**30}
-    for u, mult in units.items():
-        if size.endswith(u):
-            return int(float(size[:-2]) * mult)
-    return int(size)
+_bytes = parse_size          # 旧名字：Ki/Mi/Gi 之外也认 Docker 的 k/m/g（#119）
 
 
 class DockerLauncher(Launcher):
@@ -101,10 +97,13 @@ class DockerLauncher(Launcher):
     isolated = True
     bridge_name = ""                # #123：固定的网桥网卡名（宿主机防火墙规则引用它）；空 = Docker 自动起名
     subnet = ""                     # #123：固定的沙箱网段（firewalld 按来源网段把它放进只开网关端口的 zone）
+    tmpfs = ""                      # /tmp 大小；空 = 512m 和内存一半里较小的（#119）
+    pids_limit = 512
 
     def __init__(self, data_dir: str, image: str, network: str = "ncs-sandboxes", runtime: str = "",
                  cpu: str = "1", memory: str = "2Gi", client: DockerClient | None = None, ready_timeout: float = 60,
-                 max_lifetime: int = 43200, bridge_name: str = "", subnet: str = ""):
+                 max_lifetime: int = 43200, bridge_name: str = "", subnet: str = "", tmpfs: str = "",
+                 pids_limit: int = 512):
         self.root = os.path.join(os.path.abspath(data_dir), "sandboxes")
         self.image = image
         self.network = network
@@ -116,6 +115,8 @@ class DockerLauncher(Launcher):
         self.max_lifetime = max_lifetime        # 容器最长存活秒数；Docker 没有 activeDeadlineSeconds，靠对账兜底（#60）
         self.bridge_name = bridge_name
         self.subnet = subnet
+        self.tmpfs = tmpfs
+        self.pids_limit = pids_limit
         self._gateway_ip = self._ensure_network()
 
     # ------------------------------------------------------------------ 网络
@@ -196,12 +197,12 @@ class DockerLauncher(Launcher):
             "Binds": [f"{data_dir}:/data", f"{policy_dir}:/etc/nanocode:ro"],
             "NetworkMode": self.network,
             "ReadonlyRootfs": True,
-            "Tmpfs": {"/tmp": "rw,size=512m"},
+            "Tmpfs": {"/tmp": f"rw,size={self._tmpfs_bytes()}"},
             "CapDrop": ["ALL"],
             "SecurityOpt": ["no-new-privileges"],
             "Memory": _bytes(self.memory),
             "NanoCpus": int(float(self.cpu) * 1e9),
-            "PidsLimit": 512,
+            "PidsLimit": self.pids_limit,
         }
         if self.runtime:
             host["Runtime"] = self.runtime
@@ -217,6 +218,22 @@ class DockerLauncher(Launcher):
                        "ncs.created": str(int(time.time()))},
             "HostConfig": host,
         }
+
+    def _tmpfs_bytes(self) -> int:
+        """tmpfs 的页面算在容器内存里：/tmp 比内存还大时，写满 /tmp 的结果是沙箱被 OOM 杀掉，
+        而不是"空间不足"（#119）。没配时取 512m 和内存一半里较小的。"""
+        if self.tmpfs:
+            return parse_size(self.tmpfs)
+        return min(512 * 2**20, parse_size(self.memory) // 2)
+
+    def endpoint_of(self, session_id: str) -> str | None:
+        """正在运行的沙箱的访问地址（沙箱代理重启后找回已有容器用）；不在了返回 None。"""
+        if not self.is_alive(session_id):
+            return None
+        try:
+            return f"http://{self._container_ip(self.container_name(session_id))}:{SANDBOX_PORT}"
+        except LaunchError:
+            return None
 
     def start(self, spec: SandboxSpec) -> str:
         sid = spec.session_id

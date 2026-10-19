@@ -44,6 +44,25 @@ sudo NCS_DOCKER_SUBNET=172.30.250.0/24 NCS_GATEWAY_PORT=8701 ./ncs-sandbox-firew
 
 细节（为什么按来源网段、默认 zone / eth0 的坑）见 [deploy/firewall/README.md](../firewall/README.md)。
 
+## 低配单机（1 GB 内存，#119）
+
+`.env` 里改这些（默认值保持原来的行为）：
+
+```bash
+NCS_PG_SHARED_BUFFERS=64MB
+NCS_PG_MAX_CONNECTIONS=20        # 单副本平台连接池是 8
+NCS_REDIS_MAXMEMORY=64mb
+NCS_PG_MEM_LIMIT=256m
+NCS_REDIS_MEM_LIMIT=96m
+NCS_PLATFORM_MEM_LIMIT=256m
+NCS_SANDBOX_MEMORY=384Mi         # 也认 Docker 写法 384m / 1g
+NCS_SANDBOX_TMPFS=96m            # /tmp 算在沙箱内存里；不配时取 512m 和内存一半里较小的
+NCS_MAX_SANDBOXES=2
+NCS_IDLE_TIMEOUT=600             # 空闲 10 分钟回收沙箱
+```
+
+沙箱想放到另一台机器上（平台机器只跑控制面、数据库和 Redis），见 [deploy/sandbox-host/](../sandbox-host/README.md)。
+
 ## 用已有的 nginx（代替 Caddy）
 
 机器上 80/443 已经被 nginx 占着时，不启用 `caddy` profile，用 [nginx.example.conf](nginx.example.conf)：

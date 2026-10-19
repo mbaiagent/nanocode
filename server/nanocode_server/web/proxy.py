@@ -22,11 +22,12 @@ class SandboxGone(Exception):
 
 
 def forward(s: Session, req: Request, path: str) -> Response:
-    target = path + (f"?{req.raw_query}" if req.raw_query else "")
+    ep = urlparse(s.endpoint)
+    # 远程沙箱的地址带路径前缀（http://代理/sbx/<id>），本机 Docker / 子进程没有
+    target = ep.path.rstrip("/") + path + (f"?{req.raw_query}" if req.raw_query else "")
     is_events = path == "/api/events"
     headers = {k: req.headers[k] for k in FORWARD_REQUEST_HEADERS if req.headers.get(k)}
     headers.update({"Host": "localhost", "x-nanocode-token": s.web_token})
-    ep = urlparse(s.endpoint)
     conn = http.client.HTTPConnection(ep.hostname, ep.port, timeout=120 if is_events else 60)
     try:
         conn.request(req.method, target, body=req.body if req.method == "POST" else None, headers=headers)

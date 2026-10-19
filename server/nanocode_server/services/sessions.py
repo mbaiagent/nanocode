@@ -51,11 +51,26 @@ class SessionManager:
         self.log = log
         self.gateway_signer = Signer(cfg.secret_key, "gateway")
         # 沙箱访问网关的地址：明确配置了就用配置的（网关是单独部署的服务）；否则问启动器（Docker 要用网桥地址）
-        self.gateway_url = (cfg.gateway_url or launcher.gateway_url_for_sandbox(cfg.gateway_port)
-                            or cfg.sandbox_gateway_url).rstrip("/")
+        # 远程沙箱（NCS_LAUNCHER=remote）例外：沙箱在另一台机器上，只能经沙箱代理的中继访问网关，
+        # 中继地址以启动器给的为准
+        if getattr(launcher, "remote", False):
+            self.gateway_url = launcher.gateway_url_for_sandbox(cfg.gateway_port).rstrip("/")
+        else:
+            self.gateway_url = (cfg.gateway_url or launcher.gateway_url_for_sandbox(cfg.gateway_port)
+                                or cfg.sandbox_gateway_url).rstrip("/")
         self._admission = threading.Lock()          # 容量检查和占位必须是原子的
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
+
+    @property
+    def control_gateway_url(self) -> str:
+        """控制面自己访问网关的地址（测试 Key 用）。远程沙箱时沙箱用的中继地址在沙箱主机的网桥上，
+        控制面到不了，要直连网关。"""
+        if self.cfg.gateway_url:
+            return self.cfg.gateway_url.rstrip("/")
+        if getattr(self.launcher, "remote", False):
+            return self.cfg.sandbox_gateway_url
+        return self.gateway_url
 
     def _lock(self, sid: str) -> threading.Lock:
         # RLock 而不是 Lock：switch_model 要持锁走完「查 busy → stop → 改 DB → 重启」

@@ -7,6 +7,7 @@ from .base import SANDBOX_PORT, Launcher, LaunchError, SandboxSpec, wait_ready
 from .docker import DockerClient, DockerLauncher
 from .kubernetes import KubeClient, KubernetesLauncher, in_cluster
 from .local import LocalLauncher
+from .remote import RemoteLauncher
 
 
 def make_launcher(cfg: Config, log=print) -> Launcher:
@@ -36,13 +37,16 @@ def make_launcher(cfg: Config, log=print) -> Launcher:
     if choice == "docker":
         return DockerLauncher(cfg.data_dir, cfg.sandbox_image, cfg.docker_network, cfg.docker_runtime,
                               cfg.sandbox_cpu, cfg.sandbox_memory, max_lifetime=cfg.token_ttl,
-                              bridge_name=cfg.docker_bridge, subnet=cfg.docker_subnet)
+                              bridge_name=cfg.docker_bridge, subnet=cfg.docker_subnet,
+                              tmpfs=cfg.sandbox_tmpfs, pids_limit=cfg.sandbox_pids)
     if choice == "k8s":
         return KubernetesLauncher(KubeClient.in_cluster(cfg.k8s_api), cfg.k8s_namespace, cfg.sandbox_image,
                                   cfg.k8s_runtime_class, cfg.k8s_storage_class, cfg.k8s_workspace_size,
                                   cfg.sandbox_cpu, cfg.sandbox_memory, cfg.token_ttl)
-    raise ValueError(f"未知的沙箱启动器：{choice}（auto / local / docker / k8s）")
+    if choice == "remote":
+        return RemoteLauncher(cfg.remote_agent_url, cfg.remote_agent_secret, cfg.remote_gateway_url)
+    raise ValueError(f"未知的沙箱启动器：{choice}（auto / local / docker / k8s / remote）")
 
 
 __all__ = ["make_launcher", "Launcher", "LaunchError", "SandboxSpec", "wait_ready", "SANDBOX_PORT",
-           "LocalLauncher", "DockerLauncher", "KubernetesLauncher", "DockerClient", "KubeClient"]
+           "LocalLauncher", "DockerLauncher", "KubernetesLauncher", "RemoteLauncher", "DockerClient", "KubeClient"]

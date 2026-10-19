@@ -72,8 +72,9 @@ class Platform:
             if self.sessions and self.cfg.gateway_port == 0 and not self.cfg.gateway_url:   # 测试用随机端口：沙箱要知道真实端口
                 port = self.gateway_server.server_address[1]
                 self.cfg.gateway_port = port
-                self.sessions.gateway_url = (self.launcher.gateway_url_for_sandbox(port)
-                                             or f"http://{self.cfg.gateway_host}:{port}")
+                if not getattr(self.launcher, "remote", False):
+                    self.sessions.gateway_url = (self.launcher.gateway_url_for_sandbox(port)
+                                                 or f"http://{self.cfg.gateway_host}:{port}")
         if self.control:
             self.sessions.reconcile()
             self.control_server = self._serve(make_server(self.control, self.cfg.host, self.cfg.port,
