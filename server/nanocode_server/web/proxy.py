@@ -44,6 +44,8 @@ def forward(s: Session, req: Request, path: str) -> Response:
             body = resp.read()
         finally:
             conn.close()
+        # 只回传内容类型和缓存策略。CSP / X-Frame-Options 故意不用沙箱给的（沙箱不可信），
+        # 由控制面统一加在所有 /s/ 响应上（control.py 的 SANDBOX_PANEL_HEADERS，#113）
         extra = [("cache-control", resp.getheader("cache-control"))] if resp.getheader("cache-control") else []
         return Response(resp.status, body, [("content-type", ctype), *extra])
 

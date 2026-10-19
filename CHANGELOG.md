@@ -12,6 +12,7 @@
 - **安全 沙箱宿主机隔离**（[#124](https://github.com/mbaiagent/nanocode/pull/124)，Fixes [#123](https://github.com/mbaiagent/nanocode/issues/123)）：沙箱网桥名 / 网段固定（`NCS_DOCKER_BRIDGE`、`NCS_DOCKER_SUBNET`），新增 `deploy/firewall/` 的 firewalld / nftables 脚本和 `check-sandbox-isolation.sh`，沙箱只能连宿主机的网关端口。
 - **新增 远程沙箱**（[#126](https://github.com/mbaiagent/nanocode/pull/126)）：`NCS_LAUNCHER=remote`，沙箱跑在另一台机器上，经 WireGuard 等内网隧道连接；新增 `python -m nanocode_server sandbox-agent`（只听内网地址、共享密钥认证、不暴露 Docker API）和网关中继（全局 / 每沙箱连接上限、空闲超时，`NCS_AGENT_RELAY_*`）；新增 `deploy/sandbox-host/`。
 - **修复 老版本 Docker 网络没有 Gateway 字段**（[#130](https://github.com/mbaiagent/nanocode/pull/130)）：建网络时显式写网关，已有网络按网段第一个地址兜底；Docker 26 上沙箱代理不再反复重启。
+- **安全 平台页面加 CSP / 防点击劫持**（Fixes #113）：控制面页面默认带 CSP、`frame-ancestors 'none'`、`X-Frame-Options: DENY`；`/s/<id>/` 转发的沙箱面板由平台统一加 CSP（`frame-ancestors 'self'`）和 `X-Frame-Options: SAMEORIGIN`，不再依赖沙箱自己发的头。
 - **调参 小机器资源**（#119）：`NCS_SANDBOX_TMPFS`、`NCS_SANDBOX_PIDS`、PG / Redis / 容器内存上限；大小同时认 `384Mi` 和 `384m` 写法。
 
 ### 单机 nanocode / Web 面板

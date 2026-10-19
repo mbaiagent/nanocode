@@ -56,6 +56,14 @@ PUBLIC_PATHS = ("/healthz", "/login", "/api/login", "/api/auth/info", "/auth/git
 LOGIN_PATHS = ("/api/login", "/auth/github", "/auth/github/callback")
 STATIC_FILE = r"[a-z0-9][a-z0-9._-]*"
 
+# /s/<id>/ 转发的沙箱面板用的安全头（#113）。沙箱是不可信的（Agent 能在里面跑任意代码、
+# 甚至换掉面板服务），所以不转发沙箱自己发的 CSP / X-Frame-Options，由平台统一给一套：
+# 和 nanocode 面板自带的 CSP 相同（nanocode/web/server.py），只是 frame-ancestors 放宽到
+# 'self'，因为平台主界面要用 iframe 嵌它；其他站点仍然不能嵌。
+SANDBOX_PANEL_CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+                     "connect-src 'self'; object-src 'none'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'")
+SANDBOX_PANEL_HEADERS = [("content-security-policy", SANDBOX_PANEL_CSP), ("x-frame-options", "SAMEORIGIN")]
+
 
 class ControlApp(App):
     def __init__(self, cfg: Config, store: Store, auth: Authenticator, catalog: ModelCatalog,
@@ -75,6 +83,13 @@ class ControlApp(App):
         self.rate_backend = rate_backend
         self.static = static_dir()
         self._routes_setup()
+
+    def __call__(self, req: Request) -> Response:
+        resp = super().__call__(req)
+        if req.path.startswith("/s/"):           # 包括错误响应：iframe 里也要能显示出来
+            drop = {k for k, _ in SANDBOX_PANEL_HEADERS}
+            resp.headers = [(k, v) for k, v in resp.headers if k.lower() not in drop] + SANDBOX_PANEL_HEADERS
+        return resp
 
     # ------------------------------------------------------------------ 每个请求都要过的检查
 
