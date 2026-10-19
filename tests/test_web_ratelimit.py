@@ -206,7 +206,7 @@ class WebRateLimitTest(unittest.TestCase):
 
     def test_all_zero_disables(self):
         self.start(NANOCODE_WEB_RATE_BURST="0", NANOCODE_WEB_RATE_PER_MIN="0",
-                   NANOCODE_WEB_MAX_QUEUE="0", NANOCODE_WEB_DAILY_RUNS="0")
+                   NANOCODE_WEB_MAX_QUEUE="0", NANOCODE_WEB_MAX_QUEUE_TOTAL="0", NANOCODE_WEB_DAILY_RUNS="0")
         statuses = [self.post("/api/chat", {"message": f"m{i}"})[0] for i in range(12)]
         self.assertEqual(set(statuses), {200})
 

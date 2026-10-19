@@ -1,11 +1,14 @@
 """Web 面板的限流与预算（issue #7）。
 
-nanocode --web 本来就是单进程单会话，所以全部放内存、加锁即可，重启清零。
+nanocode --web 是单进程，所以全部放内存、加锁即可，重启清零。
 每一项都能用环境变量设成 0 关掉，回滚不用改代码：
 
     NANOCODE_WEB_RATE_PER_MIN   每个客户端每分钟补充的令牌数（默认 10）
     NANOCODE_WEB_RATE_BURST     令牌桶容量，允许的瞬时连发（默认 5）
-    NANOCODE_WEB_MAX_QUEUE      Agent 忙时最多排队几条（默认 3）
+    NANOCODE_WEB_MAX_QUEUE      每个会话忙时最多排队几条（默认 3）
+    NANOCODE_WEB_MAX_QUEUE_TOTAL  所有会话加起来最多排队几条（默认 10）
+    NANOCODE_WEB_MAX_RUNS       同时运行的会话数上限（默认 3；满了排队等空位，见 runtime.RunSlots）
+    NANOCODE_WEB_MAX_RUNS_PER_CLIENT  每个客户端同时运行的会话数上限（默认 2）
     NANOCODE_WEB_DAILY_RUNS     每个自然日最多启动几轮 Agent，含出队执行的（默认 200）
     NANOCODE_TRUST_PROXY        设为 1 时用 X-Forwarded-For 最左侧地址区分客户端（只在挂了反代时开）
 
@@ -107,6 +110,9 @@ class Limits:
         self.burst = env_int("NANOCODE_WEB_RATE_BURST", 5)
         self.bucket = TokenBucket(self.rate_per_min, self.burst)
         self.max_queue = env_int("NANOCODE_WEB_MAX_QUEUE", 3)
+        self.max_queue_total = env_int("NANOCODE_WEB_MAX_QUEUE_TOTAL", 10)
+        self.max_runs = env_int("NANOCODE_WEB_MAX_RUNS", 3)
+        self.max_runs_per_client = env_int("NANOCODE_WEB_MAX_RUNS_PER_CLIENT", 2)
         self.daily_runs = DailyCounter(env_int("NANOCODE_WEB_DAILY_RUNS", 200))
         self.trust_proxy = os.environ.get("NANOCODE_TRUST_PROXY", "").strip() == "1"
 
@@ -114,6 +120,7 @@ class Limits:
         def show(v):
             return str(v) if v else "不限"
         rate = f"{self.rate_per_min}/分钟（连发 {self.burst}）" if self.rate_per_min and self.burst else "不限"
-        return (f"限流：每个客户端 {rate} · 排队上限 {show(self.max_queue)} · "
+        return (f"限流：每个客户端 {rate} · 排队上限 每会话 {show(self.max_queue)} / 总计 {show(self.max_queue_total)} · "
+                f"同时运行 {show(self.max_runs)} 个会话（每客户端 {show(self.max_runs_per_client)}） · "
                 f"每日 Agent 轮数 {show(self.daily_runs.limit)}"
                 + (" · 按 X-Forwarded-For 区分客户端" if self.trust_proxy else ""))

@@ -123,10 +123,10 @@ class AuditWriter:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         self._f = os.fdopen(fd, "a", encoding="utf-8")
 
-    def __call__(self, event: dict) -> None:
+    def __call__(self, event: dict, session: str | None = None) -> None:
         if event["type"] not in self.TYPES or self._f.closed:
             return
-        record = {"session": self.session(), **{k: self._short(v) for k, v in event.items()}}
+        record = {"session": self.session() if session is None else session, **{k: self._short(v) for k, v in event.items()}}
         line = json.dumps(record, ensure_ascii=False, default=str)
         with self._lock:
             self._f.write(line + "\n")

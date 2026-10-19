@@ -222,6 +222,7 @@ class WebUxTest(unittest.TestCase):
     # --- 会话列表 ---
 
     def test_sessions_api_lists_and_switches(self):
+        """旧客户端（不带 X-Nanocode-Session）：new / load 仍然切换"默认会话"。"""
         self.session.permissions.mode = "bypass"
         self.assertTrue(self.post("/api/chat", {"message": "hello"})["ok"])
         self.assertTrue(wait_for(lambda: not self.app.busy, timeout=10))
@@ -235,20 +236,24 @@ class WebUxTest(unittest.TestCase):
         # 开新会话再切回去
         r = self.post("/api/session", {"action": "new"})
         self.assertTrue(r["ok"])
-        new_id = self.session.session_id
+        new_id = r["session_id"]
         self.assertNotEqual(new_id, first_id)
-        self.assertEqual(self.session.agent.messages, [])
+        self.assertEqual(self.get("/api/state")["session_id"], new_id)
+        self.assertEqual(self.app.session.agent.messages, [])
 
         r = self.post("/api/session", {"action": "load", "id": first_id})
         self.assertTrue(r["ok"])
-        self.assertEqual(self.session.session_id, first_id)
-        self.assertTrue(len(self.session.agent.messages) > 0)
+        self.assertEqual(self.get("/api/state")["session_id"], first_id)
+        self.assertTrue(len(self.app.session.agent.messages) > 0)
 
-    def test_session_switch_rejected_while_busy(self):
+    def test_session_switch_allowed_while_busy(self):
+        """#106：切会话不再动正在跑的那个会话，所以忙时也能切；原会话照样算忙、继续跑。"""
         self.session.agent.busy = True
         try:
             r = self.post("/api/session", {"action": "new"})
-            self.assertFalse(r["ok"])
+            self.assertTrue(r["ok"])
+            self.assertNotEqual(r["session_id"], self.session.session_id)
+            self.assertTrue(self.session.agent.busy)
         finally:
             self.session.agent.busy = False
 
