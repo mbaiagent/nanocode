@@ -518,6 +518,9 @@ def make_handler(app: WebApp):
                 # 界面要的是"这一轮工作还没结束"，所以以本层标志为准。
                 info["busy"] = app.busy
                 return self._json(info)
+            if path == "/api/messages":
+                # 刷新页面后恢复聊天记录：直接返回完整消息列表，不依赖 SSE 事件重放（#86）
+                return self._json({"ok": True, "messages": s.agent.messages})
             if path == "/api/context":
                 return self._json({"system": s.agent.system_prompt(), "messages": s.agent.messages,
                                    "tools": s.registry.schemas(), "permissions": {
