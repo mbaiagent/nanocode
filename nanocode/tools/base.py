@@ -40,6 +40,20 @@ def norm_rel(path: str) -> str:
     return os.path.normcase(path).replace(os.sep, "/")
 
 
+def safe_relpath(path: str, start: str) -> str:
+    """os.path.relpath 的兜底版本：算不出相对路径时返回绝对路径，绝不抛异常。
+
+    Windows 上目标和 cwd 不在同一个盘（`D:` 上的文件 + `C:` 上的项目）时，relpath 抛
+    `ValueError: path is on mount 'D:'`。这个异常会从 review / subcheck / 权限检查一路
+    穿到主循环，直接打断整轮对话（#45）。相对路径只是给人和规则看的，算不出来就用
+    绝对路径——同一份清单里两种形式混着出现，也比崩掉好。
+    """
+    try:
+        return os.path.relpath(path, start)
+    except ValueError:
+        return os.path.abspath(path)
+
+
 def resolve_path(cwd: str, path: str) -> str:
     """把工具参数里的路径变成磁盘上真实的绝对路径。
 

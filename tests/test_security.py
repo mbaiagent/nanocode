@@ -10,7 +10,7 @@ import threading
 import unittest
 from unittest import mock
 
-from helpers import ScriptedProvider, Workspace, call, make_agent
+from helpers import ScriptedProvider, Workspace, call, make_agent, py
 
 from nanocode.context import build_system_prompt, discover_commands, discover_skills, load_memory
 from nanocode.messages import text_block
@@ -392,7 +392,7 @@ class HousekeepingTest(unittest.TestCase):
             agent, _, events = make_agent(ws, [], context_window=4000)
             agent.provider = SummaryAware([
                 [text_block("第一轮完成")],
-                [call("bash", command="python3 -c \"print('x' * 10000)\"")],
+                [call("bash", command=py("print('x' * 10000)"))],
                 [call("glob", pattern="*")], [call("glob", pattern="*")], [call("glob", pattern="*")],
                 [text_block("第二轮完成")],
             ])

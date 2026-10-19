@@ -14,12 +14,12 @@
 
 from __future__ import annotations
 
-import os
 import re
-import signal
 import subprocess
 import time
 from dataclasses import dataclass
+
+from .proc import kill_tree, popen_kwargs
 
 DEFAULT_RETRIES = 3
 DEFAULT_TIMEOUT = 300.0
@@ -66,17 +66,18 @@ class VerifyResult:
 
 
 def run(cfg: VerifyConfig, cwd: str) -> VerifyResult:
-    """在工作目录里跑检查命令。超时会连同它启动的子进程一起杀掉。"""
+    """在工作目录里跑检查命令。超时会连同它启动的子进程一起杀掉。
+
+    超时分支按平台走（proc.kill_tree）：原来这里直接 os.killpg —— Windows 上那是
+    AttributeError，会穿出 verify → 主循环，把一次普通的"检查超时"变成崩溃（#45）。
+    """
     started = time.time()
     p = subprocess.Popen(cfg.command, shell=True, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT, text=True, errors="replace", start_new_session=True)
+                         stderr=subprocess.STDOUT, encoding="utf-8", errors="replace", **popen_kwargs())
     try:
         out, _ = p.communicate(timeout=cfg.timeout)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(p.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            p.kill()
+        kill_tree(p)
         out, _ = p.communicate()
         return VerifyResult(False, None, (out or "") + f"\n[检查命令超过 {cfg.timeout:g} 秒仍未结束，已终止]",
                             time.time() - started, timed_out=True)

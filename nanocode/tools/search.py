@@ -12,7 +12,7 @@ import fnmatch
 import os
 import re
 
-from .base import Tool, ToolError, symlink_escapes
+from .base import Tool, ToolError, norm_rel, safe_relpath, symlink_escapes
 
 IGNORED_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache",
                 "dist", "build", ".idea", ".nanocode"}
@@ -85,11 +85,12 @@ class Glob(Tool):
                     full = os.path.join(root, name)
                     hits.append(full + ("/" if os.path.isdir(full) else ""))
         else:
-            hits = [p for p in walk_files(root) if _match(os.path.relpath(p, root), pattern)]
+            hits = [p for p in walk_files(root) if _match(safe_relpath(p, root), pattern)]
         hits.sort(key=lambda p: os.path.getmtime(p.rstrip("/")), reverse=True)
         if not hits:
             return "没有匹配的文件"
-        shown = [os.path.relpath(p, ctx.cwd) + ("/" if p.endswith("/") else "") for p in hits[:200]]
+        # 统一走 norm_rel：Windows 上 relpath 给的是反斜杠，跨盘时还会直接抛 ValueError（#45）
+        shown = [norm_rel(safe_relpath(p, ctx.cwd)) + ("/" if p.endswith("/") else "") for p in hits[:200]]
         more = f"\n... 还有 {len(hits) - 200} 个结果" if len(hits) > 200 else ""
         return "\n".join(shown) + more
 
@@ -122,19 +123,33 @@ class Grep(Tool):
         root = ctx.resolve(input.get("path") or ".")
         files = [root] if os.path.isfile(root) else walk_files(root)
         name_glob = input.get("glob")
-        out, total = [], 0
+        out, total, skipped = [], 0, []
         for path in files:
             if name_glob and not fnmatch.fnmatch(os.path.basename(path), name_glob):
                 continue
             try:
-                with open(path, encoding="utf-8") as f:
-                    for no, line in enumerate(f, 1):
-                        if rx.search(line):
-                            total += 1
-                            if len(out) < 300:
-                                out.append(f"{os.path.relpath(path, ctx.cwd)}:{no}: {line.rstrip()[:300]}")
-            except (UnicodeDecodeError, OSError):
-                continue  # 跳过二进制和无权限文件
+                with open(path, "rb") as f:
+                    raw = f.read()
+            except OSError:
+                continue                                  # 没权限 / 读不了：跳过
+            if b"\x00" in raw[:8000]:
+                continue                                  # 二进制
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                # 原来是静默跳过：模型以为"项目里根本没有这个字符串"，其实是 grep 没看那个
+                # GBK 文件（#45）。明确列出来，让它知道搜索不完整。
+                skipped.append(norm_rel(safe_relpath(path, ctx.cwd)))
+                continue
+            for no, line in enumerate(text.splitlines(), 1):
+                if rx.search(line):
+                    total += 1
+                    if len(out) < 300:
+                        out.append(f"{norm_rel(safe_relpath(path, ctx.cwd))}:{no}: {line.rstrip()[:300]}")
+        note = ""
+        if skipped:
+            names = "、".join(skipped[:5]) + ("等" if len(skipped) > 5 else "")
+            note = f"\n[另有 {len(skipped)} 个非 UTF-8 文件没被搜索：{names}。需要的话先转成 UTF-8。]"
         if not out:
-            return "没有匹配"
-        return "\n".join(out) + (f"\n... 共 {total} 处匹配，只显示前 300 处" if total > 300 else "")
+            return "没有匹配" + note
+        return "\n".join(out) + (f"\n... 共 {total} 处匹配，只显示前 300 处" if total > 300 else "") + note

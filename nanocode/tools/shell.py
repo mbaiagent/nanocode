@@ -17,6 +17,7 @@ import threading
 import time
 
 from .base import Tool, ToolError, truncate
+from ..proc import find_bash, kill_tree, popen_kwargs
 
 _MARK = "__NANOCODE_PWD__"
 
@@ -41,10 +42,17 @@ class Bash(Tool):
     def run(self, input, ctx):
         cwd = ctx.state.get("shell_cwd") or ctx.cwd
         timeout = min(max(1, input.get("timeout", 120)), 600)
+        bash = find_bash()
+        if bash is None:
+            # Windows 上 bash 可能只有 System32 下的 WSL stub：跑在 WSL 视图里、pwd 语义不对、
+            # 输出还是 UTF-16LE 的乱码。与其给出一堆假结果，不如直接说清楚（#45）。
+            raise ToolError("没有找到可用的 bash。Windows 请安装 Git for Windows（自带 Git Bash）；"
+                            "系统自带的 C:\\Windows\\System32\\bash.exe 是 WSL 启动器，它的工作目录和输出编码"
+                            "与 Windows 不一致，这里不使用。")
         script = f"{input['command']}\n__nc=$?\necho; echo {_MARK}; pwd; exit $__nc"
-        proc = subprocess.Popen(["bash", "-c", script], cwd=cwd, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True,
-                                errors="replace", start_new_session=True)
+        proc = subprocess.Popen([bash, "-c", script], cwd=cwd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                encoding="utf-8", errors="replace", **popen_kwargs())
         # 必须边运行边读输出：如果等进程结束再读，输出超过管道缓冲区（约 64KB）时进程会卡死
         chunks: list[str] = []
         reader = threading.Thread(target=lambda: chunks.append(proc.stdout.read()), daemon=True)
@@ -53,10 +61,10 @@ class Bash(Tool):
         try:
             while proc.poll() is None:
                 if ctx.cancel.is_set():
-                    _kill(proc)
+                    kill_tree(proc)
                     raise ToolError("命令被用户中断")
                 if time.time() > deadline:
-                    _kill(proc)
+                    kill_tree(proc)
                     raise ToolError(f"命令超时（{timeout} 秒）被终止")
                 time.sleep(0.05)
             reader.join(timeout=5)
@@ -78,9 +86,3 @@ class Bash(Tool):
             return f"{out}\n\n[退出码 {proc.returncode}]"
         return out
 
-
-def _kill(proc: subprocess.Popen) -> None:
-    try:
-        os.killpg(proc.pid, 9)
-    except (ProcessLookupError, PermissionError, AttributeError):
-        proc.kill()

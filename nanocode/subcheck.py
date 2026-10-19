@@ -26,7 +26,7 @@ import hashlib
 import os
 from dataclasses import dataclass, field
 
-from .tools.base import norm_rel
+from .tools.base import norm_rel, safe_relpath
 
 SKIP_DIRS = {".git", ".nanocode", "__pycache__", "node_modules", ".venv", "venv", ".mypy_cache", ".pytest_cache",
              ".ruff_cache", ".tox"}
@@ -87,7 +87,7 @@ def snapshot(root: str, prev: dict | None = None) -> dict[str, tuple] | None:
                 st = os.lstat(path)
             except OSError:
                 continue
-            rel = os.path.relpath(path, root).replace(os.sep, "/")
+            rel = norm_rel(safe_relpath(path, root))
             old = (prev or {}).get(rel)
             if old and old[:2] == (st.st_size, st.st_mtime_ns):
                 snap[rel] = old
