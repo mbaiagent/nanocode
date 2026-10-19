@@ -47,6 +47,13 @@ HTML_TYPES = {"text/html", "application/xhtml+xml"}
 # ---------------------------------------------------------------- 地址检查
 
 def _resolve(host: str) -> list[str]:
+    # 数字形式的 IPv4（2130706433、0x7f.0.0.1、0177.0.0.1、127.1）先就地解析：glibc 的
+    # getaddrinfo 认这些写法，macOS 的不认、会当成域名去查 DNS —— 白白发出一次 DNS 查询、
+    # 等到超时，最后报"无法解析"而不是"本机地址"（#92）。inet_aton 在各平台上都认这些写法。
+    try:
+        return [socket.inet_ntoa(socket.inet_aton(host))]
+    except OSError:
+        pass
     try:
         infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     except socket.gaierror as e:

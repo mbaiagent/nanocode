@@ -191,7 +191,17 @@ class GuardTest(Base):
 
     def test_alternative_spellings_of_loopback_are_refused(self):
         for url in ["http://2130706433/", "http://0x7f.0.0.1/", "http://0177.0.0.1/", "http://127.1/", "http://[::ffff:127.0.0.1]/"]:
-            self.blocked(url)
+            # 要因为"是本机地址"被拒，而不是碰巧 DNS 查不到（macOS 的 getaddrinfo 不认这些写法，#92）
+            self.assertIn("内网", self.blocked(url))
+
+    def test_numeric_ipv4_spellings_do_not_hit_dns(self):
+        from unittest import mock
+
+        from nanocode.tools.web import _resolve
+        with mock.patch("socket.getaddrinfo", side_effect=AssertionError("不该查 DNS")):
+            for host in ["2130706433", "0x7f.0.0.1", "0177.0.0.1", "127.1", "10.0.0.5"]:
+                ip = "10.0.0.5" if host == "10.0.0.5" else "127.0.0.1"
+                self.assertEqual(_resolve(host), [ip], host)
 
     def test_only_http_and_https(self):
         for url in ["file:///etc/passwd", "ftp://example.com/x", "javascript:alert(1)", "gopher://example.com/", "//example.com/x", "example.com"]:
