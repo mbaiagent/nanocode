@@ -4,6 +4,9 @@
 
 ![会话界面](docs/session.png)
 
+> 只想在自己电脑上一个人用？不需要这个包：直接 `nanocode --web`（本地单机模式，纯标准库，不需要数据库、Redis、Docker 或登录），见[主 README](../README.md#本地单机模式-vs-平台部署)。
+> `nanocode-server` 不带参数（或 `all`）是平台一体启动：控制面 + 模型网关在一个进程里，仍然要配 `NCS_AUTH`。可选驱动：`pip install "./server[postgres]"` / `"./server[redis]"` / `"./server[all]"`。
+
 ## 一分钟跑起来
 
 ```bash

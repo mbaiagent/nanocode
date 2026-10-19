@@ -10,6 +10,13 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = ["nanocode"]
 
+# 可选驱动：配了 NCS_DATABASE_URL / NCS_REDIS_URL 才需要；不装就用内置的 SQLite / 进程内存。
+# 本地单机模式（nanocode 本体）一个都不需要。
+[project.optional-dependencies]
+postgres = ["psycopg[binary]"]
+redis = ["redis"]
+all = ["psycopg[binary]", "redis"]
+
 [project.scripts]
 nanocode-server = "nanocode_server.__main__:main"
 

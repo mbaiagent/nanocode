@@ -152,6 +152,13 @@ python3 examples/minimal_agent.py --base-url https://api.deepseek.com/v1 \
 
 Read it alongside [Chapter 01](docs/01-agent-loop.md): understand this file first, then see what engineering `nanocode/agent.py` adds on top.
 
+### Local standalone mode vs. platform deployment
+
+These are two separate entry points that do not depend on each other:
+
+- **Local standalone** — `nanocode` / `nanocode --web`: for one person on their own computer (macOS / Windows / Linux). Pure standard library, Python ≥ 3.10 only; no database, Redis, Docker, remote sandbox or login. Data lives under `~/.nanocode/`. It ignores all `NCS_*` platform settings, and `tests/test_local_mode.py` checks in CI that it starts without importing platform code, connecting to a database or calling docker.
+- **Platform (multi-user)** — `nanocode-server` (see [server/README.md](server/README.md)): login, one sandbox per session, model gateway; optional PostgreSQL / Redis (`pip install "./server[postgres,redis]"`), Docker / K8s / remote sandboxes, GitHub OAuth.
+
 ## Connect a real model
 
 | Vendor | Command | API key env var |
