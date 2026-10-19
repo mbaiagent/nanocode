@@ -74,7 +74,7 @@ class Glob(Tool):
         return input.get("path", ".")
 
     def run(self, input, ctx):
-        root = ctx.resolve(input.get("path") or ".")
+        root = ctx.resolve_checked(input.get("path") or ".")
         if not os.path.isdir(root):
             raise ToolError(f"目录不存在：{root}")
         pattern = input["pattern"]
@@ -120,7 +120,7 @@ class Grep(Tool):
             rx = re.compile(input["pattern"], re.IGNORECASE if input.get("ignore_case") else 0)
         except re.error as e:
             raise ToolError(f"正则表达式错误：{e}") from None
-        root = ctx.resolve(input.get("path") or ".")
+        root = ctx.resolve_checked(input.get("path") or ".")
         files = [root] if os.path.isfile(root) else walk_files(root)
         name_glob = input.get("glob")
         out, total, skipped = [], 0, []
