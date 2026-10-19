@@ -3,9 +3,11 @@
 import http.client
 import json
 import os
+import socket
 import threading
 import time
 import unittest
+from unittest import mock
 
 from helpers import Workspace
 
@@ -44,6 +46,15 @@ class WebUxTest(unittest.TestCase):
     def headers(self):
         return {"Host": f"127.0.0.1:{self.port}", "x-nanocode-token": self.app.token,
                 "content-type": "application/json"}
+
+    def test_server_bind_does_not_reverse_resolve_loopback(self):
+        # A blocked reverse lookup can leave a sandbox process alive before its socket listens (#92).
+        with mock.patch.object(socket, "getfqdn", side_effect=AssertionError("unexpected reverse lookup")):
+            server, _ = make_server(self.session, "127.0.0.1", 0)
+        try:
+            self.assertEqual(server.server_port, server.server_address[1])
+        finally:
+            server.server_close()
 
     def api(self, method, path, body=None):
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)

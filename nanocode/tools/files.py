@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 
-from .base import Tool, ToolContext, ToolError
+from .base import Tool, ToolContext, ToolError, open_nofollow
 
 # 猜不出就照这个顺序试，只为在报错里告诉模型"大概是哪种"，不是为了偷偷换种编码读
 _GUESSES = ("gb18030", "big5", "shift_jis", "cp1252")
@@ -72,12 +72,12 @@ class ReadFile(Tool):
         return input.get("path", "")
 
     def run(self, input, ctx):
-        path = ctx.resolve(input["path"])
+        path = ctx.resolve_checked(input["path"])
         if not os.path.exists(path):
             raise ToolError(f"文件不存在：{path}")
         if os.path.isdir(path):
             raise ToolError(f"{path} 是目录，请用 glob 查看目录内容")
-        with open(path, "rb") as f:
+        with open_nofollow(path, "rb") as f:
             raw = f.read()
         if b"\x00" in raw[:8000]:
             raise ToolError(f"{path} 看起来是二进制文件，无法以文本读取")
@@ -112,14 +112,14 @@ class WriteFile(Tool):
         return input.get("path", "")
 
     def run(self, input, ctx):
-        path = ctx.resolve(input["path"])
+        path = ctx.resolve_checked(input["path"])
         existed = os.path.exists(path)
         if existed:
             _check_fresh(ctx, path)
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         # newline=""：按原样写。默认的文本模式会把 \n 翻译成系统换行符，Windows 上
         # 内容里本来就有的 \r\n 会被写成 \r\r\n（#45）。
-        with open(path, "w", encoding="utf-8", newline="") as f:
+        with open_nofollow(path, "w", encoding="utf-8", newline="") as f:
             f.write(input["content"])
         _mark_read(ctx, path)
         n = input["content"].count("\n") + 1
@@ -147,14 +147,14 @@ class EditFile(Tool):
         return input.get("path", "")
 
     def run(self, input, ctx):
-        path = ctx.resolve(input["path"])
+        path = ctx.resolve_checked(input["path"])
         if not os.path.exists(path):
             raise ToolError(f"文件不存在：{path}（新建文件请用 write_file）")
         # 同样 newline=""：读入时保留文件原本的换行符，写回时才不会把 LF 文件整篇改成
         # CRLF（Windows 默认），产出一大片无意义的 diff（#45）。
         # 先解编码再查"有没有读过"：非 UTF-8 的文件根本读不进来，此时报"必须先 read_file"
         # 会把人引到一条走不通的路上（原来这里是 UnicodeDecodeError 直接穿出去）。
-        with open(path, "rb") as f:
+        with open_nofollow(path, "rb") as f:
             raw = f.read()
         if b"\x00" in raw[:8000]:
             raise ToolError(f"{path} 看起来是二进制文件，不能用 edit_file 修改")
@@ -176,7 +176,7 @@ class EditFile(Tool):
         if count > 1 and not input.get("replace_all"):
             raise ToolError(f"old_string 在文件中出现了 {count} 次。请带上更多上下文让它唯一，或设置 replace_all=true。")
         text = text.replace(old, new) if input.get("replace_all") else text.replace(old, new, 1)
-        with open(path, "w", encoding="utf-8", newline="") as f:
+        with open_nofollow(path, "w", encoding="utf-8", newline="") as f:
             f.write(text)
         _mark_read(ctx, path)
         line = text[: text.find(new)].count("\n") + 1 if new else 0

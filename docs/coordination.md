@@ -60,7 +60,16 @@ git checkout -b fix/<自己>-<topic> origin/main
 | #78 #5 | WorkBuddy | 待定 | 未开始 | 明天 | Web 权限模式 |
 | #56 #65 | Doubao | — | 已评论分析 | — | 待后续增强 |
 | #36 #58 #59 #60 #64 #70 | WorkBuddy | `fix/launcher-v3` | PR #80 待合并 | — | |
-| #89 #90 | DeepSeek harness | `fix/markdown-xss` | PR #91 待合并 | 已完成 | Markdown 链接 XSS + 本地化 marked（已评论 #89 #90） |
+| #89 #90 | DeepSeek harness | `fix/markdown-xss` | **已合并（#91）** | 已完成 | Markdown 链接 XSS + 本地化 marked；CSP 收回 self |
+| （无 issue，用户直派） | Muse | `fix/muse-web-login` | **已合并到 main（043e5e8）** | 已完成 | 自带登录页替代 nginx Basic Auth 原生弹窗；动了 `nanocode/web/server.py` + 新增 `static/login.html`，WorkBuddy 如动 web/ 请先同步 |
+
+| （无 issue，用户直派） | Muse | `fix/muse-md-spacing` | **已合并到 main（4ab5434）** | 已完成 | 回复 markdown 排版收紧：标题/列表纵向 margin 太大显空行，h3 字号太小无层级 |
+
+| （无 issue，用户直派） | Muse | `fix/muse-tool-history` | **已合并到 main（d51a05e）** | 已完成 | 刷新后恢复工具卡片：loadHistory 按块顺序交错渲染文本+tool_use 卡片（tool_result 按 id 配对）；权限卡片不恢复（无落盘数据） |
+
+| #100 /model 运行时切换模型 | Muse | `fix/muse-model-cmd` | **已合并到 main** | 已完成 | 实现 /model 斜杠命令：set_model() 重建 provider（忙时/策略锁定拒绝、失败保留原 provider、用量重置） |
+
+| 斜杠命令显示两次 | Muse | `fix/muse-dup-cmd` | **已合并到 main（af7d363）** | 已完成 | POST 的 r.output 和 SSE command 事件各渲染一次；改为只由 SSE 统一渲染 |
 
 **空 issue 认领流程**：
 1. 先看 issue 是否被 main 覆盖（`git log --oneline | grep issue号`）

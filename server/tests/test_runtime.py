@@ -9,7 +9,7 @@ import threading
 import time
 import unittest
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from unittest import mock
 
 import support  # noqa: F401
@@ -17,7 +17,7 @@ import support  # noqa: F401
 from nanocode_server.runtime import (DockerClient, DockerLauncher, KubeClient, KubernetesLauncher, LaunchError,
                                      LocalLauncher, SandboxSpec)
 from nanocode_server.runtime.docker import sandbox_ids
-from support import DOCKER, FakeServer, make_config
+from support import DOCKER, FakeServer, LocalHTTPServer, make_config
 
 POLICY = {"provider": "custom", "model": "m", "allowed_modes": ["default"], "mode": "default"}
 SPEC = SandboxSpec("0123456789abcdef", "alice", "w" * 32, "gateway-token", POLICY, resume=True)
@@ -121,7 +121,7 @@ class FakeKube:
                     return self.reply(200 if existed else 404, {})
                 self.reply(200, {})
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.server = LocalHTTPServer(("127.0.0.1", 0), H)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
 
@@ -441,7 +441,7 @@ class KubernetesLifecycleTest(unittest.TestCase):
             kube.close()
 
 
-class _FakeSandbox(ThreadingHTTPServer):
+class _FakeSandbox(LocalHTTPServer):
     """假沙箱：只认带对令牌的 /api/state，用来验证 pid 文件里的令牌校验。"""
 
     def __init__(self, token: str):

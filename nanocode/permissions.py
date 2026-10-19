@@ -46,6 +46,7 @@ class Decision:
     behavior: str  # allow | deny | ask
     reason: str = ""
     high_risk: bool = False   # 终审模式下识别出的高风险操作：不能被 allow 规则放开，也不能"总是允许"
+    path: str = ""            # 路径类工具：做判定时解析出的真实路径。执行时要用它复核，见 tools/base.py（#42）
 
 
 @dataclass
@@ -74,12 +75,18 @@ class PermissionManager:
 
     def check(self, tool, input: dict) -> Decision:
         target = tool.permission_target(input) or ""
+        # 路径只解析这一次：判定、提示、执行前的复核都用同一个结果（#42）
+        full = resolve_path(self.cwd, target or ".") if getattr(tool, "path_target", False) else ""
+        decision = self._decide(tool, target, full)
+        decision.path = full
+        return decision
+
+    def _decide(self, tool, target: str, full: str) -> Decision:
         inside = True
         allow_forms = deny_forms = [target]
         if getattr(tool, "path_target", False):
             # 路径类工具：用真实路径判断，规则也匹配规范化后的路径，
             # 防止 `~/x`、软链接、`src/../../etc/x` 这类写法绕过检查
-            full = resolve_path(self.cwd, target or ".")
             inside = is_inside(self.cwd, full)
             norm = norm_rel(safe_relpath(full, os.path.realpath(self.cwd))) if inside else norm_rel(full)
             allow_forms = [norm]                 # allow 只认规范化路径：宁可多问一次
@@ -140,8 +147,16 @@ class PermissionManager:
         return "修改配置、密钥或版本库内部" if risk.is_protected_path(rel) else ""
 
     def resolve(self, tool, input: dict) -> Decision:
-        """check + 必要时询问用户，返回最终的 allow / deny。"""
+        """check + 必要时询问用户，返回最终的 allow / deny。
+
+        返回的 Decision.path 是判定时的真实路径；用户批准的就是这个文件，执行时必须复核。
+        """
         decision = self.check(tool, input)
+        final = self._ask(tool, input, decision)
+        final.path = decision.path
+        return final
+
+    def _ask(self, tool, input: dict, decision: Decision) -> Decision:
         if decision.behavior != "ask":
             return decision
         if not self.ask_fn:
@@ -155,7 +170,7 @@ class PermissionManager:
             # 提示里要显示真实位置。软链接 `link/secret -> ~/.ssh/id_rsa` 也会触发询问，
             # 但只显示原始写法的话用户看到的是 `link/secret`，看着像项目内文件 ——
             # 等于让用户在不知情的情况下批准一次外部读写（#42）。
-            full = resolve_path(self.cwd, target)
+            full = decision.path
             inside = is_inside(self.cwd, full)
             rel = norm_rel(safe_relpath(full, os.path.realpath(self.cwd))) if inside else norm_rel(full)
             if rel != target and target.replace("\\", "/") != rel:
@@ -172,7 +187,7 @@ class PermissionManager:
             if tool.name == "bash":
                 rule = f"bash({target})"
             elif getattr(tool, "path_target", False) and target:
-                full = resolve_path(self.cwd, target)
+                full = decision.path
                 inside = is_inside(self.cwd, full)
                 norm = norm_rel(safe_relpath(full, os.path.realpath(self.cwd))) if inside else norm_rel(full)
                 rule = f"{tool.name}({norm})"

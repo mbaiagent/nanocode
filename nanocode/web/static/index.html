@@ -222,15 +222,15 @@ body.is-busy .status .dot { background: var(--warn); box-shadow: 0 0 0 3px var(-
 .msg.assistant.rendered { white-space: normal; }
 .msg.assistant p { margin: 0 0 .6em; }
 .msg.assistant p:last-child { margin-bottom: 0; }
-.msg.assistant ul, .msg.assistant ol { margin: .4em 0; padding-left: 1.4em; }
+.msg.assistant ul, .msg.assistant ol { margin: .3em 0; padding-left: 1.4em; }
 .msg.assistant li { margin: .15em 0; }
 .msg.assistant li > ul, .msg.assistant li > ol { margin: .15em 0; }
 .msg.assistant h1, .msg.assistant h2, .msg.assistant h3, .msg.assistant h4 {
-  margin: .8em 0 .4em; font-weight: 600; line-height: 1.4;
+  margin: .55em 0 .3em; font-weight: 600; line-height: 1.4;
 }
-.msg.assistant h1 { font-size: 1.2em; }
-.msg.assistant h2 { font-size: 1.1em; }
-.msg.assistant h3, .msg.assistant h4 { font-size: 1.02em; }
+.msg.assistant h1 { font-size: 1.25em; }
+.msg.assistant h2 { font-size: 1.15em; }
+.msg.assistant h3, .msg.assistant h4 { font-size: 1.08em; }
 .msg.assistant code {
   font-family: var(--font-mono); font-size: .88em;
   background: var(--surface-2, rgba(128,128,128,.12));
@@ -948,7 +948,7 @@ function onEvent(e) {
       if (a === "main") {
         for (const s of Object.values(steps)) s.done = true;
         setBusy(false);
-        add("note", `tokens 输入 ${e.usage.input_tokens} / 输出 ${e.usage.output_tokens}${e.usage.estimated ? "（估算）" : ""}`);
+        add("note", `tokens 输入 ${e.usage.input_tokens} / 输出 ${e.usage.output_tokens}${e.usage.reasoning_tokens ? `（思考 ${e.usage.reasoning_tokens}）` : ""}${e.usage.estimated ? "（估算）" : ""}`);
         refreshState(); refreshContext(); refreshSessions();
       }
       break;
@@ -1070,7 +1070,8 @@ $("#form").onsubmit = async (ev) => {
   }
   if (!r.ok) add("error", esc(r.error));
   else if (r.queued) add("note", `⏳ 已排队（第 ${r.position} 位），当前任务完成后自动执行`);
-  else if (r.output) add("note", esc(r.output));
+  // 斜杠命令的输出由 SSE 的 command 事件统一渲染（带命令回显），这里再画一次就重复了
+  else if (r.output && !text.startsWith("/")) add("note", esc(r.output));
 };
 const input = $("#input");
 function autosize() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 200) + "px"; }
@@ -1085,9 +1086,8 @@ $("#mode").onchange = async () => {
   if (!r.ok) {
     add("error", esc(r.error || "切换权限模式失败"));
     $("#mode").value = serverMode;        // 下拉框已经变了而服务端没变：拨回去
-  } else if (r.output) {
-    add("note", esc(r.output));           // 成功：说清楚什么时候生效
   }
+  // 成功不画 note：SSE 的 command 事件会统一渲染（带回显），画了就重复
 };
 
 // 会话列表：下拉切换历史会话，＋开新会话。切换后整页重载，SSE 重放历史事件恢复界面。
@@ -1164,6 +1164,29 @@ paintTheme();
 let es = null;
 let historySeq = 0;  // loadHistory 返回的最新事件 seq：<= 此值的事件只补右侧面板，不重复渲染聊天消息
 let historyLoaded = false;   // 历史只拉一次：断线重连时再拉一遍会把整段对话重复渲染（#86）
+// 刷新后从消息历史恢复工具卡片：tool_use 块在 assistant 消息里，tool_result 在后一条
+// user 消息里，按 tool_use_id 配对。卡片是只读的（当时长什么样、结果是什么），
+// 不带"复制输出"按钮 —— 直播时的卡片才有。权限确认卡片不恢复：它是一次性的交互，
+// 决定结果没落盘，从消息里还原会是猜的。
+function addHistoryToolCard(b, result) {
+  clearWelcome();
+  const d = document.createElement("details");
+  d.className = "tool msg";
+  const st = result ? (result.is_error ? "失败" : "完成") : "完成";
+  if (result && result.is_error) d.classList.add("err");
+  d.innerHTML = `<summary><span class="dot"></span><span class="name">${esc(b.name)}</span>` +
+    `<span class="arg">${esc(argSummary(b.name, b.input))}</span><span class="st">${st}</span></summary>` +
+    `<div class="tool-body"><pre>${esc(JSON.stringify(b.input ?? {}, null, 2))}</pre></div>`;
+  if (result && result.content) {
+    const pre = document.createElement("pre");
+    pre.className = "result";
+    pre.textContent = result.content;
+    d.querySelector(".tool-body").append(pre);
+  }
+  host("main").append(d);
+  scroll(false);
+  return d;
+}
 async function loadHistory() {
   // 刷新页面后恢复聊天记录：先拉完整消息列表，再连 SSE 接收新事件（#86）
   try {
@@ -1171,14 +1194,40 @@ async function loadHistory() {
     if (!r.ok) return;
     const data = await r.json();
     if (!data.messages) return;
+    // 先扫一遍：工具结果按 tool_use_id 记下来，供工具卡片用
+    const toolResults = {};
+    for (const m of data.messages) {
+      const blocks = Array.isArray(m.content) ? m.content : [];
+      for (const b of blocks) {
+        if (b.type === "tool_result" && b.tool_use_id) toolResults[b.tool_use_id] = b;
+      }
+    }
     for (const m of data.messages) {
       // user 的 content 是字符串（老会话）或内容块数组，assistant 一定是内容块数组
-      let text = "";
-      if (typeof m.content === "string") text = m.content;
-      else if (Array.isArray(m.content)) text = m.content.filter(b => b.type === "text").map(b => b.text).join("");
-      if (!text) continue;               // tool_use / tool_result 不单独渲染，历史只显示对话内容
-      const d = add(m.role === "user" ? "user" : "assistant", m.role === "user" ? esc(text) : renderMd(text), "main");
-      d.dataset.text = text;             // 实时事件再带着同一条消息过来时，用它能认出"已经画过了"
+      const blocks = typeof m.content === "string" ? [{ type: "text", text: m.content }]
+        : Array.isArray(m.content) ? m.content : [];
+      if (m.role === "user") {
+        // 纯工具结果消息不单独画气泡（结果已经挂进工具卡片里）；人说的话才画
+        const text = blocks.filter(b => b.type === "text").map(b => b.text).join("");
+        if (!text.trim()) continue;
+        const d = add("user", esc(text), "main");
+        d.dataset.text = text;           // 实时事件再带着同一条消息过来时，用它能认出"已经画过了"
+        continue;
+      }
+      // assistant：文本和工具卡片按块顺序交错渲染，还原当时看到的样子
+      let buf = "";
+      const flush = () => {
+        if (!buf.trim()) { buf = ""; return; }
+        const d = add("assistant", renderMd(buf), "main");
+        d.dataset.text = buf;
+        d.classList.add("rendered");
+        buf = "";
+      };
+      for (const b of blocks) {
+        if (b.type === "text") buf += b.text;
+        else if (b.type === "tool_use") { flush(); addHistoryToolCard(b, toolResults[b.id]); }
+      }
+      flush();
     }
     // 时间线：事件缓冲区是空的（进程重启过）时，服务端把 messages 折成步骤发过来兜底。
     // 事件流补发过来的真实事件信息更全，会按 agent+step 覆盖掉这些重建项。

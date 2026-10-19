@@ -9,6 +9,7 @@
 import http.client
 import json
 import os
+import socketserver
 import sys
 import tempfile
 import threading
@@ -28,6 +29,19 @@ SECRET = "s" * 48
 PG_URL = os.environ.get("NCS_TEST_DATABASE_URL", "")
 REDIS_URL = os.environ.get("NCS_TEST_REDIS_URL", "")
 DOCKER = os.environ.get("NCS_TEST_DOCKER") == "1"
+
+
+class LocalHTTPServer(ThreadingHTTPServer):
+    """测试用的本机 HTTP 服务器：绑定时不做反向 DNS。
+
+    标准库 HTTPServer.server_bind() 会调 socket.getfqdn() 反查绑定地址；GitHub 的 macOS
+    runner 上这一步能卡几十秒（#92，生产代码在 #97 已修）。测试服务器用不到 server_name。
+    """
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = self.server_address[0]
+        self.server_port = self.server_address[1]
 
 
 def make_config(**kw) -> Config:
@@ -77,7 +91,7 @@ class FakeServer:
             def do_DELETE(self):
                 self._handle("DELETE")
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.server = LocalHTTPServer(("127.0.0.1", 0), H)
         self.server.daemon_threads = True
         self.port = self.server.server_address[1]
         self.url = f"http://127.0.0.1:{self.port}"

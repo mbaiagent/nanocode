@@ -43,6 +43,24 @@ def tool_use_block(id: str, name: str, input: dict, extra_content: dict | None =
     return block
 
 
+def reasoning_block(text: str, source: str) -> Block:
+    """模型的思考过程（如 DeepSeek 思考模式的 reasoning_content，#99）。
+
+    和 extra_content 一样，Agent 不解读它，只随 assistant 消息保存：text_of、上下文压缩的摘要、
+    Web 时间线都只看 text / tool_use，自然忽略它。source 记下是哪个端点 + 模型产出的 ——
+    只有同一个端点、同一个模型的 Provider 会把它发回去（DeepSeek 带 tools 的请求要求回传所有历史轮次的
+    reasoning_content，否则 400）；换了厂商或协议时，别家不会收到一个不认识的字段。
+    """
+    return {"type": "reasoning", "text": text, "source": source}
+
+
+def reasoning_of(message: Message, source: str) -> str | None:
+    """这条消息里由 source 产出的思考内容；没有就返回 None。"""
+    parts = [b.get("text", "") for b in message.get("content", [])
+             if b.get("type") == "reasoning" and b.get("source") == source]
+    return "".join(parts) if parts else None
+
+
 def tool_result_block(tool_use_id: str, content: str, is_error: bool = False) -> Block:
     return {"type": "tool_result", "tool_use_id": tool_use_id, "content": content, "is_error": is_error}
 
@@ -122,19 +140,26 @@ class Usage:
     input_tokens: int = 0
     output_tokens: int = 0
     estimated: bool = False  # provider 没返回 usage 时用估算值
+    # 输出里用在思考上的部分（已包含在 output_tokens 里，也占 max_tokens 预算）。
+    # 只有返回 completion_tokens_details.reasoning_tokens 的厂商（如 DeepSeek 思考模式）才有，#102
+    reasoning_tokens: int = 0
 
     def add(self, other: "Usage") -> None:
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
+        self.reasoning_tokens += other.reasoning_tokens
         self.estimated = self.estimated or other.estimated
 
     def to_dict(self) -> dict:
-        return {"input_tokens": self.input_tokens, "output_tokens": self.output_tokens, "estimated": self.estimated}
+        d = {"input_tokens": self.input_tokens, "output_tokens": self.output_tokens, "estimated": self.estimated}
+        if self.reasoning_tokens:            # 不思考的厂商：和以前完全一样
+            d["reasoning_tokens"] = self.reasoning_tokens
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Usage":
         return cls(int(d.get("input_tokens", 0) or 0), int(d.get("output_tokens", 0) or 0),
-                   bool(d.get("estimated", False)))
+                   bool(d.get("estimated", False)), int(d.get("reasoning_tokens", 0) or 0))
 
     def merge(self, other: "Usage") -> None:
         """线程安全地并进另一个 Usage（子 Agent 在工作线程里累加时用，见 #48）。"""

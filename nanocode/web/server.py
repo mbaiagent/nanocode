@@ -5,7 +5,8 @@
 只是多了"透视"能力 —— 可以看到每一步发给模型的完整 messages、系统提示词、工具定义。
 
 接口：
-    GET  /                  聊天 + 调试面板
+    GET  /                  聊天 + 调试面板（登录启用时需先登录，否则 302 到 /login）
+    GET  /login             登录页（自带登录启用时；已登录则跳回 /）
     GET  /learn             交互式架构学习页
     GET  /api/state         会话概况
     GET  /api/context       完整上下文：system、messages、tools（就是下一次要发给模型的东西）
@@ -16,6 +17,8 @@
     POST /api/chat          {"message": "..."} 发送消息（也支持 /命令 和 # 记忆）
     POST /api/permission    {"id": "...", "decision": "yes|always|no"}
     POST /api/cancel        中断当前任务，并清空排队中的消息
+    POST /api/login         {"username": "...", "password": "..."} 登录（启用自带登录时）
+    POST /api/logout        退出登录（清会话 Cookie）
 
 /api/chat 有限流（issue #7，见 limits.py）：超限返回 429 + Retry-After 头，
     {"ok": false, "error": "...", "code": "rate_limited|queue_full|daily_budget", "retry_after": 秒}
@@ -25,6 +28,9 @@
 
 安全：所有请求校验 Host / Origin，/api/* 需要令牌（页面加载时注入，只认请求头），
 POST 只接受 JSON 且请求体不超过 1MB。
+自带登录（替代反向代理 Basic Auth 原生弹窗）：设环境变量 NANOCODE_HTPASSWD 指向
+htpasswd(apr1) 文件即启用，GET /login 出登录页，会话 Cookie 30 天滑动续期，
+HttpOnly + Secure + SameSite=Lax，登录接口按客户端限流防爆破。不设则保持旧行为。
 详见 Handler._guard 的说明。
 """
 
@@ -34,7 +40,10 @@ import hmac
 import json
 import os
 import queue
+import re
 import secrets
+import socketserver
+import subprocess
 import threading
 import time
 import uuid
@@ -55,6 +64,18 @@ MAX_TICKETS = 64                # 同时存在的未使用票据上限，防止�
 SSE_QUEUE_SIZE = 256            # 每个 SSE 客户端最多缓存的事件数；慢客户端满队列后断开重连
 SSE_WRITE_TIMEOUT = 30          # 写入阻塞超过此时间就断开慢客户端
 
+# ---- 自带登录页（替代反向代理 Basic Auth 的原生弹窗，手机上好操作）----
+# 启用条件：环境变量 NANOCODE_HTPASSWD 指向一个可读的 htpasswd 文件（apr1 格式）。
+# 不设（本地开发默认）则保持旧行为：无登录页，直接进应用。对外暴露时务必启用，
+# 否则任何能访问到端口的人都能拿到页面里的令牌、驱动 Agent 执行命令。
+SESSION_COOKIE = "nc_session"
+SESSION_TTL = 30 * 24 * 3600    # 会话有效期 30 天，每次请求滑动续期
+LOGIN_MAX_FAILS = 5             # 同一客户端 10 分钟内最多失败 5 次，之后 429
+LOGIN_FAIL_WINDOW = 600
+LOGIN_FAIL_MAX_KEYS = 10000     # 失败记录最多记多少个客户端，防伪造 key 撑爆内存
+MAX_PASSWORD_LEN = 1024         # 密码长度上限（字节），防超大输入拖慢 openssl
+_APR1_SALT_RE = re.compile(r"[./0-9A-Za-z]{1,8}")
+
 # Agent 忙时仍然可以执行的斜杠命令：只读查询，不会碰正在跑的那一轮对话。
 # 其余命令（/clear /compact /resume /mode、以及会转成提示词的自定义命令）会改掉
 # Agent 脚下的状态，必须等这一轮结束 —— 见 chat() 里对 #50 的注释。
@@ -65,6 +86,61 @@ READ_ONLY_COMMANDS = {"help", "?", "cost", "context", "tools", "todos", "mcp", "
 # 这些 Agent 脚下的状态。以前它和 /clear 一起被 429 拒掉，而前端又不显示这个错误，
 # 用户以为切换成功了（#78）。
 BUSY_ALLOWED = READ_ONLY_COMMANDS | {"mode"}
+
+
+def htpasswd_file() -> str | None:
+    """登录凭据文件路径；不存在或不可读则返回 None（此时登录功能关闭）。
+
+    文件格式沿用 htpasswd 的 apr1 行：`用户名:$apr1$盐$哈希`。部署时由 root
+    从 nginx 的 htpasswd 拷贝一份给 nanocode 用户（600 权限），密码不用变。
+    """
+    p = os.environ.get("NANOCODE_HTPASSWD", "")
+    if p and os.path.isfile(p) and os.access(p, os.R_OK):
+        return p
+    return None
+
+
+def verify_password(username: str, password: str) -> bool:
+    """对照 htpasswd(apr1) 校验用户名密码。
+
+    为什么不用 Python 算 apr1：标准库没有 MD5-crypt，直接调 openssl。
+    密码只经 stdin 传给 openssl，不出现在命令行（ps 看不到）；结果用
+    hmac.compare_digest 比对。用户名/密码任一对不上都返回 False，不区分，
+    防止枚举用户名。文件缺失、格式错误、openssl 不可用一律返回 False。
+    """
+    if not username or not password:
+        return False
+    pw = password.encode("utf-8")[:MAX_PASSWORD_LEN]
+    path = htpasswd_file()
+    if path is None:
+        return False
+    try:
+        with open(path, "rb") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith(b"#"):
+                    continue
+                user, sep, hashed = line.partition(b":")
+                if not sep:
+                    continue
+                if user.decode("utf-8", "ignore") != username:
+                    continue
+                parts = hashed.decode("ascii", "ignore").split("$")
+                # 形如 $apr1$盐$哈希；只认 apr1，别的不认
+                if len(parts) != 4 or parts[1] != "apr1":
+                    return False
+                salt = parts[2]
+                if not _APR1_SALT_RE.fullmatch(salt):
+                    return False
+                proc = subprocess.run(
+                    ["openssl", "passwd", "-apr1", "-salt", salt, "-stdin"],
+                    input=pw, capture_output=True, timeout=10)
+                if proc.returncode != 0:
+                    return False
+                return hmac.compare_digest(proc.stdout.strip(), hashed.strip())
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+    return False
 
 
 def normalize_host(value: str) -> str:
@@ -195,6 +271,12 @@ class WebApp:
         self._turn_active = False
         self.limits = Limits()          # 限流与每日预算（issue #7）
         session.permissions.ask_fn = self.ask
+        # ---- 自带登录的会话状态 ----
+        # 登录功能是否启用：凭据文件存在才启用，否则保持旧行为（无登录）。
+        self.login_enabled = htpasswd_file() is not None
+        self._sessions: dict[str, float] = {}   # 会话令牌 -> 过期时间戳
+        self._session_lock = threading.Lock()
+        self._login_fails: dict[str, list[float]] = {}  # client_key -> 失败时间戳
 
     @property
     def busy(self) -> bool:
@@ -226,6 +308,63 @@ class WebApp:
         with self._sse_lock:
             exp = self._tickets.pop(ticket, None)
         return exp is not None and exp >= time.time()
+
+    # ---- 登录会话（自带登录页启用时才用）----
+    def create_session(self) -> str:
+        """登录成功后签发会话令牌。每次登录都是新令牌，不存在会话固定问题。"""
+        token = secrets.token_urlsafe(32)
+        now = time.time()
+        with self._session_lock:
+            self._prune_sessions(now)
+            self._sessions[token] = now + SESSION_TTL
+        return token
+
+    def check_session(self, token: str) -> bool:
+        """校验会话 Cookie；有效则滑动续期。"""
+        if not token:
+            return False
+        now = time.time()
+        with self._session_lock:
+            exp = self._sessions.get(token)
+            if exp is None or exp < now:
+                self._sessions.pop(token, None)
+                return False
+            self._sessions[token] = now + SESSION_TTL
+            return True
+
+    def destroy_session(self, token: str) -> None:
+        with self._session_lock:
+            self._sessions.pop(token, None)
+
+    def _prune_sessions(self, now: float) -> None:
+        for t, exp in [i for i in self._sessions.items() if i[1] < now]:
+            del self._sessions[t]
+
+    def login_allowed(self, key: str) -> tuple[bool, int]:
+        """登录限流：同一客户端 10 分钟内失败 5 次就 429。返回 (是否允许, 需等待秒数)。"""
+        now = time.time()
+        with self._session_lock:
+            fails = [t for t in self._login_fails.get(key, []) if now - t < LOGIN_FAIL_WINDOW]
+            # 键太多时不给新 key 建空条目（它没有失败历史，本来也不会被限）
+            if fails or key in self._login_fails or len(self._login_fails) < LOGIN_FAIL_MAX_KEYS:
+                self._login_fails[key] = fails
+            if len(fails) >= LOGIN_MAX_FAILS:
+                return False, int(LOGIN_FAIL_WINDOW - (now - fails[0])) + 1
+            return True, 0
+
+    def login_failed(self, key: str) -> None:
+        now = time.time()
+        with self._session_lock:
+            if key not in self._login_fails and len(self._login_fails) >= LOGIN_FAIL_MAX_KEYS:
+                # 先清掉已过期的失败记录腾地方
+                for k in [k for k, v in self._login_fails.items()
+                          if not v or now - v[-1] >= LOGIN_FAIL_WINDOW]:
+                    del self._login_fails[k]
+            self._login_fails.setdefault(key, []).append(now)
+
+    def login_succeeded(self, key: str) -> None:
+        with self._session_lock:
+            self._login_fails.pop(key, None)
 
     def configure(self, host: str, port: int, public_hosts=(), public_origins=()) -> None:
         """绑定端口后调用：确定哪些 Host / Origin 是"自己人"。
@@ -465,6 +604,38 @@ def make_handler(app: WebApp):
                     return xff
             return self.client_address[0]
 
+        def _cookie_token(self) -> str:
+            """从 Cookie 头里取登录会话令牌。"""
+            cookie = self.headers.get("cookie") or ""
+            for part in cookie.split(";"):
+                name, sep, value = part.strip().partition("=")
+                if sep and name == SESSION_COOKIE:
+                    return value.strip().strip('"')
+            return ""
+
+        def _session_ok(self) -> bool:
+            return app.check_session(self._cookie_token())
+
+        def _redirect(self, location: str) -> None:
+            self.send_response(302)
+            self.send_header("location", location)
+            self.send_header("cache-control", "no-store")
+            self.send_header("content-length", "0")
+            self.end_headers()
+
+        def _set_session_cookie(self, token: str) -> tuple[str, str]:
+            # Secure 要求 HTTPS：对外部署时 nginx 本来就终止 TLS；本地明文调试登录页
+            # 可设 NANOCODE_COOKIE_SECURE=0（默认 1）。
+            secure = "; Secure" if os.environ.get("NANOCODE_COOKIE_SECURE", "1") == "1" else ""
+            return ("set-cookie",
+                    f"{SESSION_COOKIE}={token}; Path=/; Max-Age={SESSION_TTL};"
+                    f" HttpOnly{secure}; SameSite=Lax")
+
+        def _clear_session_cookie(self) -> tuple[str, str]:
+            secure = "; Secure" if os.environ.get("NANOCODE_COOKIE_SECURE", "1") == "1" else ""
+            return ("set-cookie",
+                    f"{SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly{secure}; SameSite=Lax")
+
         def _guard(self, path: str, method: str) -> bool:
             """所有请求先过这道检查，返回 False 表示已经拒绝。
 
@@ -476,6 +647,9 @@ def make_handler(app: WebApp):
                  → POST 只接受 application/json（跨站发 JSON 必须先预检，而我们不响应预检）；
                    Origin 头存在时必须是本服务自己。
               3. 其他网页或本机程序猜接口。→ /api/* 必须带上启动时随机生成的令牌。
+               4. 自带登录启用时（NANOCODE_HTPASSWD 指向可读的 htpasswd 文件）：/login 与
+                  /api/login 公开，其余一律要有效的登录会话 Cookie。页面请求没会话就 302
+                  到 /login，API 请求没会话就 401。未启用时保持旧行为（无登录）。
             """
             host = host_from_header(self.headers.get("host") or "")
             if host not in app.allowed_hosts:
@@ -485,6 +659,19 @@ def make_handler(app: WebApp):
             if origin and origin.rstrip("/") not in app.allowed_origins:
                 self._reject(403, "Origin 不被允许（防跨站请求）")
                 return False
+            if app.login_enabled:
+                if path == "/login" or path == "/api/login":
+                    if path.startswith("/api/") and method == "POST" and \
+                            (self.headers.get("content-type") or "").split(";")[0].strip().lower() != "application/json":
+                        self._reject(415, "只接受 application/json")
+                        return False
+                    return True
+                if not self._session_ok():
+                    if path.startswith("/api/"):
+                        self._reject(401, "未登录，请先登录")
+                    else:
+                        self._redirect("/login")
+                    return False
             if not path.startswith("/api/"):
                 return True
             if method == "POST" and (self.headers.get("content-type") or "").split(";")[0].strip().lower() != "application/json":
@@ -509,6 +696,12 @@ def make_handler(app: WebApp):
                 return
             if path in ("/", "/index.html"):
                 return self._file("index.html")
+            if path == "/login":
+                if not app.login_enabled:
+                    return self._redirect("/")
+                if self._session_ok():
+                    return self._redirect("/")
+                return self._file("login.html")
             if path == "/favicon.svg":
                 return self._file("favicon.svg", "image/svg+xml")
             if path == "/marked.umd.js":
@@ -556,6 +749,32 @@ def make_handler(app: WebApp):
             data = self._body()
             if data is None:
                 return
+            if path == "/api/login":
+                # 未启用自带登录时这个接口不存在（启用时 _guard 已公开放行；
+                # 未启用时带令牌也能走到这里，所以要显式 404）。
+                if not app.login_enabled:
+                    self.send_error(404)
+                    return
+                key = self._client_key()
+                allowed, wait = app.login_allowed(key)
+                if not allowed:
+                    return self._json(
+                        {"ok": False, "error": f"尝试太频繁，请 {wait} 秒后再试"}, 429)
+                username = str(data.get("username", ""))[:64]
+                password = str(data.get("password", ""))
+                # 用户名/密码对错都回同一个错误，不给枚举用户名的机会
+                if verify_password(username, password):
+                    app.login_succeeded(key)
+                    token = app.create_session()
+                    return self._json({"ok": True},
+                                      headers=[self._set_session_cookie(token)])
+                app.login_failed(key)
+                return self._json({"ok": False, "error": "用户名或密码错误"}, 401)
+            if path == "/api/logout":
+                token = self._cookie_token()
+                if token:
+                    app.destroy_session(token)
+                return self._json({"ok": True}, headers=[self._clear_session_cookie()])
             if path == "/api/chat":
                 try:
                     return self._json(app.chat(str(data.get("message", "")), self._client_key()))
@@ -673,7 +892,16 @@ def make_server(session: Session, host: str = "127.0.0.1", port: int = 8765,
                 public_hosts=(), public_origins=()) -> tuple[ThreadingHTTPServer, WebApp]:
     app = WebApp(session)
     app.configure(host, port, public_hosts, public_origins)   # 先校验配置，失败就别绑端口了
-    server = ThreadingHTTPServer((host, port), make_handler(app))
+
+    class _WebHTTPServer(ThreadingHTTPServer):
+        def server_bind(self):
+            # HTTPServer.server_bind reverse-resolves the bind address via getfqdn;
+            # hosted macOS runners can stall there before listen() (issue #92).
+            socketserver.TCPServer.server_bind(self)
+            self.server_name = self.server_address[0]
+            self.server_port = self.server_address[1]
+
+    server = _WebHTTPServer((host, port), make_handler(app))
     server.daemon_threads = True
     app.configure(host, server.server_address[1], public_hosts, public_origins)   # 端口 0 时要用真实端口重算
     return server, app
@@ -693,8 +921,12 @@ def serve(session: Session, host: str = "127.0.0.1", port: int = 8765,
     if public_hosts or public_origins:
         print(f"已信任公网 Host：{', '.join(normalize_host(h) for h in public_hosts) or '（无）'}；"
               f"额外 Origin：{', '.join(normalize_origin(o) for o in public_origins) or '（无）'}")
-        print("提醒：这只是校验请求是发给本服务的，不能代替认证。反向代理必须自己做 TLS 和登录（如 basic auth），"
-              "否则任何能访问到它的人都能拿到令牌、驱动 Agent 执行命令。")
+        print("提醒：这只是校验请求是发给本服务的，不能代替认证。" +
+              ("自带登录页已启用（NANOCODE_HTPASSWD）。"
+               if htpasswd_file() else
+               "对外暴露时务必做登录：设 NANOCODE_HTPASSWD 启用自带登录页，"
+               "或在反向代理前挂 basic auth / oauth2-proxy；"
+               "否则任何能访问到它的人都能拿到令牌、驱动 Agent 执行命令。"))
     print(f"模型 {session.provider_name}/{session.provider.model} · 工作目录 {session.cwd} · Ctrl-C 退出")
     try:
         server.serve_forever()

@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import socketserver
 import sys
 import tempfile
 import threading
@@ -18,6 +19,19 @@ from nanocode.llm.base import Provider
 from nanocode.messages import LLMResponse, Usage, text_block, tool_use_block
 from nanocode.permissions import PermissionManager
 from nanocode.tools import ToolRegistry, default_tools
+
+
+class LocalHTTPServer(ThreadingHTTPServer):
+    """测试用的本机 HTTP 服务器：绑定时不做反向 DNS。
+
+    标准库 HTTPServer.server_bind() 会调 socket.getfqdn() 反查绑定地址；GitHub 的 macOS
+    runner 上这一步能卡几十秒（#92，生产代码在 #97 已修）。测试服务器用不到 server_name。
+    """
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = self.server_address[0]
+        self.server_port = self.server_address[1]
 
 
 class ScriptedProvider(Provider):
@@ -86,7 +100,10 @@ def make_agent(ws, replies, mode="bypass", hooks=None, ask=None, **kw):
 
 
 class FakeSSEServer:
-    """一个返回固定 SSE 流的 HTTP 服务器，用来测试 provider 的协议解析。"""
+    """一个返回固定 SSE 流的 HTTP 服务器，用来测试 provider 的协议解析。
+
+    sse_text 也可以是列表：第 i 个请求拿第 i 段（用完后一直返回最后一段）。
+    """
 
     def __init__(self, sse_text, status=200):
         self.requests = []
@@ -100,14 +117,17 @@ class FakeSSEServer:
                 n = int(self.headers["content-length"])
                 outer.requests.append({"path": self.path, "headers": dict(self.headers),
                                        "body": json.loads(self.rfile.read(n))})
-                body = sse_text.encode()
+                if isinstance(sse_text, list):
+                    body = sse_text[min(len(outer.requests), len(sse_text)) - 1].encode()
+                else:
+                    body = sse_text.encode()
                 self.send_response(status)
                 self.send_header("content-type", "text/event-stream" if status == 200 else "application/json")
                 self.send_header("content-length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.server = LocalHTTPServer(("127.0.0.1", 0), H)
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
