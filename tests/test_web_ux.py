@@ -14,6 +14,8 @@ from nanocode.messages import text_block
 from nanocode.session import Options, Session
 from nanocode.web.server import WebApp, friendly_error, make_server
 
+STATIC = os.path.join(os.path.dirname(__file__), "..", "nanocode", "web", "static")
+
 
 def wait_for(cond, timeout=5.0):
     deadline = time.time() + timeout
@@ -73,6 +75,43 @@ class WebUxTest(unittest.TestCase):
         finally:
             self.session.agent.busy = False
             self.app.queue.clear()
+
+    def test_mode_can_be_switched_while_busy(self):
+        """#78：/mode 只改一个配置项，忙时必须能切。
+
+        以前它和 /clear 一起被当成"会动 Agent 脚下状态"的命令 429 拒掉，而前端不显示
+        这个错误 —— 下拉框已经变了、服务端没变，用户以为切换成功了。
+        """
+        self.session.agent.busy = True
+        try:
+            r = self.post("/api/chat", {"message": "/mode review"})
+            self.assertTrue(r.get("ok"), r)
+            self.assertEqual(self.session.permissions.mode, "review")
+            # 要说清楚什么时候生效：正在跑的这一轮已经判过的工具不会回退重判
+            self.assertIn("下一次工具调用", r.get("output", ""))
+        finally:
+            self.session.permissions.set_mode("default")
+            self.session.agent.busy = False
+
+    def test_clear_is_still_rejected_while_busy(self):
+        """对照组（#50）：会动 Agent 脚下状态的命令忙时仍然要挡住。"""
+        self.session.agent.busy = True
+        try:
+            r = self.post("/api/chat", {"message": "/clear"})
+            self.assertFalse(r.get("ok"), r)
+            self.assertEqual(r.get("code"), "busy")
+        finally:
+            self.session.agent.busy = False
+
+    def test_mode_switch_failure_is_shown_in_the_ui(self):
+        """#78：后端拒绝时前端必须显示出来，并把下拉框拨回服务端的真实状态。"""
+        with open(os.path.join(STATIC, "index.html"), encoding="utf-8") as f:
+            html = f.read()
+        self.assertIn('$("#mode").onchange', html)
+        self.assertIn("切换权限模式失败", html)
+        self.assertNotIn('$("#mode").onchange = () => post(', html)   # 旧写法：丢弃返回值
+        self.assertIn('$("#mode").value = serverMode = s.mode;', html)
+        self.assertIn('$("#mode").value = serverMode;', html)
 
     def test_compact_does_not_start_a_turn(self):
         """#73：/compact 自己已经调过一次模型做总结，不能再把 None 当 prompt 起一轮。
