@@ -8,9 +8,10 @@ import os
 import tempfile
 import threading
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from unittest import mock
 
+from helpers import LocalHTTPServer
 from nanocode.tools import ToolContext, default_tools
 from nanocode.tools.base import ToolError
 from nanocode.tools.web_search import Brave, DuckDuckGo, SearchResult, Serper, Tavily, WebSearch
@@ -80,7 +81,7 @@ class Handler(BaseHTTPRequestHandler):
 class WebSearchTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        cls.server = LocalHTTPServer(("127.0.0.1", 0), Handler)
         cls.port = cls.server.server_address[1]
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
 

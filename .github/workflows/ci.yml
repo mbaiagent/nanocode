@@ -3,18 +3,30 @@ name: CI
 on:
   push:
     branches: [main]
+  # 不限定目标分支：叠在别的 PR 分支上的 PR（stacked PR）也要跑 CI
   pull_request:
-    branches: [main]
+
+# 同一个 PR（或同一个 ref）只保留最新一次运行；PR 上有新提交时取消旧的 run。
+# push 到 main 不取消，保证每个合并提交都有完整结果。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# 矩阵：push 到 main 跑完整 3 OS × 2 Python（每个套件 6 个 job）；
+# PR 上去掉 macOS / Windows 的 Python 3.11（每个套件 4 个 job：ubuntu 3.11/3.12、macOS 3.12、Windows 3.12）。
+# 3.11 的兼容性由 ubuntu 3.11 覆盖，平台差异由 3.12 的 macOS / Windows 覆盖。
 
 jobs:
   core-tests:
     name: Core tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12"]
+        exclude: ${{ github.event_name == 'pull_request' && fromJSON('[{"os":"macos-latest","python-version":"3.11"},{"os":"windows-latest","python-version":"3.11"}]') || fromJSON('[]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,22 +35,52 @@ jobs:
       - name: Run core tests
         env:
           PYTHONPATH: .
+          PYTHONUNBUFFERED: "1"
         run: python -m unittest discover -s tests -v
 
   server-tests:
     name: Server tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12"]
+        exclude: ${{ github.event_name == 'pull_request' && fromJSON('[{"os":"macos-latest","python-version":"3.11"},{"os":"windows-latest","python-version":"3.11"}]') || fromJSON('[]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      # 沙箱数据目录都建在 tempfile 下；固定到 runner.temp 里，失败时才找得到 sandbox.log
+      # （tempfile 在所有平台上都会先看 TMPDIR）
+      - name: Prepare temp dir
+        shell: python
+        run: |
+          import os
+          d = os.path.join(os.environ["RUNNER_TEMP"], "nanocode-tests")
+          os.makedirs(d, exist_ok=True)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write(f"TMPDIR={d}\n")
       - name: Run server tests
         env:
           PYTHONPATH: server:server/tests:.
+          PYTHONUNBUFFERED: "1"
         run: python -m unittest discover -s server/tests -v
+      - name: Show sandbox logs on failure
+        if: failure()
+        shell: python
+        run: |
+          import os
+          root = os.environ.get("TMPDIR", "")
+          found = 0
+          for dirpath, _, files in os.walk(root):
+              if "sandbox.log" in files:
+                  path = os.path.join(dirpath, "sandbox.log")
+                  found += 1
+                  print(f"::group::{path}")
+                  with open(path, encoding="utf-8", errors="replace") as f:
+                      print("".join(f.readlines()[-60:]))
+                  print("::endgroup::")
+          print(f"{found} sandbox.log file(s) under {root}")
