@@ -458,11 +458,17 @@ class RemoteConfigTest(unittest.TestCase):
         ok.validate_agent()
         for bad in ({"agent_relay_per_sandbox": 0}, {"agent_relay_per_sandbox": 200}, {"agent_relay_idle_timeout": 1},
                     {"agent_bind": "0.0.0.0:8790"}, {"agent_bind": "[::]:8790"}, {"agent_bind": "10.77.0.2"},
-                    {"agent_bind": ""}, {"remote_agent_secret": "x" * 31}, {"agent_upstream_gateway": "10.77.0.1"}):
+                    {"agent_bind": ""}, {"remote_agent_secret": "x" * 31}, {"agent_upstream_gateway": "10.77.0.1"},
+                    # 中继监听地址和代理一样，不能开在所有地址上（#129）：配错会把网关中继暴露到公网
+                    {"agent_relay_bind": "0.0.0.0"}, {"agent_relay_bind": "::"},
+                    {"agent_relay_bind": "*"}, {"agent_relay_bind": "[::]"}):
             with self.subTest(bad=bad):
                 cfg = Config(**{**ok.__dict__, **bad})
                 with self.assertRaises(ValueError):
                     cfg.validate_agent()
+        for good in ({"agent_relay_bind": ""}, {"agent_relay_bind": "10.77.0.2"}):  # 空 = 沙箱网桥地址，照常允许
+            with self.subTest(good=good):
+                Config(**{**ok.__dict__, **good}).validate_agent()
 
     def test_split_hostport(self):
         self.assertEqual(split_hostport("10.77.0.1:8701"), ("10.77.0.1", 8701))
