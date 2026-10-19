@@ -6,10 +6,10 @@
 
 ## 准备
 
-1. **域名**：A 记录指向服务器公网 IP（例：`nanocode.aipulse.lol → 104.194.92.198`），防火墙放行 80 和 443。
+1. **域名**：A 记录指向服务器公网 IP（例：`nanocode.example.com → 203.0.113.10`，都是占位符），防火墙放行 80 和 443。
 2. **GitHub OAuth App**：GitHub → Settings → Developer settings → OAuth Apps → New OAuth App
-   - Homepage URL：`https://nanocode.aipulse.lol`
-   - Authorization callback URL：`https://nanocode.aipulse.lol/auth/github/callback`
+   - Homepage URL：`https://nanocode.example.com`
+   - Authorization callback URL：`https://nanocode.example.com/auth/github/callback`
    - 建好后复制 Client ID，点 "Generate a new client secret" 生成 Secret，填进 `.env`（不要提交到仓库）。
 3. **Docker**：Docker Engine 24+ 和 Compose v2。
 
@@ -29,7 +29,7 @@ docker compose --profile caddy up -d --build     # 用自带的 Caddy 占 80/443
 docker compose up -d --build                     # 机器上已有 nginx：见下文"用已有的 nginx"
 docker compose ps                                  # platform 的 health 应变为 healthy
 curl -s http://127.0.0.1:8700/healthz              # {"ok": true, "launcher": "docker", "isolated": true}
-curl -sI https://nanocode.aipulse.lol/login        # 证书申请成功后 200
+curl -sI https://nanocode.example.com/login        # 证书申请成功后 200（换成你的域名）
 ```
 
 ### 宿主机防火墙（必做，#123）
@@ -61,7 +61,9 @@ NCS_MAX_SANDBOXES=2
 NCS_IDLE_TIMEOUT=600             # 空闲 10 分钟回收沙箱
 ```
 
-沙箱想放到另一台机器上（平台机器只跑控制面、数据库和 Redis），见 [deploy/sandbox-host/](../sandbox-host/README.md)。
+沙箱想放到另一台机器上（平台机器只跑控制面、数据库和 Redis），见 [deploy/sandbox-host/](../sandbox-host/README.md)。数据库 / Redis 想用托管服务：compose 目前把地址写死成本机容器（[#132](https://github.com/mbaiagent/nanocode/issues/132)），先用本机的 `docker-compose.override.yml` 覆盖，写法见 [docs/deployment-topology.md](../../docs/deployment-topology.md#托管-postgres--redis)。
+
+> 注意：平台容器只收到 `docker-compose.yml` 里 `platform.environment` 列出的变量。`NCS_PLATFORM_*`、`NCS_SANDBOX_MODES`、`NCS_SESSION_TTL` 等没列出的变量写进 `.env` 不生效，要加到 override 里。完整列表见 [docs/configuration.md](../../docs/configuration.md)。
 
 ## 用已有的 nginx（代替 Caddy）
 
@@ -71,7 +73,7 @@ NCS_IDLE_TIMEOUT=600             # 空闲 10 分钟回收沙箱
 sudo cp nginx.example.conf /etc/nginx/sites-available/nanocode
 sudo ln -s /etc/nginx/sites-available/nanocode /etc/nginx/sites-enabled/nanocode
 sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d nanocode.aipulse.lol      # 申请证书，自动加 443 和 http→https 跳转
+sudo certbot --nginx -d nanocode.example.com      # 换成你的域名；申请证书，自动加 443 和 http→https 跳转
 ```
 
 要点：`proxy_buffering off`（事件流）、`X-Forwarded-For $proxy_add_x_forwarded_for`（登录限流按真实 IP）、`Host $host`。
