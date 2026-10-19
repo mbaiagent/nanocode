@@ -35,7 +35,8 @@ def make_launcher(cfg: Config, log=print) -> Launcher:
         return LocalLauncher(cfg.data_dir)
     if choice == "docker":
         return DockerLauncher(cfg.data_dir, cfg.sandbox_image, cfg.docker_network, cfg.docker_runtime,
-                              cfg.sandbox_cpu, cfg.sandbox_memory, max_lifetime=cfg.token_ttl)
+                              cfg.sandbox_cpu, cfg.sandbox_memory, max_lifetime=cfg.token_ttl,
+                              bridge_name=cfg.docker_bridge, subnet=cfg.docker_subnet)
     if choice == "k8s":
         return KubernetesLauncher(KubeClient.in_cluster(cfg.k8s_api), cfg.k8s_namespace, cfg.sandbox_image,
                                   cfg.k8s_runtime_class, cfg.k8s_storage_class, cfg.k8s_workspace_size,

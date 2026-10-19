@@ -5,7 +5,8 @@
 平台策略只读挂到 /etc/nanocode/。可以用 gVisor（NCS_DOCKER_RUNTIME=runsc）进一步隔离。
 
 网络：沙箱放在一个专用的内部网络（internal bridge）里——容器之间不通，也出不了外网，
-只能访问宿主机在这个网络上的地址，模型网关就监听在那里。这相当于 K8s 里 NetworkPolicy 的效果。
+只能访问宿主机在这个网络上的地址，模型网关就监听在那里。internal 网络不限制这个地址上的其它端口，
+所以宿主机还要配防火墙只放行网关端口（deploy/firewall/，#123）；网桥名和网段固定下来供防火墙引用。
 
 通过 Docker Engine API（/var/run/docker.sock）操作，只用标准库。
 """
@@ -25,6 +26,7 @@ from .base import SANDBOX_PORT, Launcher, LaunchError, SandboxSpec, wait_ready
 DOCKER_SOCKET = "/var/run/docker.sock"
 UID = 10001
 ICC_OPTION = "com.docker.network.bridge.enable_icc"
+BRIDGE_NAME_OPTION = "com.docker.network.bridge.name"
 
 
 def sandbox_ids() -> tuple[int, int]:
@@ -97,10 +99,12 @@ def _bytes(size: str) -> int:
 class DockerLauncher(Launcher):
     name = "docker"
     isolated = True
+    bridge_name = ""                # #123：固定的网桥网卡名（宿主机防火墙规则引用它）；空 = Docker 自动起名
+    subnet = ""                     # #123：固定的沙箱网段（firewalld 按来源网段把它放进只开网关端口的 zone）
 
     def __init__(self, data_dir: str, image: str, network: str = "ncs-sandboxes", runtime: str = "",
                  cpu: str = "1", memory: str = "2Gi", client: DockerClient | None = None, ready_timeout: float = 60,
-                 max_lifetime: int = 43200):
+                 max_lifetime: int = 43200, bridge_name: str = "", subnet: str = ""):
         self.root = os.path.join(os.path.abspath(data_dir), "sandboxes")
         self.image = image
         self.network = network
@@ -110,6 +114,8 @@ class DockerLauncher(Launcher):
         self.docker = client or DockerClient()
         self.ready_timeout = ready_timeout
         self.max_lifetime = max_lifetime        # 容器最长存活秒数；Docker 没有 activeDeadlineSeconds，靠对账兜底（#60）
+        self.bridge_name = bridge_name
+        self.subnet = subnet
         self._gateway_ip = self._ensure_network()
 
     # ------------------------------------------------------------------ 网络
@@ -117,9 +123,13 @@ class DockerLauncher(Launcher):
     def _ensure_network(self) -> str:
         status, net = self.docker.request("GET", f"/networks/{self.network}")
         if status == 404:
-            status, _ = self.docker.request("POST", "/networks/create", {
-                "Name": self.network, "Driver": "bridge", "Internal": True,      # 出不了外网，容器之间也不通
-                "Options": {ICC_OPTION: "false"}})
+            body = {"Name": self.network, "Driver": "bridge", "Internal": True,      # 出不了外网，容器之间也不通
+                    "Options": {ICC_OPTION: "false"}}
+            if self.bridge_name:
+                body["Options"][BRIDGE_NAME_OPTION] = self.bridge_name
+            if self.subnet:
+                body["IPAM"] = {"Config": [{"Subnet": self.subnet}]}
+            status, _ = self.docker.request("POST", "/networks/create", body)
             if status not in (200, 201):
                 raise LaunchError(f"创建沙箱网络失败：HTTP {status}")
             status, net = self.docker.request("GET", f"/networks/{self.network}")
@@ -149,6 +159,17 @@ class DockerLauncher(Launcher):
         if (net.get("Options") or {}).get(ICC_OPTION) != "false":
             raise LaunchError(f"沙箱网络 {self.network} 没有关闭容器间通信（{ICC_OPTION}=false），"
                               f"沙箱之间能互访。请删掉它让平台重建")
+        # #123：internal 只挡住了"出外网"，挡不住"沙箱 → 宿主机网桥地址上的任意端口"（sshd、nginx……）。
+        # 那一层靠宿主机防火墙（deploy/firewall/），规则按固定的网桥名 / 网段写：网络对不上，
+        # 规则就落空，沙箱又能连宿主机所有端口，所以宁可拒绝启动。
+        if self.bridge_name and (net.get("Options") or {}).get(BRIDGE_NAME_OPTION) != self.bridge_name:
+            raise LaunchError(f"沙箱网络 {self.network} 的网桥名不是 {self.bridge_name}（NCS_DOCKER_BRIDGE），"
+                              f"宿主机防火墙规则对不上。请删掉它让平台重建，或把 NCS_DOCKER_BRIDGE 设成它的网桥名")
+        if self.subnet:
+            subnets = [c.get("Subnet") for c in ((net.get("IPAM") or {}).get("Config") or [])]
+            if self.subnet not in subnets:
+                raise LaunchError(f"沙箱网络 {self.network} 的网段是 {subnets}，不是 {self.subnet}（NCS_DOCKER_SUBNET），"
+                                  f"宿主机防火墙规则对不上。请删掉它让平台重建，或把 NCS_DOCKER_SUBNET 设成它的网段")
 
     def gateway_bind_host(self) -> str:
         return self._gateway_ip

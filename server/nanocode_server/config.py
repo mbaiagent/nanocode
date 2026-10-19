@@ -15,8 +15,10 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+import re
 import secrets
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
@@ -103,6 +105,10 @@ class Config:
     sandbox_image: str = "nanocode-sandbox:latest"   # Docker 和 K8s 启动器用的沙箱镜像
     docker_runtime: str = ""                # 例如 runsc（gVisor）；空 = Docker 默认运行时
     docker_network: str = "ncs-sandboxes"
+    # #123：沙箱网桥的固定名字和网段。宿主机防火墙按它们写规则（deploy/firewall/），
+    # 只放行沙箱到模型网关端口的连接；空 = 交给 Docker 自动分配（防火墙规则就没法写死）
+    docker_bridge: str = "ncs-sbx0"
+    docker_subnet: str = "172.30.250.0/24"
     sandbox_cpu: str = "1"
     sandbox_memory: str = "2Gi"
     sandbox_mcp_servers: dict = field(default_factory=dict)   # 平台给每个沙箱配的 MCP 服务器（用户和项目自己配的一律不生效）
@@ -164,6 +170,8 @@ class Config:
             sandbox_image=_env("NCS_SANDBOX_IMAGE", d.sandbox_image),
             docker_runtime=_env("NCS_DOCKER_RUNTIME"),
             docker_network=_env("NCS_DOCKER_NETWORK", d.docker_network),
+            docker_bridge=_env("NCS_DOCKER_BRIDGE", d.docker_bridge),
+            docker_subnet=_env("NCS_DOCKER_SUBNET", d.docker_subnet),
             sandbox_cpu=_env("NCS_SANDBOX_CPU", d.sandbox_cpu),
             sandbox_memory=_env("NCS_SANDBOX_MEMORY", d.sandbox_memory),
             sandbox_mcp_servers=_json_dict("NCS_SANDBOX_MCP_SERVERS"),
@@ -284,6 +292,15 @@ class Config:
                 "生产模式（NCS_AUTH != dev）不能用没有隔离的本机启动器：请构建沙箱镜像让 NCS_LAUNCHER=auto "
                 "选到 Docker/K8s，或显式设置 NCS_LAUNCHER=docker/k8s；确实要在生产里无隔离运行，"
                 "请显式设置 NCS_ALLOW_UNISOLATED=1 承认这个风险")
+        if self.docker_bridge and not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", self.docker_bridge):
+            raise ValueError("NCS_DOCKER_BRIDGE 是 Linux 网卡名：1-15 个字母、数字或 _ . -")
+        if self.docker_subnet:
+            try:
+                net = ipaddress.ip_network(self.docker_subnet, strict=True)
+            except ValueError:
+                raise ValueError(f"NCS_DOCKER_SUBNET 不是合法网段：{self.docker_subnet!r}（例如 172.30.250.0/24）") from None
+            if net.version != 4 or net.prefixlen > 28:
+                raise ValueError("NCS_DOCKER_SUBNET 必须是 IPv4 网段，且至少 /28")
         if self.sandbox_mode not in self.sandbox_modes:
             raise ValueError(f"NCS_SANDBOX_MODE={self.sandbox_mode} 不在 NCS_SANDBOX_MODES 里")
         servers = self.sandbox_mcp_servers
