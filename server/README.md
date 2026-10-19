@@ -188,6 +188,7 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 | `NCS_K8S_*` | 命名空间、运行时类、存储类、工作区大小、API 地址 | 见 `config.py` |
 | `NCS_MAX_SANDBOXES` / `NCS_MAX_SESSIONS_PER_USER` | 总容量 / 每人同时运行的会话数 | 200 / 3 |
 | `NCS_IDLE_TIMEOUT` / `NCS_TOKEN_TTL` | 空闲回收秒数 / 网关令牌有效期（也是沙箱最长存活时间） | 1800 / 43200 |
+| `NCS_REAP_INTERVAL` | 回收线程多久醒一次（秒）。没有运行中的沙箱、或最早的回收时间还没到时醒了也不查数据库，托管 Postgres 能缩到零（#131）；多副本时每次都查 | 60 |
 | `NCS_GATEWAY_HOST` / `NCS_GATEWAY_PORT` / `NCS_GATEWAY_URL` | 网关监听地址 / 端口 / 沙箱访问网关的地址（单独部署时必填） | `127.0.0.1` / `8701` / — |
 | `NCS_PLATFORM_BASE_URL` / `NCS_PLATFORM_API_KEY` / `NCS_PLATFORM_PROTOCOL` / `NCS_PLATFORM_MODELS` / `NCS_PLATFORM_LABEL` | 平台提供的模型 | — / — / `openai` / — / `平台模型` |
 | `NCS_ENABLE_MOCK_MODEL` | 提供演示模型 | `true` |

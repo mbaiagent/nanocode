@@ -17,6 +17,7 @@ import json
 import os
 import queue
 import sqlite3
+import sys
 import threading
 import time
 import uuid
@@ -187,6 +188,33 @@ class ConnectionPool:
                 self._created -= 1
 
 
+CONNECT_TIMEOUT = 10        # 单次连接超时（秒）
+STARTUP_RETRY = 30          # 启动时最多重试多久（秒）
+
+
+def wait_for_database(pool: "ConnectionPool", timeout: float = STARTUP_RETRY, sleep=time.sleep,
+                      log=lambda m: print(m, file=sys.stderr), clock=time.monotonic) -> None:
+    """启动时连一次数据库，失败按指数退避（0.5、1、2、4…最多 8 秒）重试，总共不超过 timeout 秒（#132）。
+
+    以前第一次连不上就直接抛 traceback 退出，只能靠容器的 restart 策略反复重启。
+    托管库（Neon 等）缩到零后冷启动、或者短暂的网络抖动，等几秒就好了。
+    日志只写异常类型和消息，不写连接串（里面有密码）。
+    """
+    deadline, delay, attempt = clock() + timeout, 0.5, 1
+    while True:
+        try:
+            with pool.connection():
+                return
+        except Exception as e:  # noqa: BLE001 —— 驱动的异常类型各不相同，到期后原样抛出
+            left = deadline - clock()
+            if left <= 0:
+                raise
+            wait = min(delay, left)
+            log(f"连接数据库失败（第 {attempt} 次）：{type(e).__name__}: {str(e).strip()[:200]}；{wait:.1f} 秒后重试")
+            sleep(wait)
+            delay, attempt = min(delay * 2, 8), attempt + 1
+
+
 class Database:
     """很薄的一层：执行 SQL，返回字典列表。SQLite 一个连接加锁；PostgreSQL 一个小连接池。"""
 
@@ -262,9 +290,11 @@ class PostgresDatabase(Database):
         except ImportError:
             raise RuntimeError("配置了 PostgreSQL，但没有安装驱动：pip install 'psycopg[binary]'") from None
 
-        self._pool = ConnectionPool(lambda: psycopg.connect(url, autocommit=True, row_factory=dict_row), pool_size)
-        with self._pool.connection():
-            pass        # 配了就要连得上，连不上直接报错
+        # libpq 默认连接不超时：网络黑洞时会一直卡住。连接串里自己写了 connect_timeout 就以它为准（#132）
+        extra = {} if "connect_timeout" in url else {"connect_timeout": CONNECT_TIMEOUT}
+        self._pool = ConnectionPool(lambda: psycopg.connect(url, autocommit=True, row_factory=dict_row, **extra),
+                                    pool_size)
+        wait_for_database(self._pool)       # 配了就要连得上；托管库冷启动 / 网络抖动先退避重试（#132）
 
     def execute(self, sql: str, params: tuple = ()) -> list[dict]:
         with self._pool.connection() as conn:
