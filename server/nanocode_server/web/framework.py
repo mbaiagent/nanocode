@@ -30,7 +30,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Iterable
 from urllib.parse import parse_qs, urlparse
 
-SECURITY_HEADERS = [("x-content-type-options", "nosniff"), ("referrer-policy", "no-referrer")]
+# 平台自己的页面（控制面 /、/login、/admin）的 CSP（#113）。页面里有内联 <script> 和 style=""，
+# 所以留 'unsafe-inline'；img-src 放行 https: 是给 GitHub 头像用的；frame-src 'self' 让主界面能嵌
+# /s/<id>/ 的沙箱面板；frame-ancestors 'none' + X-Frame-Options 挡点击劫持。
+# 响应自己带了同名头时以响应的为准（/s/ 转发会换成沙箱面板专用的一套，见 control.py）。
+DEFAULT_CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+               "img-src 'self' data: https:; connect-src 'self'; frame-src 'self'; object-src 'none'; "
+               "frame-ancestors 'none'; base-uri 'none'")
+SECURITY_HEADERS = [("x-content-type-options", "nosniff"), ("referrer-policy", "no-referrer"),
+                    ("content-security-policy", DEFAULT_CSP), ("x-frame-options", "DENY")]
 
 # 读请求阶段的 socket 超时和整个请求（请求行 + 头 + 体）的总时限（#55）。
 # 沙箱被网络策略允许访问网关：一个租户开几千个只发半个请求的连接，就能把
@@ -294,7 +302,8 @@ def make_server(app: App, host: str, port: int, max_connections: int = 256) -> T
         def _write(self, resp: Response) -> None:
             try:
                 self.send_response(resp.status)
-                for k, v in [*SECURITY_HEADERS, *resp.headers]:
+                own = {k.lower() for k, _ in resp.headers}
+                for k, v in [*((k, v) for k, v in SECURITY_HEADERS if k not in own), *resp.headers]:
                     self.send_header(k, v)
                 if not resp.stream:
                     self.send_header("content-length", str(len(resp.body)))
