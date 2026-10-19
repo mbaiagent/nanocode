@@ -3,6 +3,14 @@
 > 只是方案，没有改代码、没有提交。基于 `mbaiagent/nanocode` main `421986a`（2026-10-19 只读克隆），参考：`server/` 源码与 README、`docs/web-multisession-plan.md`、`docs/issue-7-rate-limit.md`、`docs/12-distributed-deployment.md`、`verification/results/perf-loadtest.md`，以及 issue #5、#106、#72、#66、#68。
 > 文中凡标 **[估]** 的数字都是估算，不是实测；标 **[测]** 的来自仓库里已有的压测记录。
 
+## 已定决策（2026-10-19）
+
+| # | 决策 | 影响 |
+|---|---|---|
+| 1 | **登录方式：GitHub OAuth** | P1 只做 GitHub OAuth（state + PKCE，按 GitHub 用户 id 绑定）；邮箱魔法链接、密码登录暂不做；企业 SSO 仍可走现有 `NCS_AUTH=proxy` |
+| 2 | **模型费用：用户自带 Key（BYO）** | 默认不开平台模型（不配 `NCS_PLATFORM_*`）；套餐只管并发、会话数和存储，不做 token 计费；网关对 BYO Key 只计量、限 RPM |
+| 3 | **部署：先单机 docker-compose** | P0 提供 `deploy/compose/`（控制面 + PostgreSQL + Redis + Docker 沙箱）；K8s 放到后期 |
+
 ## 0. 结论先说
 
 1. **1000+ 用户走 `server/` 平台，不走单进程 Web 面板。** 面板是"一个进程、一个工作目录、一个系统用户"，三期做完也只是"几个互相信任的人共用"（`web-multisession-plan.md` 自己也这么写）。`server/` 已经是"控制面 + 模型网关 + 每会话一个沙箱 + SQLite/PG + 内存/Redis 限流 + Docker/K8s"，#36–#65 的安全和可靠性问题已全部关闭。缺的主要是**原生账号体系**、**配额套餐和排队**、**可观测和审计**，以及**真实规模的容量验证**。
