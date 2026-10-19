@@ -304,6 +304,7 @@ class Session:
         self.agent.usage.input_tokens = u.get("input_tokens", 0)
         self.agent.usage.output_tokens = u.get("output_tokens", 0)
         self.agent.usage.estimated = u.get("estimated", False)
+        self.agent.usage.reasoning_tokens = u.get("reasoning_tokens", 0)
         self.session_id = session_id
         # 切会话时清空事件历史，前端重连后只重放新会话的内容
         self.bus.history.clear()
@@ -360,6 +361,7 @@ class Session:
             self.agent.usage.input_tokens = u.get("input_tokens", 0)
             self.agent.usage.output_tokens = u.get("output_tokens", 0)
             self.agent.usage.estimated = u.get("estimated", False)
+            self.agent.usage.reasoning_tokens = u.get("reasoning_tokens", 0)
             self.session_id = name[:-5]
             if empty:
                 notes.append(f"跳过了 {empty} 个空会话")

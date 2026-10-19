@@ -98,7 +98,10 @@ def make_agent(ws, replies, mode="bypass", hooks=None, ask=None, **kw):
 
 
 class FakeSSEServer:
-    """一个返回固定 SSE 流的 HTTP 服务器，用来测试 provider 的协议解析。"""
+    """一个返回固定 SSE 流的 HTTP 服务器，用来测试 provider 的协议解析。
+
+    sse_text 也可以是列表：第 i 个请求拿第 i 段（用完后一直返回最后一段）。
+    """
 
     def __init__(self, sse_text, status=200):
         self.requests = []
@@ -112,7 +115,10 @@ class FakeSSEServer:
                 n = int(self.headers["content-length"])
                 outer.requests.append({"path": self.path, "headers": dict(self.headers),
                                        "body": json.loads(self.rfile.read(n))})
-                body = sse_text.encode()
+                if isinstance(sse_text, list):
+                    body = sse_text[min(len(outer.requests), len(sse_text)) - 1].encode()
+                else:
+                    body = sse_text.encode()
                 self.send_response(status)
                 self.send_header("content-type", "text/event-stream" if status == 200 else "application/json")
                 self.send_header("content-length", str(len(body)))

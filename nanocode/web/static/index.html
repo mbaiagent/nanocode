@@ -948,7 +948,7 @@ function onEvent(e) {
       if (a === "main") {
         for (const s of Object.values(steps)) s.done = true;
         setBusy(false);
-        add("note", `tokens 输入 ${e.usage.input_tokens} / 输出 ${e.usage.output_tokens}${e.usage.estimated ? "（估算）" : ""}`);
+        add("note", `tokens 输入 ${e.usage.input_tokens} / 输出 ${e.usage.output_tokens}${e.usage.reasoning_tokens ? `（思考 ${e.usage.reasoning_tokens}）` : ""}${e.usage.estimated ? "（估算）" : ""}`);
         refreshState(); refreshContext(); refreshSessions();
       }
       break;
