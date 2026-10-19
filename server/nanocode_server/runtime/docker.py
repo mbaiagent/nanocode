@@ -27,6 +27,19 @@ UID = 10001
 ICC_OPTION = "com.docker.network.bridge.enable_icc"
 
 
+def sandbox_ids() -> tuple[int, int]:
+    """沙箱容器里以哪个 uid:gid 运行。
+
+    控制面是 root：固定用镜像里的 10001，启动前把工作区 chown 给它（容器保持非 root）；
+    控制面是普通用户：直接用控制面的 uid:gid——工作区本来就是控制面这个用户建的，
+    而 chown 需要 root 权限、非 root 下只会失败。uid 不一致时容器连 /data 都写不了，
+    nanocode 写不了会话和配置、Agent 写不了文件，wait_ready 超时后变成一个难查的 502（#58）。
+    """
+    if os.geteuid() == 0:
+        return UID, UID
+    return os.geteuid(), os.getegid()
+
+
 class _UnixConnection(http.client.HTTPConnection):
     def __init__(self, path: str, timeout: float = 60):
         super().__init__("localhost", timeout=timeout)
@@ -83,7 +96,8 @@ class DockerLauncher(Launcher):
     isolated = True
 
     def __init__(self, data_dir: str, image: str, network: str = "ncs-sandboxes", runtime: str = "",
-                 cpu: str = "1", memory: str = "2Gi", client: DockerClient | None = None, ready_timeout: float = 60):
+                 cpu: str = "1", memory: str = "2Gi", client: DockerClient | None = None, ready_timeout: float = 60,
+                 max_lifetime: int = 43200):
         self.root = os.path.join(os.path.abspath(data_dir), "sandboxes")
         self.image = image
         self.network = network
@@ -92,6 +106,7 @@ class DockerLauncher(Launcher):
         self.memory = memory
         self.docker = client or DockerClient()
         self.ready_timeout = ready_timeout
+        self.max_lifetime = max_lifetime        # 容器最长存活秒数；Docker 没有 activeDeadlineSeconds，靠对账兜底（#60）
         self._gateway_ip = self._ensure_network()
 
     # ------------------------------------------------------------------ 网络
@@ -167,10 +182,12 @@ class DockerLauncher(Launcher):
             "Image": self.image,
             "Cmd": spec.args("0.0.0.0", SANDBOX_PORT, "/data/workspace"),
             "Env": [f"{k}={v}" for k, v in env.items()],
-            "User": f"{UID}:{UID}",
+            "User": f"{sandbox_ids()[0]}:{sandbox_ids()[1]}",
             "WorkingDir": "/data/workspace",
             "ExposedPorts": {f"{SANDBOX_PORT}/tcp": {}},
-            "Labels": {"app": "nanocode-sandbox", "ncs.session": spec.session_id},
+            # ncs.created：对账时按它停掉超寿容器（Docker 没有 K8s 的 activeDeadlineSeconds，#60）
+            "Labels": {"app": "nanocode-sandbox", "ncs.session": spec.session_id,
+                       "ncs.created": str(int(time.time()))},
             "HostConfig": host,
         }
 
@@ -182,10 +199,18 @@ class DockerLauncher(Launcher):
             os.makedirs(d, exist_ok=True)
         with open(os.path.join(policy_dir, "policy.json"), "w", encoding="utf-8") as f:
             json.dump({**spec.policy, "audit_log": "/data/home/audit.jsonl"}, f, ensure_ascii=False, indent=1)
+        uid, gid = sandbox_ids()
         if os.name != "nt" and os.geteuid() == 0:  # 容器里以 10001 运行，工作区要归它所有（Windows 无 geteuid）
             for root, dirs, files in os.walk(data_dir):
                 for p in [root, *(os.path.join(root, n) for n in dirs + files)]:
-                    os.chown(p, UID, UID)
+                    os.chown(p, uid, gid)
+        else:
+            # 非 root：容器和控制面同 uid，工作区必须是当前用户能写的，否则容器里一定写不了盘（#58）。
+            # 这里早报告早好，不然要等 wait_ready 超时才变成一个没有上下文的 502。
+            for d in (data_dir, os.path.join(data_dir, "workspace"), os.path.join(data_dir, "home")):
+                if not os.access(d, os.W_OK):
+                    raise LaunchError(f"工作区 {d} 不属于当前用户（uid {uid}）或没有写权限，"
+                                      "容器里写不了：请修正属主，或用 root 运行控制面")
         name = self.container_name(sid)
         status, body = self.docker.request("POST", f"/containers/create?name={name}",
                                            self.container_config(spec, data_dir, policy_dir))
@@ -236,6 +261,49 @@ class DockerLauncher(Launcher):
     def is_alive(self, session_id: str) -> bool:
         status, info = self.docker.request("GET", f"/containers/{self.container_name(session_id)}/json")
         return status == 200 and bool((info.get("State") or {}).get("Running"))
+
+    # ------------------------------------------------------------------ 控制面生命周期
+
+    def _sandbox_containers(self) -> list[dict]:
+        """所有带我们标签的容器（含已停止的）。按标签列，不靠内存记录——
+        控制面可能刚重启，内存里什么都没有（#60）。"""
+        filters = quote(json.dumps({"label": ["app=nanocode-sandbox"]}), safe="")
+        status, containers = self.docker.request("GET", f"/containers/json?all=1&filters={filters}")
+        if status != 200:
+            raise LaunchError(f"列不出沙箱容器：HTTP {status}")
+        return containers if isinstance(containers, list) else []
+
+    def shutdown(self) -> None:
+        """控制面退出：停掉所有沙箱容器（#60）。
+
+        以前基类是空实现，Docker/K8s 启动器都不覆盖，SIGTERM 停掉控制面后
+        容器还带着有效的网关令牌继续跑，只能手工清理。工作区保留，下次访问会重新拉起。
+        """
+        try:
+            containers = self._sandbox_containers()
+        except LaunchError:
+            return                      # Docker 已经不在了：没什么可停的
+        for c in containers:
+            sid = (c.get("Labels") or {}).get("ncs.session", "")
+            if sid:
+                self.stop(sid)
+
+    def reconcile(self, keep: set[str]) -> None:
+        """控制面启动时：停掉 keep 之外的沙箱容器，以及存活超过 max_lifetime 的（#60）。
+
+        keep 是数据库里还在用（starting/running）的会话。被删除/停止的会话不该留下
+        容器；超寿的容器拿着过期的网关令牌也没用，停掉（保留工作区）下次带新令牌重启。
+        没有 ncs.created 标签的是更早版本起的容器：不猜寿龄，只按 keep 判断。
+        """
+        now = time.time()
+        for c in self._sandbox_containers():
+            labels = c.get("Labels") or {}
+            sid = labels.get("ncs.session", "")
+            if not sid:
+                continue
+            created = int(labels.get("ncs.created") or 0)
+            if sid not in keep or (created and now - created > self.max_lifetime):
+                self.stop(sid)
 
 
 __all__ = ["DockerLauncher", "DockerClient"]

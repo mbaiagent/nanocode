@@ -56,7 +56,9 @@ class PlatformTest(unittest.TestCase):
         self.assertEqual((status, headers.get("location")), (302, "/login"))
         self.assertEqual(anon.request("GET", "/api/sessions")[0], 401)
         self.assertEqual(anon.request("GET", "/s/0123456789abcdef/api/state")[0], 401)
-        self.assertEqual(anon.request("GET", "/healthz")[0], 200)
+        # /healthz 要让编排层能探测"是不是没有隔离的本机启动器"（#36）
+        self.assertEqual(anon.request("GET", "/healthz")[1],
+                         {"ok": True, "launcher": "local", "isolated": False})
         self.assertEqual(anon.request("GET", "/login")[0], 200)
 
     def test_login_logout(self):
@@ -228,7 +230,8 @@ class ProxyAuthTest(unittest.TestCase):
     """生产模式：身份来自认证代理，必须带共享密钥。"""
 
     def test_proxy_auth(self):
-        cfg = make_config(auth="proxy", proxy_secret="p" * 24, host="127.0.0.1")
+        # 这个测试平台跑在本机启动器上（没有隔离）：显式承认，否则 validate 会拒绝启动（#36）
+        cfg = make_config(auth="proxy", proxy_secret="p" * 24, host="127.0.0.1", allow_unisolated=True)
         platform = Platform(cfg, log=lambda m: None)
         platform.start()
         try:

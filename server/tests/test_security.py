@@ -108,11 +108,18 @@ class ConfigTest(unittest.TestCase):
                    {"auth": "dev", "host": "0.0.0.0"},             # 开发模式登录不能对外
                    {"auth": "proxy", "proxy_secret": "p" * 20, "allow_private_upstreams": True},
                    {"sandbox_mode": "bypass"},                      # 不在允许的模式里
-                   {"auth": "nope"}):
+                   {"auth": "nope"},
+                   {"launcher": "nope"},
+                   # 生产模式没有隔离：每个用户的 Agent 都以控制面同一个系统用户运行（#36）
+                   {"auth": "proxy", "proxy_secret": "p" * 20, "launcher": "local"}):
             with self.subTest(**kw), self.assertRaises(ValueError):
                 make_config(**kw).validate()
         make_config().validate()
-        make_config(auth="proxy", proxy_secret="p" * 20, host="0.0.0.0").validate()
+        make_config(auth="proxy", proxy_secret="p" * 20, host="0.0.0.0", launcher="docker").validate()
+        # 显式承认无隔离风险后才放行（#36）
+        make_config(auth="proxy", proxy_secret="p" * 20, launcher="local", allow_unisolated=True).validate()
+        # 只启动网关的角色不创建沙箱，不该被隔离检查拦住（#36）
+        make_config(auth="proxy", proxy_secret="p" * 20, launcher="local").validate(launcher_needed=False)
 
     def test_dev_secret_is_generated_once_and_kept(self):
         cfg = make_config(secret_key="")

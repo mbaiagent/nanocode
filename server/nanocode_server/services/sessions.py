@@ -137,16 +137,28 @@ class SessionManager:
             try:
                 endpoint = self.launcher.start(spec)
             except LaunchError as e:
-                self.store.update_session(sid, status="failed", endpoint="", error=str(e)[:500])
-                raise SessionError(502, f"沙箱启动失败：{e}") from None
+                if self.store.fail_start(sid, web_token, str(e)[:500]):
+                    raise SessionError(502, f"沙箱启动失败：{e}") from None
+                # 启动这期间会话被删除/停止/被别人重抢了：状态以数据库为准，不覆盖（#59）
+                raise SessionError(409, "启动期间会话被删除或停止了，请刷新后重试") from None
             now = time.time()
-            self.store.update_session(sid, status="running", endpoint=endpoint, started=now, last_active=now)
-            return self.store.get_session(sid)
+            if not self.store.finish_start(sid, web_token, endpoint, now):
+                # 写完 running 之前状态就变了（删除、停止、租约被重抢）：不能把 deleted
+                # 复活成 running（#59）。刚拉起的沙箱也没人管了，要收拾掉。
+                self.launcher.stop(sid)
+                raise SessionError(409, "启动期间会话被删除或停止了，请刷新后重试")
+            s = self.store.get_session(sid)
+            if s is None or s.status != "running":
+                # 极端竞态：finish_start 成功后的同一瞬间又被删了。沙箱一样要收掉，
+                # 不能留一个数据库里已经没有会话的容器/Pod（#59）。
+                self.launcher.stop(sid)
+                raise SessionError(409, "启动期间会话被删除或停止了，请刷新后重试")
+            return s
 
     def stop(self, sid: str) -> None:
         with self._lock(sid):
             self.launcher.stop(sid)
-            self.store.update_session(sid, status="stopped", endpoint="")
+            self.store.stop_session(sid)
 
     def delete(self, sid: str) -> None:
         with self._lock(sid):
@@ -155,7 +167,7 @@ class SessionManager:
 
     def mark_dead(self, sid: str) -> None:
         """转发失败：沙箱已经不在了。标记为已停止，下次访问会重新启动。"""
-        self.store.update_session(sid, status="stopped", endpoint="")
+        self.store.mark_dead(sid)
 
     def touch(self, sid: str) -> None:
         self.store.update_session(sid, last_active=time.time())
@@ -200,10 +212,12 @@ class SessionManager:
             return None
 
     def reconcile(self) -> None:
-        """控制面重启后：数据库里标着运行中、实际已经不在的沙箱，改成已停止。"""
+        """控制面重启后：数据库里标着运行中、实际已经不在的沙箱，改成已停止；
+        再让启动器清掉数据库里已经没有对应会话的沙箱（无主容器 / 无主进程，#60）。"""
         for s in self.store.active_sessions():
             if not self.launcher.is_alive(s.id):
                 self.mark_dead(s.id)
+        self.launcher.reconcile({s.id for s in self.store.active_sessions()})
 
     def reap_once(self, now: float | None = None) -> list[str]:
         """回收空闲的沙箱：超过 idle_timeout 没有请求、Agent 不在工作。只连着事件流的页面不算活动。

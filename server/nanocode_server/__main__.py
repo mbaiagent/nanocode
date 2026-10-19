@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import signal
 import sys
 import threading
 
@@ -39,8 +40,12 @@ def main(argv: list[str] | None = None) -> int:
     platform.start()
     if platform.control:
         print(f"打开 http://{'127.0.0.1' if cfg.host in ('0.0.0.0', '::') else cfg.host}:{platform.control_port}")
+    stop = threading.Event()
+    # 容器和 systemd 停服务发的是 SIGTERM：不接的话进程不会退出，finally 里的
+    # platform.close()（停沙箱、关数据库）永远不执行，沙箱会带着有效令牌继续跑（#60）。
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
     try:
-        threading.Event().wait()
+        stop.wait()
     except KeyboardInterrupt:
         pass
     finally:

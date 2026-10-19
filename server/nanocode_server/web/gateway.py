@@ -30,7 +30,7 @@ from ..security.keys import internal_key
 from ..security.tokens import Signer, web_token_digest
 from ..services.catalog import CatalogError, ModelCatalog
 from ..services.upstream import UpstreamError, UsageMeter, open_request, probe
-from ..storage import RateLimiter, Store
+from ..storage import RateLimiter, StorageBusy, Store
 from .framework import App, HttpError, Request, Response
 
 ROUTES = {"/v1/chat/completions": "openai", "/chat/completions": "openai", "/v1/messages": "anthropic"}
@@ -71,6 +71,13 @@ class GatewayApp(App):
             self.route("POST", path)(self.complete)
 
     # ------------------------------------------------------------------ 模型请求
+
+    def handle(self, req: Request) -> Response:
+        try:
+            return self.dispatch(req)
+        except StorageBusy as e:
+            # 和控制面一样：连接池忙是 503，让沙箱里的 nanocode 退避重试（#60）
+            raise HttpError(503, f"database busy, retry later. 数据库正忙：{e}") from None
 
     def _caller(self, req: Request) -> tuple[str, Upstream]:
         auth = req.headers.get("authorization") or ""

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ..config import Config
 from .ratelimit import MemoryRateLimiter, RateLimiter, RedisRateLimiter
-from .sql import Database, Store
+from .sql import Database, StorageBusy, Store
 
 
 def open_store(cfg: Config) -> Store:
@@ -17,4 +17,4 @@ def make_rate_limiter(cfg: Config) -> RateLimiter:
     return MemoryRateLimiter(cfg.requests_per_minute)
 
 
-__all__ = ["open_store", "make_rate_limiter", "Store", "Database", "RateLimiter"]
+__all__ = ["open_store", "make_rate_limiter", "Store", "Database", "StorageBusy", "RateLimiter"]
