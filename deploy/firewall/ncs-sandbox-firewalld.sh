@@ -18,46 +18,52 @@ PORT="${NCS_GATEWAY_PORT:-8701}"
 ZONE="${NCS_FIREWALL_ZONE:-ncs-sandbox}"
 FW="${FIREWALL_CMD:-firewall-cmd}"
 
-case "$PORT" in ''|*[!0-9]*) echo "NCS_GATEWAY_PORT 必须是端口号：$PORT" >&2; exit 2 ;; esac
-if ! [[ "$SUBNET" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]]; then
-  echo "NCS_DOCKER_SUBNET 必须是 IPv4 网段（例如 172.30.250.0/24）：$SUBNET" >&2; exit 2
+case "${PORT}" in ''|*[!0-9]*) echo "NCS_GATEWAY_PORT 必须是端口号：${PORT}" >&2; exit 2 ;; esac
+if ! [[ "${SUBNET}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]]; then
+  echo "NCS_DOCKER_SUBNET 必须是 IPv4 网段（例如 172.30.250.0/24）：${SUBNET}" >&2; exit 2
 fi
-if ! [[ "$ZONE" =~ ^[A-Za-z0-9_-]{1,17}$ ]]; then
-  echo "NCS_FIREWALL_ZONE 只能是字母、数字、_ -（最长 17）：$ZONE" >&2; exit 2
+if ! [[ "${ZONE}" =~ ^[A-Za-z0-9_-]{1,17}$ ]]; then
+  echo "NCS_FIREWALL_ZONE 只能是字母、数字、_ -（最长 17）：${ZONE}" >&2; exit 2
 fi
 
-if ! "$FW" --state >/dev/null 2>&1; then
+if ! "${FW}" --state >/dev/null 2>&1; then
   echo "firewalld 没在运行。没有 firewalld 的机器改用 ncs-sandbox-nftables.sh" >&2
   exit 1
 fi
 
-if ! "$FW" --permanent --get-zones | tr ' ' '\n' | grep -qx "$ZONE"; then
-  "$FW" --permanent --new-zone="$ZONE" >/dev/null
+if ! "${FW}" --permanent --get-zones | tr ' ' '\n' | grep -qx "${ZONE}"; then
+  "${FW}" --permanent --new-zone="${ZONE}" >/dev/null
 fi
 
 # 一个网段只能属于一个 zone：在别的 zone（比如有人加进了 trusted）里就先拿出来
-other="$("$FW" --permanent --get-zone-of-source="$SUBNET" 2>/dev/null || true)"
-if [ -n "$other" ] && [ "$other" != "$ZONE" ]; then
-  echo "网段 $SUBNET 原来在 zone $other 里，移到 $ZONE"
-  "$FW" --permanent --zone="$other" --remove-source="$SUBNET" >/dev/null
+other="$("${FW}" --permanent --get-zone-of-source="${SUBNET}" 2>/dev/null || true)"
+if [ -n "${other}" ] && [ "${other}" != "${ZONE}" ]; then
+  echo "网段 ${SUBNET} 原来在 zone ${other} 里，移到 ${ZONE}"
+  "${FW}" --permanent --zone="${other}" --remove-source="${SUBNET}" >/dev/null
 fi
 
-"$FW" --permanent --zone="$ZONE" --set-target=DROP >/dev/null
+"${FW}" --permanent --zone="${ZONE}" --set-target=DROP >/dev/null
 # 专用 zone：清掉以前留下的服务 / 端口 / 其它来源，只留下面这两条
-for s in $("$FW" --permanent --zone="$ZONE" --list-services); do
-  "$FW" --permanent --zone="$ZONE" --remove-service="$s" >/dev/null
+for s in $("${FW}" --permanent --zone="${ZONE}" --list-services); do
+  "${FW}" --permanent --zone="${ZONE}" --remove-service="${s}" >/dev/null
 done
-for p in $("$FW" --permanent --zone="$ZONE" --list-ports); do
-  [ "$p" = "$PORT/tcp" ] || "$FW" --permanent --zone="$ZONE" --remove-port="$p" >/dev/null
+for p in $("${FW}" --permanent --zone="${ZONE}" --list-ports); do
+  [ "${p}" = "${PORT}/tcp" ] || "${FW}" --permanent --zone="${ZONE}" --remove-port="${p}" >/dev/null
 done
-for s in $("$FW" --permanent --zone="$ZONE" --list-sources); do
-  [ "$s" = "$SUBNET" ] || "$FW" --permanent --zone="$ZONE" --remove-source="$s" >/dev/null
+# rich rule 可能放行任意端口：专用 zone 里一条都不留（一行一条，里面有空格，按行读）
+"${FW}" --permanent --zone="${ZONE}" --list-rich-rules | while IFS= read -r rule; do
+  if [ -n "${rule}" ]; then
+    "${FW}" --permanent --zone="${ZONE}" --remove-rich-rule="${rule}" >/dev/null
+  fi
 done
-"$FW" --permanent --zone="$ZONE" --query-source="$SUBNET" >/dev/null 2>&1 \
-  || "$FW" --permanent --zone="$ZONE" --add-source="$SUBNET" >/dev/null
-"$FW" --permanent --zone="$ZONE" --query-port="$PORT/tcp" >/dev/null 2>&1 \
-  || "$FW" --permanent --zone="$ZONE" --add-port="$PORT/tcp" >/dev/null
-"$FW" --reload >/dev/null
+for s in $("${FW}" --permanent --zone="${ZONE}" --list-sources); do
+  [ "${s}" = "${SUBNET}" ] || "${FW}" --permanent --zone="${ZONE}" --remove-source="${s}" >/dev/null
+done
+"${FW}" --permanent --zone="${ZONE}" --query-source="${SUBNET}" >/dev/null 2>&1 \
+  || "${FW}" --permanent --zone="${ZONE}" --add-source="${SUBNET}" >/dev/null
+"${FW}" --permanent --zone="${ZONE}" --query-port="${PORT}/tcp" >/dev/null 2>&1 \
+  || "${FW}" --permanent --zone="${ZONE}" --add-port="${PORT}/tcp" >/dev/null
+"${FW}" --reload >/dev/null
 
-echo "完成：来自 $SUBNET 的连接只放行到本机 $PORT/tcp，其余丢弃（zone $ZONE）。"
-"$FW" --zone="$ZONE" --list-all
+echo "完成：来自 ${SUBNET} 的连接只放行到本机 ${PORT}/tcp，其余丢弃（zone ${ZONE}）。"
+"${FW}" --zone="${ZONE}" --list-all

@@ -71,6 +71,13 @@ class FixedNetworkTest(unittest.TestCase):
                 with self.assertRaises(LaunchError):
                     launcher(net)._ensure_network()
 
+    def test_create_failure_carries_docker_reason(self):
+        d = launcher()
+        d.docker.request = lambda method, path, body=None, timeout=60: (
+            (404, {}) if method == "GET" else (400, {"message": "Pool overlaps with other one on this address space"}))
+        with self.assertRaisesRegex(LaunchError, "Pool overlaps.*NCS_DOCKER_SUBNET"):
+            d._ensure_network()
+
     def test_unpinned_launcher_keeps_old_behaviour(self):
         d = launcher(bridge="", subnet="")
         d._ensure_network()
@@ -98,6 +105,7 @@ case "$*" in
   *"--list-services") echo "ssh" ;;
   *"--list-ports") echo "9999/tcp" ;;
   *"--list-sources") echo "10.9.9.0/24" ;;
+  *"--list-rich-rules") printf '%s\n' 'rule family="ipv4" port port="22" protocol="tcp" accept' ;;
   *"--query-"*) exit 1 ;;
 esac
 exit 0
@@ -120,6 +128,7 @@ class FirewallScriptTest(unittest.TestCase):
             f.write(FAKE_FIREWALL_CMD)
         os.chmod(fake, 0o755)
         r = subprocess.run([BASH, os.path.join(FIREWALL, "ncs-sandbox-firewalld.sh")], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
                            env={**os.environ, "FIREWALL_CMD": fake, "FW_LOG": log, **env})
         calls = read(log).splitlines() if os.path.exists(log) else []
         return r, calls
@@ -132,6 +141,7 @@ class FirewallScriptTest(unittest.TestCase):
                      "--permanent --zone=trusted --remove-source=172.30.250.0/24",   # 网段只能在一个 zone 里
                      f"{z} --set-target=DROP",
                      f"{z} --remove-service=ssh", f"{z} --remove-port=9999/tcp", f"{z} --remove-source=10.9.9.0/24",
+                     f'{z} --remove-rich-rule=rule family="ipv4" port port="22" protocol="tcp" accept',
                      f"{z} --add-source=172.30.250.0/24", f"{z} --add-port=8701/tcp", "--reload"):
             self.assertIn(want, calls)
         self.assertLess(calls.index(f"{z} --set-target=DROP"), calls.index("--reload"))
@@ -152,6 +162,7 @@ class FirewallScriptTest(unittest.TestCase):
         os.chmod(fake, 0o755)
         out = os.path.join(tmp, "ncs.nft")
         r = subprocess.run([BASH, os.path.join(FIREWALL, "ncs-sandbox-nftables.sh")], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
                            env={**os.environ, "NFT_CMD": fake, "NFT_FILE": out, "NCS_GATEWAY_PORT": "8701"})
         self.assertEqual(r.returncode, 0, r.stderr)
         rules = read(out)

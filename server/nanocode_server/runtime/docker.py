@@ -129,9 +129,12 @@ class DockerLauncher(Launcher):
                 body["Options"][BRIDGE_NAME_OPTION] = self.bridge_name
             if self.subnet:
                 body["IPAM"] = {"Config": [{"Subnet": self.subnet}]}
-            status, _ = self.docker.request("POST", "/networks/create", body)
+            status, created = self.docker.request("POST", "/networks/create", body)
             if status not in (200, 201):
-                raise LaunchError(f"创建沙箱网络失败：HTTP {status}")
+                # 最常见的是网段和机器上已有的网络冲突（"Pool overlaps with other one on this address space"）：
+                # 把 Docker 的原因带出来，并提示换 NCS_DOCKER_SUBNET
+                hint = f"；网段冲突时换一个 NCS_DOCKER_SUBNET（当前 {self.subnet}），防火墙脚本用同一个值" if self.subnet else ""
+                raise LaunchError(f"创建沙箱网络失败：HTTP {status} {created.get('message', '')}{hint}")
             status, net = self.docker.request("GET", f"/networks/{self.network}")
         elif status != 200:
             raise LaunchError(f"读不到沙箱网络 {self.network}：HTTP {status}")

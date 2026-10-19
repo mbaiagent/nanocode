@@ -148,5 +148,24 @@ class ResumeCorruptTest(_SessionCase):
         self.assertTrue(os.path.exists(os.path.join(self.dir, "20260101-000000.json.corrupt")))
 
 
+class NewSessionIdTest(unittest.TestCase):
+    def test_ids_are_unique_even_with_a_frozen_clock(self):
+        """Windows 上时钟精度只有十几毫秒：同一时间戳连取多次也不能重复（/clear 后编号必须变）。"""
+        import datetime as real
+
+        frozen = real.datetime(2026, 1, 2, 3, 4, 5, 999999)
+
+        class Frozen(real.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen
+
+        with mock.patch.object(sess.datetime, "datetime", Frozen), mock.patch.object(sess, "_last_sid_time", None):
+            ids = [sess.new_session_id() for _ in range(5)]
+        self.assertEqual(len(set(ids)), 5)
+        self.assertEqual(ids, sorted(ids))
+        self.assertEqual(ids[:2], ["20260102-030405-999999", "20260102-030406-000000"])
+
+
 if __name__ == "__main__":
     unittest.main()

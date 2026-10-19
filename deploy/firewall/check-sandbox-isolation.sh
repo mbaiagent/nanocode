@@ -14,14 +14,14 @@ PORT="${NCS_GATEWAY_PORT:-8701}"
 PROBE_PORTS="${PROBE_PORTS:-22 80 443}"
 DOCKER="${DOCKER_CMD:-docker}"
 
-GW="$("$DOCKER" network inspect -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' "$NET")"
-if [ -z "$GW" ]; then
-  echo "读不到沙箱网络 $NET 的网关地址（平台启动过一次才会建这个网络）" >&2; exit 2
+GW="$("${DOCKER}" network inspect -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' "${NET}")"
+if [ -z "${GW}" ]; then
+  echo "读不到沙箱网络 ${NET} 的网关地址（平台启动过一次才会建这个网络）" >&2; exit 2
 fi
-echo "沙箱网络 $NET，宿主机网桥地址 $GW，网关端口 $PORT，探测端口 $PROBE_PORTS"
+echo "沙箱网络 ${NET}，宿主机网桥地址 ${GW}，网关端口 ${PORT}，探测端口 ${PROBE_PORTS}"
 
-"$DOCKER" run --rm --network "$NET" --read-only --cap-drop ALL --security-opt no-new-privileges \
-  --user 10001:10001 --entrypoint python "$IMAGE" -c '
+"${DOCKER}" run --rm --network "${NET}" --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --user 10001:10001 --entrypoint python "${IMAGE}" -c '
 import socket, sys
 gw, gateway_port, ports = sys.argv[1], int(sys.argv[2]), [int(p) for p in sys.argv[3].split()]
 def probe(port):
@@ -49,4 +49,4 @@ for p in ports:
     bad += not ok
 print("通过" if not bad else f"{bad} 项没通过：检查 deploy/firewall/README.md")
 sys.exit(1 if bad else 0)
-' "$GW" "$PORT" "$PROBE_PORTS"
+' "${GW}" "${PORT}" "${PROBE_PORTS}"
