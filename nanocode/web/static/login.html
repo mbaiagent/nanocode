@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<title>登录 · nanocode</title>
+<style>
+/* 设计 token 与主界面同一套，未设置主题时跟随系统 */
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --surface-2: #f9fafb;
+  --border: #e4e7ec;
+  --border-strong: #d0d5dd;
+  --text: #0f172a;
+  --text-2: #475467;
+  --muted: #8b95a7;
+  --accent: #5b5bf0;
+  --accent-strong: #4a4ae0;
+  --accent-soft: rgba(91, 91, 240, .10);
+  --danger: #c0362c;
+  --danger-soft: rgba(192, 54, 44, .09);
+  --shadow-md: 0 18px 40px -22px rgba(15, 23, 42, .35);
+  --r-lg: 16px;
+  --r-md: 12px;
+  --font-ui: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0a0d12;
+    --surface: #0f131a;
+    --surface-2: #121821;
+    --border: #1e2734;
+    --border-strong: #2a3545;
+    --text: #e8eef6;
+    --text-2: #a9b6c7;
+    --muted: #6f7f94;
+    --accent: #8b8bff;
+    --accent-strong: #a0a0ff;
+    --accent-soft: rgba(139, 139, 255, .14);
+    --danger: #ff7b72;
+    --danger-soft: rgba(255, 123, 114, .10);
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font-family: var(--font-ui);
+  background: var(--bg);
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  /* iOS 安全区 */
+  padding-left: max(16px, env(safe-area-inset-left));
+  padding-right: max(16px, env(safe-area-inset-right));
+}
+.card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-md);
+  padding: 32px 28px 28px;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.brand .logo {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 20px;
+  user-select: none;
+}
+.brand h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+.sub {
+  margin: 0 0 24px;
+  color: var(--text-2);
+  font-size: 14px;
+}
+.field { margin-bottom: 16px; }
+.field label {
+  display: block;
+  font-size: 14px;
+  color: var(--text-2);
+  margin-bottom: 8px;
+}
+.field input {
+  width: 100%;
+  /* 16px+ 防止 iOS 聚焦时自动缩放 */
+  font-size: 16px;
+  font-family: var(--font-ui);
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  padding: 0 14px;
+  /* 48px 高，手指好点 */
+  height: 50px;
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.field input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.pw-wrap { position: relative; }
+.pw-wrap input { padding-right: 52px; }
+.pw-toggle {
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  width: 42px;
+  height: 42px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.pw-toggle:active { background: var(--surface-2); }
+.error {
+  display: none;
+  font-size: 14px;
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-radius: var(--r-md);
+  padding: 10px 14px;
+  margin-bottom: 16px;
+}
+.error.show { display: block; }
+button.submit {
+  width: 100%;
+  height: 50px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  font-family: var(--font-ui);
+  cursor: pointer;
+}
+button.submit:active { background: var(--accent-strong); }
+button.submit:disabled { opacity: .6; cursor: default; }
+.hint {
+  margin: 20px 0 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="brand">
+    <div class="logo" aria-hidden="true">&gt;_</div>
+    <h1>nanocode</h1>
+  </div>
+  <p class="sub">登录后进入控制台</p>
+  <div class="error" id="error" role="alert"></div>
+  <form id="login-form" autocomplete="on">
+    <div class="field">
+      <label for="username">用户名</label>
+      <input id="username" name="username" type="text" autocomplete="username"
+             autocapitalize="none" autocorrect="off" spellcheck="false" required>
+    </div>
+    <div class="field">
+      <label for="password">密码</label>
+      <div class="pw-wrap">
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+        <button type="button" class="pw-toggle" id="pw-toggle" aria-label="显示密码">显示</button>
+      </div>
+    </div>
+    <button type="submit" class="submit" id="submit">登录</button>
+  </form>
+  <p class="hint">会话保持 30 天 · 退出请清 Cookie</p>
+</main>
+<script>
+(function () {
+  var form = document.getElementById("login-form");
+  var userEl = document.getElementById("username");
+  var pwEl = document.getElementById("password");
+  var errEl = document.getElementById("error");
+  var submitEl = document.getElementById("submit");
+  var toggleEl = document.getElementById("pw-toggle");
+
+  toggleEl.addEventListener("click", function () {
+    var show = pwEl.type === "password";
+    pwEl.type = show ? "text" : "password";
+    toggleEl.textContent = show ? "隐藏" : "显示";
+    toggleEl.setAttribute("aria-label", show ? "隐藏密码" : "显示密码");
+  });
+
+  function showError(msg) {
+    errEl.textContent = msg;
+    errEl.classList.add("show");
+  }
+  function clearError() {
+    errEl.textContent = "";
+    errEl.classList.remove("show");
+  }
+
+  form.addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    clearError();
+    var username = userEl.value.trim();
+    var password = pwEl.value;
+    if (!username || !password) {
+      showError("请输入用户名和密码");
+      return;
+    }
+    submitEl.disabled = true;
+    submitEl.textContent = "登录中…";
+    fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ username: username, password: password })
+    }).then(function (resp) {
+      return resp.json().then(function (data) {
+        return { status: resp.status, data: data };
+      });
+    }).then(function (r) {
+      if (r.data && r.data.ok) {
+        location.href = "/";
+      } else {
+        showError((r.data && r.data.error) || ("登录失败（" + r.status + "）"));
+        pwEl.value = "";
+        pwEl.focus();
+      }
+    }).catch(function () {
+      showError("网络错误，请检查连接后重试");
+    }).finally(function () {
+      submitEl.disabled = false;
+      submitEl.textContent = "登录";
+    });
+  });
+
+  userEl.focus();
+})();
+</script>
+</body>
+</html>

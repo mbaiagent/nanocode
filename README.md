@@ -254,6 +254,8 @@ nanocode --api-key sk-xxx                     # 直接给 API Key（更推荐用
 | `NANOCODE_WEB_DAILY_RUNS` | 每个自然日最多启动多少轮 Agent（含排队后执行的），默认 200，用完返回 429（`code: daily_budget`）。设为 `0` 不限 |
 | `NANOCODE_WEB_DAILY_LLM_CALLS` | 每个自然日最多调用多少次模型 API（Provider 层计数，一轮 Agent 可能调用很多次），默认 `0` 不限；到上限按"配额用尽"处理，不再重试 |
 | `NANOCODE_TRUST_PROXY` | 设为 `1` 时按 `X-Forwarded-For` 最左侧地址区分客户端。只在确实挂了反向代理时开（否则可被伪造）；挂了反代却不开，所有人会共用代理 IP 的一个限流桶 |
+| `NANOCODE_HTPASSWD` | 自带登录页的凭据文件（htpasswd apr1 格式）。设为可读文件即启用 `GET /login` 登录页，会话 Cookie 30 天；不设则无登录页（本地开发默认）。对外暴露时务必启用，或在反代前挂 basic auth / oauth2-proxy |
+| `NANOCODE_COOKIE_SECURE` | 登录会话 Cookie 是否带 `Secure` 标记，默认 `1`（仅 HTTPS 发送）。本地明文调试登录页时设为 `0` |
 | `NANOCODE_SEARCH_PROVIDER` `NANOCODE_SEARCH_BASE_URL` `NANOCODE_SEARCH_API_KEY` | `web_search` 的搜索源：`duckduckgo`（默认，零配置）、`searxng`（填地址）、`tavily` / `brave` / `serper` / `deepseek`（填 Key，`deepseek` 兼容 `/v1/search` 形状）。旧前缀 `NCS_SEARCH_*` 仍兼容 |
 | `NANOCODE_SEARCH_ALLOW_HTTP` `NANOCODE_SEARCH_ALLOW_PRIVATE` | 自建 SearXNG 在 http 或内网时打开：前者允许明文，后者放弃公网地址校验。只在完全可信的本地/内网环境使用 |
 
