@@ -45,6 +45,8 @@ class AnthropicProvider(Provider):
                 elif b["type"] == "tool_use":
                     # 只发 Anthropic 认识的字段：历史里可能有别的协议的附加数据（如 Gemini 的 extra_content）
                     blocks.append({"type": "tool_use", "id": b["id"], "name": b["name"], "input": b["input"]})
+                elif b["type"] == "reasoning":
+                    continue    # 别的 provider 的思考内容（#99），Anthropic 不认识这种块
                 else:
                     blocks.append(b)
             out.append({"role": msg["role"], "content": blocks or [{"type": "text", "text": "(空)"}]})

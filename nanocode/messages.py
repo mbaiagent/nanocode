@@ -43,6 +43,24 @@ def tool_use_block(id: str, name: str, input: dict, extra_content: dict | None =
     return block
 
 
+def reasoning_block(text: str, source: str) -> Block:
+    """模型的思考过程（如 DeepSeek 思考模式的 reasoning_content，#99）。
+
+    和 extra_content 一样，Agent 不解读它，只随 assistant 消息保存：text_of、上下文压缩的摘要、
+    Web 时间线都只看 text / tool_use，自然忽略它。source 记下是哪个端点 + 模型产出的 ——
+    只有同一个端点、同一个模型的 Provider 会把它发回去（DeepSeek 带 tools 的请求要求回传所有历史轮次的
+    reasoning_content，否则 400）；换了厂商或协议时，别家不会收到一个不认识的字段。
+    """
+    return {"type": "reasoning", "text": text, "source": source}
+
+
+def reasoning_of(message: Message, source: str) -> str | None:
+    """这条消息里由 source 产出的思考内容；没有就返回 None。"""
+    parts = [b.get("text", "") for b in message.get("content", [])
+             if b.get("type") == "reasoning" and b.get("source") == source]
+    return "".join(parts) if parts else None
+
+
 def tool_result_block(tool_use_id: str, content: str, is_error: bool = False) -> Block:
     return {"type": "tool_result", "tool_use_id": tool_use_id, "content": content, "is_error": is_error}
 

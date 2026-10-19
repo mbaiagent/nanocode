@@ -12,13 +12,16 @@ Kimi（Moonshot）、智谱 GLM、硅基流动、OpenRouter、本地 Ollama / vL
   assistant 的 tool_use 块         →   assistant 消息的 tool_calls 字段（arguments 是 JSON 字符串）
   user 消息里的 tool_result 块      →   单独的 {"role": "tool", "tool_call_id": ...} 消息
   tools: {name, input_schema}      →   {"type": "function", "function": {name, parameters}}
+  assistant 的 reasoning 块         ↔   assistant 消息的 reasoning_content（只发回给产出它的同一个端点 + 模型，#99）
 """
 
 from __future__ import annotations
 
 import json
+from urllib.parse import urlsplit
 
-from ..messages import LLMResponse, Message, Usage, estimate_tokens, text_block, tool_use_block
+from ..messages import (LLMResponse, Message, Usage, estimate_tokens, reasoning_block, reasoning_of, text_block,
+                        tool_use_block)
 from .base import LLMError, Provider, TextCallback, finalize_text_blocks, parse_tool_input
 
 
@@ -29,11 +32,32 @@ class OpenAICompatProvider(Provider):
         super().__init__(*args, **kwargs)
         self.stream_usage = stream_usage
 
+    @property
+    def source(self) -> str:
+        """这个端点的身份，记在 reasoning 块上：协议 + 规范化后的 base_url + 模型名。
+
+        要带模型名：多用户平台里所有 OpenAI 协议的模型共用同一个网关地址（http://网关/v1），
+        用户中途从 DeepSeek 换成 OpenAI 时 base_url 不变 —— 只看地址的话，DeepSeek 的思考内容
+        就会被转发给不认识这个字段的厂商。
+        """
+        u = urlsplit(self.base_url)
+        return f"openai:{u.scheme.lower()}://{u.netloc.lower()}{u.path.rstrip('/')}#{self.model}"
+
     # ------------------------------------------------------------ 翻译：请求
 
     @staticmethod
-    def to_openai_messages(system: str, messages: list[Message]) -> list[dict]:
+    def to_openai_messages(system: str, messages: list[Message], reasoning_source: str | None = None) -> list[dict]:
+        """reasoning_source：当前端点的身份（见 source）。
+
+        历史里有这个端点产出的 reasoning 块时，每条 assistant 消息都带上 reasoning_content：
+        DeepSeek 思考模式下带 tools 的请求要求回传**所有**历史轮次的 reasoning_content（没产出
+        思考的轮次，比如压缩后补的确认消息，带空字符串），否则 400；不带 tools 时服务端会忽略它。
+        别的端点（OpenAI、千问、Kimi、GLM、OpenRouter……）产出的历史、或者不传 reasoning_source，
+        请求和以前完全一样，不会多出一个它们不认识的字段。
+        """
         out: list[dict] = [{"role": "system", "content": system}] if system else []
+        send_reasoning = bool(reasoning_source) and any(
+            reasoning_of(m, reasoning_source) is not None for m in messages if m["role"] == "assistant")
         for msg in messages:
             if msg["role"] == "assistant":
                 text = "".join(b["text"] for b in msg["content"] if b["type"] == "text")
@@ -46,6 +70,8 @@ class OpenAICompatProvider(Provider):
                     for b in msg["content"] if b["type"] == "tool_use"
                 ]
                 m: dict = {"role": "assistant", "content": text or None}
+                if send_reasoning:
+                    m["reasoning_content"] = reasoning_of(msg, reasoning_source) or ""
                 if calls:
                     m["tool_calls"] = calls
                 out.append(m)
@@ -75,7 +101,7 @@ class OpenAICompatProvider(Provider):
     def complete(self, system, messages, tools, max_tokens=4096, on_text: TextCallback = None) -> LLMResponse:
         body: dict = {
             "model": self.model,
-            "messages": self.to_openai_messages(system, messages),
+            "messages": self.to_openai_messages(system, messages, self.source),
             "max_tokens": max_tokens,
             "stream": True,
         }
@@ -86,6 +112,7 @@ class OpenAICompatProvider(Provider):
         headers = {"authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
         text = ""
+        reasoning = ""   # DeepSeek 等思考模式的 reasoning_content：存下来，下一轮要原样回传（#99）
         calls: dict[int, dict] = {}  # 流式时，工具调用按 index 分片到达，要拼起来
         finish = None
         usage = None
@@ -100,6 +127,8 @@ class OpenAICompatProvider(Provider):
                 usage = Usage(u.get("prompt_tokens", 0) or 0, u.get("completion_tokens", 0) or 0)
             for choice in chunk.get("choices") or []:
                 delta = choice.get("delta") or {}
+                if delta.get("reasoning_content"):
+                    reasoning += delta["reasoning_content"]      # 不走 on_text：思考过程不是回复正文
                 if delta.get("content"):
                     text += delta["content"]
                     if on_text:
@@ -115,7 +144,8 @@ class OpenAICompatProvider(Provider):
                 if choice.get("finish_reason"):
                     finish = choice["finish_reason"]
 
-        blocks = [text_block(text)]
+        blocks = [reasoning_block(reasoning, self.source)] if reasoning else []
+        blocks.append(text_block(text))
         for i, c in enumerate(calls[k] for k in sorted(calls)):
             blocks.append(tool_use_block(c["id"] or f"call_{i}", c["name"], parse_tool_input(c["args"]), c.get("extra")))
         blocks = finalize_text_blocks(blocks)
