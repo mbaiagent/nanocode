@@ -63,7 +63,7 @@ git checkout -b fix/<自己>-<topic> origin/main
 | #89 #90 | DeepSeek harness | `fix/markdown-xss` | **已合并（#91）** | 已完成 | Markdown 链接 XSS + 本地化 marked；CSP 收回 self |
 | （无 issue，用户直派） | Muse | `fix/muse-web-login` | **已合并到 main（043e5e8）** | 已完成 | 自带登录页替代 nginx Basic Auth 原生弹窗；动了 `nanocode/web/server.py` + 新增 `static/login.html`，WorkBuddy 如动 web/ 请先同步 |
 
-| （无 issue，用户直派） | Muse | `fix/muse-md-spacing` | 进行中 | 今天 | 回复 markdown 排版收紧：标题/列表纵向 margin 太大显空行，h3 字号太小无层级 |
+| （无 issue，用户直派） | Muse | `fix/muse-md-spacing` | **已合并到 main（4ab5434）** | 已完成 | 回复 markdown 排版收紧：标题/列表纵向 margin 太大显空行，h3 字号太小无层级 |
 
 **空 issue 认领流程**：
 1. 先看 issue 是否被 main 覆盖（`git log --oneline | grep issue号`）
