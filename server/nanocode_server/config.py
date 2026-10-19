@@ -156,6 +156,9 @@ class Config:
     agent_bind: str = ""                    # 沙箱代理用：监听地址，例如 10.77.0.2:8790（只能是内网地址，不能是 0.0.0.0）
     agent_upstream_gateway: str = ""        # 沙箱代理用：真正的模型网关，例如 10.77.0.1:8701
     agent_relay_bind: str = ""              # 沙箱代理用：中继监听的地址；空 = 沙箱网桥的地址
+    agent_relay_max_connections: int = 128  # 中继全局连接上限（所有沙箱共用）
+    agent_relay_per_sandbox: int = 16       # 每个沙箱（按来源 IP）最多几条中继连接：一个沙箱占不满全局名额
+    agent_relay_idle_timeout: int = 300     # 中继连接两个方向都没数据超过这么多秒就断开
 
     gateway_host: str = "127.0.0.1"
     gateway_port: int = 8701
@@ -220,6 +223,9 @@ class Config:
             agent_bind=_env("NCS_AGENT_BIND"),
             agent_upstream_gateway=_env("NCS_AGENT_UPSTREAM_GATEWAY"),
             agent_relay_bind=_env("NCS_AGENT_RELAY_BIND"),
+            agent_relay_max_connections=_int("NCS_AGENT_RELAY_MAX_CONNECTIONS", d.agent_relay_max_connections),
+            agent_relay_per_sandbox=_int("NCS_AGENT_RELAY_PER_SANDBOX", d.agent_relay_per_sandbox),
+            agent_relay_idle_timeout=_int("NCS_AGENT_RELAY_IDLE_TIMEOUT", d.agent_relay_idle_timeout),
             sandbox_mcp_servers=_json_dict("NCS_SANDBOX_MCP_SERVERS"),
             k8s_api=_env("NCS_K8S_API", d.k8s_api),
             k8s_namespace=_env("NCS_K8S_NAMESPACE", d.k8s_namespace),
@@ -292,6 +298,10 @@ class Config:
             split_hostport(self.agent_upstream_gateway)
         except ValueError:
             raise ValueError("沙箱代理需要 NCS_AGENT_UPSTREAM_GATEWAY=<网关地址>:<端口>，例如 10.77.0.1:8701") from None
+        if not (1 <= self.agent_relay_per_sandbox <= self.agent_relay_max_connections):
+            raise ValueError("要求 1 <= NCS_AGENT_RELAY_PER_SANDBOX <= NCS_AGENT_RELAY_MAX_CONNECTIONS")
+        if self.agent_relay_idle_timeout < 10:
+            raise ValueError("NCS_AGENT_RELAY_IDLE_TIMEOUT 至少 10 秒（模型首个 token 前可能有停顿）")
 
     @property
     def sandbox_gateway_url(self) -> str:

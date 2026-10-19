@@ -230,23 +230,215 @@ class RelayTest(unittest.TestCase):
             relay.close()
             upstream.close()
 
+    @staticmethod
+    def closed_by_peer(sock, timeout=5.0) -> bool:
+        sock.settimeout(timeout)
+        try:
+            return sock.recv(10) == b""
+        except ConnectionResetError:                           # Windows 上是 RST
+            return True
+        except socket.timeout:
+            return False
+
+    @staticmethod
+    def echo_server():
+        """回显上游：每条连接读到什么回什么，直到对方关闭。可以挂住不读（hang=True）。"""
+        srv = socket.create_server(("127.0.0.1", 0))
+
+        def handle(conn):
+            try:
+                while True:
+                    data = conn.recv(65536)
+                    if not data:
+                        break
+                    conn.sendall(data)
+            except OSError:
+                pass
+            finally:
+                conn.close()
+
+        def loop():
+            while True:
+                try:
+                    conn, _ = srv.accept()
+                except OSError:
+                    return
+                threading.Thread(target=handle, args=(conn,), daemon=True).start()
+        threading.Thread(target=loop, daemon=True).start()
+        return srv
+
+    def roundtrip(self, address, payload=b"ping"):
+        c = socket.create_connection(address, timeout=5)
+        try:
+            c.sendall(payload)
+            return c.recv(65536)
+        finally:
+            c.close()
+
     def test_connection_cap(self):
-        upstream = socket.create_server(("127.0.0.1", 0))
-        relay = TcpRelay("127.0.0.1", 0, upstream.getsockname()[:2], max_connections=1).start()
+        upstream = self.echo_server()
+        relay = TcpRelay("127.0.0.1", 0, upstream.getsockname()[:2], max_connections=1, per_source=1).start()
         try:
             a = socket.create_connection(relay.address, timeout=5)
             time.sleep(0.2)
             b = socket.create_connection(relay.address, timeout=5)
-            try:
-                closed = b.recv(10) == b""                    # 超过上限：直接断开
-            except ConnectionResetError:                       # Windows 上是 RST
-                closed = True
-            self.assertTrue(closed)
+            self.assertTrue(self.closed_by_peer(b))                # 超过上限：直接断开
             a.close()
             b.close()
         finally:
             relay.close()
             upstream.close()
+
+    def test_idle_connections_do_not_block_new_ones(self):
+        """回归（#126 审查）：空闲连接占着名额不放，别的沙箱就调不了模型。空闲超时后名额要还回来。"""
+        upstream = self.echo_server()
+        relay = TcpRelay("127.0.0.1", 0, upstream.getsockname()[:2], max_connections=2, per_source=2,
+                         idle_timeout=0.5).start()
+        try:
+            idle = [socket.create_connection(relay.address, timeout=5) for _ in range(2)]
+            time.sleep(0.2)
+            self.assertEqual(relay.active(), 2)
+            blocked = socket.create_connection(relay.address, timeout=5)
+            self.assertTrue(self.closed_by_peer(blocked))          # 名额满了
+            blocked.close()
+            for c in idle:
+                self.assertTrue(self.closed_by_peer(c))            # 空闲超时被断开
+                c.close()
+            deadline = time.time() + 5
+            while relay.active() and time.time() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(relay.active(), 0)
+            self.assertEqual(self.roundtrip(relay.address), b"ping")   # 新连接能用了
+        finally:
+            relay.close()
+            upstream.close()
+
+    def test_active_connection_is_not_cut_by_idle_timeout(self):
+        upstream = self.echo_server()
+        relay = TcpRelay("127.0.0.1", 0, upstream.getsockname()[:2], idle_timeout=0.6).start()
+        try:
+            c = socket.create_connection(relay.address, timeout=5)
+            for _ in range(5):                                     # 总时长超过空闲超时，但一直有数据
+                time.sleep(0.3)
+                c.sendall(b"x")
+                self.assertEqual(c.recv(10), b"x")
+            c.close()
+        finally:
+            relay.close()
+            upstream.close()
+
+    def test_one_sandbox_cannot_take_all_slots(self):
+        upstream = self.echo_server()
+        relay = TcpRelay("127.0.0.1", 0, upstream.getsockname()[:2], max_connections=10, per_source=2).start()
+        try:
+            held = [socket.create_connection(relay.address, timeout=5) for _ in range(2)]
+            time.sleep(0.2)
+            third = socket.create_connection(relay.address, timeout=5)
+            self.assertTrue(self.closed_by_peer(third))            # 同一来源超过 per_source
+            third.close()
+            self.assertEqual(relay.active(), 2)
+            for c in held:
+                c.close()
+        finally:
+            relay.close()
+            upstream.close()
+
+    def test_half_close_is_bounded(self):
+        """一头发了 EOF、另一头既不回也不关：最多等 half_close_timeout。"""
+        silent = socket.create_server(("127.0.0.1", 0))
+        conns = []
+        threading.Thread(target=lambda: conns.append(silent.accept()[0]), daemon=True).start()
+        relay = TcpRelay("127.0.0.1", 0, silent.getsockname()[:2], idle_timeout=30, half_close_timeout=0.5).start()
+        try:
+            c = socket.create_connection(relay.address, timeout=5)
+            c.shutdown(socket.SHUT_WR)
+            started = time.time()
+            self.assertTrue(self.closed_by_peer(c, timeout=5))
+            self.assertLess(time.time() - started, 4)
+            c.close()
+        finally:
+            relay.close()
+            silent.close()
+            for x in conns:
+                x.close()
+
+
+class AgentLauncherFailureTest(unittest.TestCase):
+    def agent(self, launcher):
+        agent = SandboxAgent(launcher, SECRET, "http://127.0.0.1:1")
+        server = make_server(agent, "127.0.0.1", 0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return agent, f"http://127.0.0.1:{server.server_address[1]}"
+
+    def test_stop_delete_failures_are_502_with_reason(self):
+        class Broken(LocalLauncher):
+            def stop(self, sid):
+                raise LaunchError("连不上 Docker（/var/run/docker.sock）")
+
+            def delete(self, sid):
+                raise LaunchError("连不上 Docker（/var/run/docker.sock）")
+
+            def is_alive(self, sid):
+                raise LaunchError("连不上 Docker")
+        _, url = self.agent(Broken(tempfile.mkdtemp()))
+        for path, method in ((f"/v1/sandboxes/{'a' * 16}/stop", "POST"), (f"/v1/sandboxes/{'a' * 16}/delete", "POST"),
+                             (f"/v1/sandboxes/{'a' * 16}", "GET")):
+            with self.subTest(path=path):
+                status, body = call(url + path, method)
+                self.assertEqual(status, 502)
+                self.assertIn("Docker", body.get("error", ""))
+
+    def test_rediscovered_address_is_cached(self):
+        """代理重启后按容器找回沙箱地址，找回一次就缓存，不用每个请求都查 Docker。"""
+        sandbox = FakeSandbox()
+        lookups = []
+
+        class Rediscover(LocalLauncher):
+            def endpoint_of(self, sid):
+                lookups.append(sid)
+                return sandbox.url
+        _, url = self.agent(Rediscover(tempfile.mkdtemp()))
+        try:
+            for _ in range(3):
+                self.assertEqual(call(f"{url}/sbx/{'d' * 16}/api/state", token="",
+                                      headers={"x-nanocode-token": "t" * 32})[0], 200)
+            self.assertEqual(lookups, ["d" * 16])
+            # 令牌仍由沙箱自己核对：错的令牌被沙箱拒绝 → 代理回 403 并丢掉缓存
+            self.assertEqual(call(f"{url}/sbx/{'d' * 16}/api/state", token="",
+                                  headers={"x-nanocode-token": "bad"})[0], 403)
+            call(f"{url}/sbx/{'d' * 16}/api/state", token="", headers={"x-nanocode-token": "t" * 32})
+            self.assertEqual(len(lookups), 2)
+        finally:
+            sandbox.close()
+
+
+class FakeSandbox:
+    """只认令牌 ttt… 的假沙箱。"""
+
+    def __init__(self):
+        from http.server import BaseHTTPRequestHandler
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                ok = self.headers.get("x-nanocode-token") == "t" * 32
+                body = b'{"ok": true}' if ok else b"{}"
+                self.send_response(200 if ok else 403)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+        self.server = support.LocalHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
 
 
 class RemoteConfigTest(unittest.TestCase):
@@ -264,7 +456,8 @@ class RemoteConfigTest(unittest.TestCase):
     def test_agent_config(self):
         ok = Config(remote_agent_secret=SECRET, agent_bind="10.77.0.2:8790", agent_upstream_gateway="10.77.0.1:8701")
         ok.validate_agent()
-        for bad in ({"agent_bind": "0.0.0.0:8790"}, {"agent_bind": "[::]:8790"}, {"agent_bind": "10.77.0.2"},
+        for bad in ({"agent_relay_per_sandbox": 0}, {"agent_relay_per_sandbox": 200}, {"agent_relay_idle_timeout": 1},
+                    {"agent_bind": "0.0.0.0:8790"}, {"agent_bind": "[::]:8790"}, {"agent_bind": "10.77.0.2"},
                     {"agent_bind": ""}, {"remote_agent_secret": "x" * 31}, {"agent_upstream_gateway": "10.77.0.1"}):
             with self.subTest(bad=bad):
                 cfg = Config(**{**ok.__dict__, **bad})

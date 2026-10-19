@@ -21,6 +21,7 @@
 | 沙箱访问数据库 | PG / Redis 只听平台机器的 127.0.0.1；沙箱的流量只能经中继到网关端口 |
 | 密钥在公网明文传输 | 代理接口是明文 HTTP，**只走 WireGuard**；公网上只多开一个 WireGuard 的 UDP 端口，只允许对端 IP |
 | 沙箱出外网 | internal 网络，同单机 |
+| 一个沙箱占满网关中继 | 中继每条连接有空闲超时（`NCS_AGENT_RELAY_IDLE_TIMEOUT`，默认 300 秒）和半关闭时限；全局上限 `NCS_AGENT_RELAY_MAX_CONNECTIONS`（128），每个沙箱上限 `NCS_AGENT_RELAY_PER_SANDBOX`（16） |
 
 ## 资源（1 vCPU / 1 GB 的沙箱主机）
 

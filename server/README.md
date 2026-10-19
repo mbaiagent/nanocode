@@ -184,6 +184,7 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 | `NCS_REMOTE_AGENT_URL` / `NCS_REMOTE_AGENT_SECRET` | `NCS_LAUNCHER=remote`：沙箱代理地址（走 WireGuard）/ 两边共用的密钥（≥32 字符），见 [deploy/sandbox-host/](../deploy/sandbox-host/README.md) | — |
 | `NCS_REMOTE_GATEWAY_URL` | 远程沙箱访问网关的地址（沙箱主机上的中继）；空 = 启动时问代理 | — |
 | `NCS_AGENT_BIND` / `NCS_AGENT_UPSTREAM_GATEWAY` / `NCS_AGENT_RELAY_BIND` | 沙箱代理（`python -m nanocode_server sandbox-agent`）：监听的隧道地址（不能是 0.0.0.0）/ 平台的网关 / 中继监听地址（空 = 沙箱网桥） | — |
+| `NCS_AGENT_RELAY_MAX_CONNECTIONS` / `NCS_AGENT_RELAY_PER_SANDBOX` / `NCS_AGENT_RELAY_IDLE_TIMEOUT` | 沙箱代理的网关中继：全局连接上限 / 每个沙箱上限 / 空闲断开秒数 | `128` / `16` / `300` |
 | `NCS_K8S_*` | 命名空间、运行时类、存储类、工作区大小、API 地址 | 见 `config.py` |
 | `NCS_MAX_SANDBOXES` / `NCS_MAX_SESSIONS_PER_USER` | 总容量 / 每人同时运行的会话数 | 200 / 3 |
 | `NCS_IDLE_TIMEOUT` / `NCS_TOKEN_TTL` | 空闲回收秒数 / 网关令牌有效期（也是沙箱最长存活时间） | 1800 / 43200 |

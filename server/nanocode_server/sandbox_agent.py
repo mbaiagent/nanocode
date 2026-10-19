@@ -25,9 +25,11 @@ from __future__ import annotations
 import hmac
 import json
 import re
+import select
 import socket
 import sys
 import threading
+import time
 from types import SimpleNamespace
 
 from .config import Config, split_hostport
@@ -39,13 +41,28 @@ SID = re.compile(r"[A-Za-z0-9]{16}")
 
 
 class TcpRelay:
-    """最简单的 TCP 中继：沙箱 → 本机网桥地址:端口 → 上游模型网关。连接数有上限，超过直接断开。"""
+    """TCP 中继：沙箱 → 本机网桥地址:端口 → 上游模型网关。
+
+    所有沙箱共用这个中继，所以每条连接都必须有时限，否则一个沙箱开一堆空闲连接就能占满名额、
+    让别人的沙箱调不了模型（#126 审查）：
+      - 空闲超时：两个方向都没有数据超过 idle_timeout 就断开（模型流式输出期间一直有数据）；
+      - 半关闭时限：一头发完 EOF 后，另一头停顿超过 half_close_timeout 就断开；
+      - 写超时：对方不读、发不出去，同样按 idle_timeout 断开；
+      - 名额：全局 max_connections，每个沙箱（按来源 IP）per_source 条，超了直接断开。
+    """
 
     def __init__(self, host: str, port: int, upstream: tuple[str, int], max_connections: int = 128,
-                 connect_timeout: float = 10):
+                 connect_timeout: float = 10, idle_timeout: float = 300, half_close_timeout: float = 30,
+                 per_source: int = 16):
         self.upstream = upstream
         self.connect_timeout = connect_timeout
-        self._slots = threading.BoundedSemaphore(max_connections)
+        self.idle_timeout = idle_timeout
+        self.half_close_timeout = half_close_timeout
+        self.max_connections = max_connections
+        self.per_source = per_source
+        self._count = 0
+        self._by_source: dict[str, int] = {}
+        self._guard = threading.Lock()
         self._sock = socket.create_server((host, port))
         self._stop = threading.Event()
         self.address = self._sock.getsockname()[:2]
@@ -54,48 +71,92 @@ class TcpRelay:
         threading.Thread(target=self._accept, daemon=True, name="网关中继").start()
         return self
 
+    def active(self) -> int:
+        with self._guard:
+            return self._count
+
+    def _admit(self, source: str) -> bool:
+        with self._guard:
+            if self._count >= self.max_connections or self._by_source.get(source, 0) >= self.per_source:
+                return False
+            self._count += 1
+            self._by_source[source] = self._by_source.get(source, 0) + 1
+            return True
+
+    def _release(self, source: str) -> None:
+        with self._guard:
+            self._count -= 1
+            n = self._by_source.get(source, 0) - 1
+            if n > 0:
+                self._by_source[source] = n
+            else:
+                self._by_source.pop(source, None)
+
     def _accept(self) -> None:
         while not self._stop.is_set():
             try:
-                client, _ = self._sock.accept()
+                client, addr = self._sock.accept()
             except OSError:
                 return
-            if not self._slots.acquire(blocking=False):
+            source = addr[0]
+            if not self._admit(source):
                 client.close()
                 continue
-            threading.Thread(target=self._serve, args=(client,), daemon=True).start()
+            threading.Thread(target=self._serve, args=(client, source), daemon=True).start()
 
-    def _serve(self, client: socket.socket) -> None:
+    def _serve(self, client: socket.socket, source: str) -> None:
+        upstream = None
         try:
             try:
                 upstream = socket.create_connection(self.upstream, timeout=self.connect_timeout)
             except OSError:
                 return
-            upstream.settimeout(None)
-
-            def pump(src, dst):
-                try:
-                    while True:
-                        data = src.recv(65536)
-                        if not data:
-                            break
-                        dst.sendall(data)
-                except OSError:
-                    pass
-                finally:
+            for sk in (client, upstream):
+                sk.settimeout(self.idle_timeout)        # sendall 发不出去时也按空闲超时断开
+            self._pump(client, upstream)
+        finally:
+            for sk in (client, upstream):
+                if sk is not None:
                     try:
-                        dst.shutdown(socket.SHUT_WR)       # 半关闭：把 EOF 传给另一头
+                        sk.close()
                     except OSError:
                         pass
+            self._release(source)
 
-            back = threading.Thread(target=pump, args=(upstream, client), daemon=True)
-            back.start()
-            pump(client, upstream)
-            back.join()
-            upstream.close()
-        finally:
-            client.close()
-            self._slots.release()
+    def _pump(self, client: socket.socket, upstream: socket.socket) -> None:
+        peer = {client: upstream, upstream: client}
+        reading = {client, upstream}
+        last = time.monotonic()
+        eof_at = None
+        while reading and not self._stop.is_set():
+            now = time.monotonic()
+            deadline = last + self.idle_timeout
+            if eof_at is not None:
+                # 半关闭后剩下那个方向还在传数据就继续，停顿超过 half_close_timeout 就断开
+                deadline = min(deadline, max(eof_at, last) + self.half_close_timeout)
+            wait = deadline - now
+            if wait <= 0:
+                return
+            try:
+                ready, _, _ = select.select(list(reading), [], [], min(wait, 1.0))
+            except (OSError, ValueError):
+                return
+            for sk in ready:
+                try:
+                    data = sk.recv(65536)
+                    if data:
+                        peer[sk].sendall(data)
+                        last = time.monotonic()
+                        continue
+                except OSError:
+                    return
+                reading.discard(sk)                     # 这一头发完了：把 EOF 传给另一头（半关闭）
+                if eof_at is None:
+                    eof_at = time.monotonic()
+                try:
+                    peer[sk].shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
 
     def close(self) -> None:
         self._stop.set()
@@ -182,29 +243,37 @@ class SandboxAgent(App):
                 self._tokens[sid], self._endpoints[sid] = web_token, endpoint
         return Response.json({"ok": True})
 
+    @staticmethod
+    def _run(fn, *args):
+        """启动器出错（Docker 不在、API 报错）回 502 带原因，而不是笼统的 500。"""
+        try:
+            return fn(*args)
+        except (LaunchError, OSError) as e:
+            raise HttpError(502, f"{type(e).__name__}: {e}") from None
+
     def stop(self, req: Request) -> Response:
         sid = self._sid(req)
         with self._lock(sid):
             self._forget(sid)
-            self.launcher.stop(sid)
+            self._run(self.launcher.stop, sid)
         return Response.json({"ok": True})
 
     def delete(self, req: Request) -> Response:
         sid = self._sid(req)
         with self._lock(sid):
             self._forget(sid)
-            self.launcher.delete(sid)
+            self._run(self.launcher.delete, sid)
         return Response.json({"ok": True})
 
     def alive(self, req: Request) -> Response:
-        return Response.json({"alive": self.launcher.is_alive(self._sid(req))})
+        return Response.json({"alive": self._run(self.launcher.is_alive, self._sid(req))})
 
     def reconcile(self, req: Request) -> Response:
         keep = req.json().get("keep")
         if not isinstance(keep, list) or not all(isinstance(k, str) for k in keep):
             raise HttpError(400, "keep 必须是会话编号列表")
         keep_set = set(keep)
-        self.launcher.reconcile(keep_set)
+        self._run(self.launcher.reconcile, keep_set)
         with self._guard:
             for sid in [s for s in self._endpoints if s not in keep_set]:
                 self._tokens.pop(sid, None)
@@ -215,7 +284,7 @@ class SandboxAgent(App):
         with self._guard:
             self._tokens.clear()
             self._endpoints.clear()
-        self.launcher.shutdown()
+        self._run(self.launcher.shutdown)
         return Response.json({"ok": True})
 
     # ------------------------------------------------------------------ 转发
@@ -231,12 +300,21 @@ class SandboxAgent(App):
         if endpoint is None:
             # 代理重启过：容器可能还在。找回地址，令牌交给沙箱自己核对（它只认启动时那一个）
             finder = getattr(self.launcher, "endpoint_of", None)
-            endpoint = finder(sid) if finder else None
+            try:
+                endpoint = finder(sid) if finder else None
+            except (LaunchError, OSError):
+                endpoint = None
             if endpoint is None:
                 raise HttpError(403, "沙箱不在了")
+            with self._guard:
+                self._endpoints.setdefault(sid, endpoint)   # 缓存地址，不用每个请求都查 Docker；令牌仍由沙箱核对
         try:
             return forward(SimpleNamespace(endpoint=endpoint, web_token=token), req, "/" + req.params["rest"])
         except SandboxGone:
+            if known is None:
+                with self._guard:                           # 找回来的地址失效了：下次重新找
+                    if self._endpoints.get(sid) == endpoint:
+                        self._endpoints.pop(sid, None)
             raise HttpError(403, "沙箱不在了") from None
 
 
@@ -249,7 +327,9 @@ def build_agent(cfg: Config, launcher: Launcher | None = None, log=print) -> tup
                                   bridge_name=cfg.docker_bridge, subnet=cfg.docker_subnet,
                                   tmpfs=cfg.sandbox_tmpfs, pids_limit=cfg.sandbox_pids)
     relay_host = cfg.agent_relay_bind or launcher.gateway_bind_host() or "127.0.0.1"
-    relay = TcpRelay(relay_host, cfg.gateway_port, split_hostport(cfg.agent_upstream_gateway)).start()
+    relay = TcpRelay(relay_host, cfg.gateway_port, split_hostport(cfg.agent_upstream_gateway),
+                     max_connections=cfg.agent_relay_max_connections, idle_timeout=cfg.agent_relay_idle_timeout,
+                     per_source=cfg.agent_relay_per_sandbox).start()
     host, port = relay.address
     gateway_url = f"http://{'[' + host + ']' if ':' in host else host}:{port}"
     return SandboxAgent(launcher, cfg.remote_agent_secret, gateway_url, log), relay
