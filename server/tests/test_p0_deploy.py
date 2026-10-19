@@ -96,7 +96,7 @@ class RedisProtocolTest(unittest.TestCase):
 class ComposeConsistencyTest(unittest.TestCase):
     KNOWN = set(re.findall(r'"(NCS_[A-Z0-9_]+)"', read(REPO, "server", "nanocode_server", "config.py")))
     # 只在 compose 里用的变量（不是平台配置项）
-    COMPOSE_ONLY = {"NCS_HOST_DATA_DIR", "NCS_PG_PORT", "NCS_REDIS_PORT"}
+    COMPOSE_ONLY = {"NCS_HOST_DATA_DIR", "NCS_PG_PORT", "NCS_REDIS_PORT", "NCS_DOMAIN"}
 
     def setUp(self):
         self.compose = read(COMPOSE, "docker-compose.yml")
@@ -108,7 +108,7 @@ class ComposeConsistencyTest(unittest.TestCase):
 
     def test_env_example_covers_required_and_is_used(self):
         required = set(re.findall(r"\$\{([A-Z0-9_]+):\?", self.compose))
-        self.assertEqual(required, {"NCS_SECRET_KEY", "POSTGRES_PASSWORD", "REDIS_PASSWORD"})
+        self.assertEqual(required, {"NCS_SECRET_KEY", "POSTGRES_PASSWORD", "REDIS_PASSWORD", "NCS_DOMAIN"})
         self.assertLessEqual(required, set(self.env))
         referenced = set(re.findall(r"\$\{([A-Z0-9_]+)", self.compose))
         self.assertEqual(set(self.env) - referenced, set(), ".env.example 里有 compose 没用到的变量")
@@ -128,6 +128,18 @@ class ComposeConsistencyTest(unittest.TestCase):
     def test_databases_only_on_loopback(self):
         for port in re.findall(r'^\s+- "([^"]+:\d+)"$', self.compose, re.M):
             self.assertTrue(port.startswith("127.0.0.1:"), port)
+
+    def test_caddy_terminates_https_and_platform_uses_github_login(self):
+        caddy = read(COMPOSE, "Caddyfile")
+        self.assertIn("{$NCS_DOMAIN}", caddy)
+        self.assertIn("reverse_proxy 127.0.0.1:{$NCS_PORT}", caddy)
+        self.assertIn("flush_interval -1", caddy)                   # SSE 不缓冲
+        self.assertIn("image: caddy:2", self.compose)
+        self.assertIn("NCS_AUTH: ${NCS_AUTH:-github}", self.compose)
+        self.assertIn("NCS_PUBLIC_URL: https://${NCS_DOMAIN", self.compose)
+        self.assertIn('NCS_TRUST_FORWARDED: "1"', self.compose)
+        self.assertEqual(self.env["NCS_ADMIN_GITHUB_LOGINS"], "mbaiagent")
+        self.assertEqual(self.env["NCS_HOST"], "127.0.0.1")         # 控制面不直接对外
 
     def test_k8s_replicas_env_matches_deployment(self):
         k8s = os.path.join(REPO, "deploy", "k8s")

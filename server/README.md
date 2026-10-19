@@ -7,7 +7,7 @@
 ## 一分钟跑起来
 
 ```bash
-PYTHONPATH=server:. python3 -m nanocode_server
+NCS_AUTH=dev PYTHONPATH=server:. python3 -m nanocode_server
 # 打开 http://127.0.0.1:8700 ，登录页输入任意用户名
 ```
 
@@ -33,7 +33,7 @@ PYTHONPATH=server:. python3 -m nanocode_server demo --users 10
 | 限流计数 | 进程内存 | Redis：多副本共享计数。redis-py 5.0+ 默认用 RESP2（URL 没写 protocol 时），兼容老版本 Redis（#72）；需要 RESP3 时 URL 加 `?protocol=3` | `NCS_REDIS_URL=redis://...`，需要 `pip install redis` |
 | 沙箱 | `auto`：本机子进程（**没有隔离**，只适合开发） | Docker 容器 / Kubernetes Pod | 构建沙箱镜像后 `auto` 会自动用 Docker；在 K8s 集群里自动用 K8s；也可以 `NCS_LAUNCHER=local/docker/k8s` 指定 |
 | 平台模型 | 只有演示模型和用户自己的 Key | 平台提供、平台付费的模型，按每人每日额度限制 | `NCS_PLATFORM_BASE_URL`、`NCS_PLATFORM_API_KEY`、`NCS_PLATFORM_MODELS` |
-| 登录 | 开发模式：输入任意用户名（只允许监听本机） | 生产：前面放认证代理（oauth2-proxy 等对接 SSO） | `NCS_AUTH=proxy`、`NCS_PROXY_SECRET` |
+| 登录 | 必须显式选择。`NCS_AUTH=dev`：输入任意用户名（只允许监听本机，开发用） | `NCS_AUTH=github`：GitHub 登录 + 邀请码注册（见下文"账号与登录"）；或 `NCS_AUTH=proxy`：前面放认证代理（oauth2-proxy 等对接 SSO） | `NCS_AUTH`，github 模式另需 `NCS_GITHUB_CLIENT_ID/SECRET`、`NCS_PUBLIC_URL` |
 
 **配了却用不了就直接报错**，不会悄悄退回内置实现（比如配了 PostgreSQL 地址但没装驱动）：否则一个以为跑在 PostgreSQL 上的集群，其实每个副本各写各的 SQLite。
 
@@ -41,7 +41,7 @@ PYTHONPATH=server:. python3 -m nanocode_server demo --users 10
 
 ```bash
 docker build -f deploy/Dockerfile.sandbox -t nanocode-sandbox:latest .
-PYTHONPATH=server:. python3 -m nanocode_server        # auto 会检测到镜像，改用 Docker
+NCS_AUTH=dev PYTHONPATH=server:. python3 -m nanocode_server        # auto 会检测到镜像，改用 Docker
 ```
 
 Docker 沙箱：非 root、只读根文件系统、去掉全部 capabilities、禁止提权、限制 CPU / 内存 / 进程数，放在一个内部网络里——**新创建的 Docker 网络默认出不了外网、访问不了云元数据地址，容器之间也不通，只能访问宿主机上的模型网关**（已实测）。注意：如果复用已有的 Docker 网络，`Internal` 标志不会被重新校验，需要自己确认网络隔离。可以用 `NCS_DOCKER_RUNTIME=runsc` 换成 gVisor。
@@ -98,7 +98,9 @@ nanocode_server/
 | 访问别人的会话、Key | 一律按"不存在"处理；有专门的端到端测试 |
 | 绕过认证代理伪造身份 | 代理必须带共享密钥；没配密钥拒绝启动 |
 | 开发模式被恶意网页利用（DNS 重绑定） | 开发模式只接受 Host 为本机地址的请求 |
-| 跨站请求伪造 | 写接口只收 JSON；带 Origin 的请求必须来自本站；登录 Cookie 是 HttpOnly + SameSite |
+| 跨站请求伪造 | 写接口只收 JSON；带 Origin 的请求必须来自本站；登录 Cookie 是 HttpOnly + SameSite=Lax，https 下加 Secure 和 `__Host-` 前缀；OAuth 回调校验 state（放在短命签名 Cookie 里）并用 PKCE |
+| 登录会话被盗用 / 无法吊销 | 服务端保存登录会话（不是 JWT），库里只存令牌的 SHA-256；退出、停用账号立即失效；有绝对和闲置两个有效期 |
+| 暴力尝试邀请码 / 刷登录 | 每个 IP 每分钟限 `NCS_LOGIN_PER_MINUTE` 次（多副本时用 Redis 计数）；邀请码约 64 位随机、只存哈希 |
 | 多个控制面副本同时启动同一个会话 | 数据库里原子地"抢占启动"，只有抢到的那个去启动 |
 
 ## 测试
@@ -128,6 +130,14 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 [verification/results/perf-loadtest.md](../verification/results/perf-loadtest.md)。
 在 100 个用户同时开会话的测试中全部成功；建会话的延迟随并发线性增长（约每 1 个沙箱 0.24 秒），是现在最明显的瓶颈。
 
+## 账号与登录（NCS_AUTH=github）
+
+- **登录**：只用 GitHub OAuth，申请 `read:user user:email`，不读用户仓库；access_token 用完即丢。账号按 GitHub **数字 id** 绑定（login 改名不影响），id 形如 `gh-14838384`，就是会话、Key、用量表里的 owner。
+- **注册**：第一次登录必须带有效邀请码（登录页填写）；`NCS_ADMIN_GITHUB_LOGINS` 里的 login 例外，直接成为管理员。如果名单里的 login 已经被另一个 GitHub 账号用过（原主人改名、别人抢注），不会给管理员；更稳的写法是 `id:<数字 id>`。
+- **管理员**：`/admin` 页面（或 `/api/admin/*`）生成、查看、撤销邀请码（可设次数、有效天数，明文只显示一次），查看账号、停用 / 启用账号（停用立即作废登录会话并停掉运行中的沙箱）。
+- **老数据**：schema v2 把之前 dev / proxy 模式下出现过的用户名（owner 字符串）回填成 `legacy` 账号，会话、Key、用量原样保留。它们和 GitHub 账号不会自动合并（自动按名字合并有冒领风险）。
+- 创建 GitHub OAuth App：GitHub → Settings → Developer settings → OAuth Apps → New OAuth App，Homepage URL 填 `NCS_PUBLIC_URL`，Authorization callback URL 填 `<NCS_PUBLIC_URL>/auth/github/callback`。
+
 ## 单机部署（docker compose）
 
 一台 Linux 服务器给一个团队用：`deploy/compose/` 起控制面 + 模型网关（一个进程）、PostgreSQL 16 和 Redis 7，沙箱用宿主机 Docker（每个会话一个容器，内部网络、非 root、只读根文件系统）。步骤、限制和 GitHub 登录（P1）还没做时的访问方式见 [deploy/compose/README.md](../deploy/compose/README.md)。
@@ -154,9 +164,15 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 | `NCS_DATABASE_URL` / `NCS_REDIS_URL` | 见上表 | 空 |
 | `NCS_REPLICAS` | 副本数。大于 1 时必须配 PostgreSQL 和 Redis，否则拒绝启动（SQLite 多副本会脑裂，#72） | `1` |
 | `NCS_HOST` / `NCS_PORT` | 控制面监听地址 | `127.0.0.1` / `8700` |
-| `NCS_AUTH` | `dev`（登录页任意用户名，只限本机）/ `proxy`（认证代理） | `dev` |
+| `NCS_AUTH` | `github`（GitHub 登录，生产）/ `proxy`（认证代理）/ `dev`（登录页任意用户名，只限本机） | 无，必须设置 |
+| `NCS_GITHUB_CLIENT_ID` / `NCS_GITHUB_CLIENT_SECRET` | GitHub OAuth App 的 Client ID / Secret（github 模式必填） | — |
+| `NCS_ADMIN_GITHUB_LOGINS` | 引导管理员：这些 GitHub login（或 `id:<数字 id>`）第一次登录不需要邀请码，并成为管理员。逗号分隔 | — |
+| `NCS_SESSION_TTL` / `NCS_SESSION_IDLE` | 登录会话的绝对有效期 / 闲置有效期（秒） | 30 天 / 7 天 |
+| `NCS_LOGIN_PER_MINUTE` | 每个 IP 每分钟最多发起几次 GitHub 登录 | `10` |
+| `NCS_TRUST_FORWARDED` | 前面有反向代理时用 `X-Forwarded-For` 最后一项作客户端 IP（限流用）；没有代理时别开，否则可伪造 | `false` |
+| `NCS_GITHUB_OAUTH_URL` / `NCS_GITHUB_API_URL` | GitHub 地址，只在测试 / 冒烟时改成假的 GitHub（必须 https，本机地址除外） | `https://github.com` / `https://api.github.com` |
 | `NCS_AUTH_HEADER` / `NCS_PROXY_SECRET` | 代理模式：身份请求头 / 共享密钥 | `X-Auth-Request-Email` / — |
-| `NCS_PUBLIC_URL` | 对外地址，https 时登录 Cookie 加 Secure | — |
+| `NCS_PUBLIC_URL` | 对外地址：https 时 Cookie 加 Secure；github 模式下 OAuth 回调地址是 `<它>/auth/github/callback`，必须 https（本机地址除外） | — |
 | `NCS_LAUNCHER` | `auto` / `local` / `docker` / `k8s` | `auto` |
 | `NCS_SANDBOX_IMAGE` | Docker 和 K8s 用的沙箱镜像 | `nanocode-sandbox:latest` |
 | `NCS_SANDBOX_MODES` / `NCS_SANDBOX_MODE` | 沙箱里允许的权限模式 / 启动模式；本机启动器不允许 `bypass` | 除 bypass 外全部 / `default` |

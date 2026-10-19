@@ -11,10 +11,11 @@ def open_store(cfg: Config) -> Store:
     return Store(Database.open(cfg.database_url, cfg.data_dir))
 
 
-def make_rate_limiter(cfg: Config) -> RateLimiter:
+def make_rate_limiter(cfg: Config, per_minute: int | None = None, prefix: str = "ncs:rl:") -> RateLimiter:
+    n = cfg.requests_per_minute if per_minute is None else per_minute
     if cfg.redis_url:
-        return RedisRateLimiter(cfg.redis_url, cfg.requests_per_minute)
-    return MemoryRateLimiter(cfg.requests_per_minute)
+        return RedisRateLimiter(cfg.redis_url, n, prefix=prefix)
+    return MemoryRateLimiter(n)
 
 
 __all__ = ["open_store", "make_rate_limiter", "Store", "Database", "StorageBusy", "RateLimiter"]

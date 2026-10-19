@@ -19,8 +19,12 @@ import json
 import os
 import secrets
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
 ALL_MODES = ["default", "accept_edits", "plan", "review", "bypass"]
+AUTH_MODES = ("github", "proxy", "dev")
+AUTH_REQUIRED = ("请设置 NCS_AUTH：github（GitHub 登录，生产）/ proxy（认证代理）/ "
+                 "dev（输入任意用户名，只限本机开发）")
 SAFE_MODES = [m for m in ALL_MODES if m != "bypass"]
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
@@ -70,7 +74,8 @@ class Config:
     host: str = "127.0.0.1"
     port: int = 8700
     public_url: str = ""                    # 对外地址（用于 Cookie 的 Secure 标记），如 https://nanocode.example.com
-    auth: str = "dev"                       # dev：登录页输入任意用户名（只限本机）；proxy：信任认证代理
+    auth: str = "dev"                       # github：GitHub 登录（生产）；proxy：信任认证代理；dev：输入任意用户名（只限本机）
+                                            # 从环境变量读取时没有默认值，必须显式设置 NCS_AUTH
     auth_header: str = "X-Auth-Request-Email"
     proxy_secret: str = ""
     max_sandboxes: int = 200
@@ -78,6 +83,17 @@ class Config:
     idle_timeout: int = 1800
     token_ttl: int = 12 * 3600              # 网关令牌有效期 = 沙箱最长存活时间
     login_ttl: int = 7 * 24 * 3600          # 开发模式登录 Cookie 的有效期
+
+    # ------------------------------------------------------------ 账号（NCS_AUTH=github）
+    github_client_id: str = ""
+    github_client_secret: str = ""
+    github_oauth_url: str = "https://github.com"         # 授权页和换令牌接口；测试 / 冒烟时指向假的 GitHub
+    github_api_url: str = "https://api.github.com"
+    admin_github_logins: list[str] = field(default_factory=list)   # 引导管理员：首次登录不需要邀请码；也可写 id:<数字 id>
+    session_ttl: int = 30 * 24 * 3600       # 登录会话的绝对有效期
+    session_idle: int = 7 * 24 * 3600       # 多久没用就失效
+    login_per_minute: int = 10              # 每个 IP 每分钟最多发起几次登录（含 OAuth 回调）
+    trust_forwarded: bool = False           # 前面有反向代理（Caddy）时用 X-Forwarded-For 最后一项作客户端 IP
 
     # ------------------------------------------------------------ 沙箱
     launcher: str = "auto"                  # auto / local / docker / k8s
@@ -124,7 +140,7 @@ class Config:
             host=_env("NCS_HOST", d.host),
             port=_int("NCS_PORT", d.port),
             public_url=_env("NCS_PUBLIC_URL"),
-            auth=_env("NCS_AUTH", d.auth),
+            auth=_env("NCS_AUTH"),
             auth_header=_env("NCS_AUTH_HEADER", d.auth_header),
             proxy_secret=_env("NCS_PROXY_SECRET"),
             max_sandboxes=_int("NCS_MAX_SANDBOXES", d.max_sandboxes),
@@ -132,6 +148,15 @@ class Config:
             idle_timeout=_int("NCS_IDLE_TIMEOUT", d.idle_timeout),
             token_ttl=_int("NCS_TOKEN_TTL", d.token_ttl),
             login_ttl=_int("NCS_LOGIN_TTL", d.login_ttl),
+            github_client_id=_env("NCS_GITHUB_CLIENT_ID"),
+            github_client_secret=_env("NCS_GITHUB_CLIENT_SECRET"),
+            github_oauth_url=_env("NCS_GITHUB_OAUTH_URL", d.github_oauth_url),
+            github_api_url=_env("NCS_GITHUB_API_URL", d.github_api_url),
+            admin_github_logins=[x.lower() for x in _list("NCS_ADMIN_GITHUB_LOGINS", [])],
+            session_ttl=_int("NCS_SESSION_TTL", d.session_ttl),
+            session_idle=_int("NCS_SESSION_IDLE", d.session_idle),
+            login_per_minute=_int("NCS_LOGIN_PER_MINUTE", d.login_per_minute),
+            trust_forwarded=_bool("NCS_TRUST_FORWARDED", False),
             launcher=_env("NCS_LAUNCHER", d.launcher),
             allow_unisolated=_bool("NCS_ALLOW_UNISOLATED", False),
             sandbox_modes=_list("NCS_SANDBOX_MODES", SAFE_MODES),
@@ -167,6 +192,30 @@ class Config:
     # ------------------------------------------------------------ 派生值
 
     @property
+    def github_callback_url(self) -> str:
+        return self.public_url.rstrip("/") + "/auth/github/callback"
+
+    @property
+    def https(self) -> bool:
+        return self.public_url.startswith("https://")
+
+    def _validate_github(self) -> None:
+        if not (self.github_client_id and self.github_client_secret):
+            raise ValueError("NCS_AUTH=github 需要 NCS_GITHUB_CLIENT_ID 和 NCS_GITHUB_CLIENT_SECRET（GitHub OAuth App）")
+        pub = urlparse(self.public_url)
+        if pub.scheme not in ("http", "https") or not pub.hostname or pub.path not in ("", "/"):
+            raise ValueError("NCS_AUTH=github 需要 NCS_PUBLIC_URL，例如 https://nanocode.example.com（OAuth 回调地址由它拼出）")
+        if pub.scheme != "https" and pub.hostname not in LOOPBACK:
+            # 明文 http 上登录 Cookie 会被中间人拿走；只有本机调试可以用 http
+            raise ValueError("NCS_PUBLIC_URL 必须是 https://（只有本机地址可以用 http）")
+        for name, url in (("NCS_GITHUB_OAUTH_URL", self.github_oauth_url), ("NCS_GITHUB_API_URL", self.github_api_url)):
+            u = urlparse(url)
+            if not u.hostname or (u.scheme != "https" and u.hostname not in LOOPBACK):
+                raise ValueError(f"{name} 必须是 https://（只有本机地址可以用 http，用于测试）")
+        if self.session_ttl <= 0 or self.session_idle <= 0:
+            raise ValueError("NCS_SESSION_TTL / NCS_SESSION_IDLE 必须大于 0")
+
+    @property
     def sandbox_gateway_url(self) -> str:
         return (self.gateway_url or f"http://{self.gateway_host}:{self.gateway_port}").rstrip("/")
 
@@ -176,6 +225,8 @@ class Config:
 
     def ensure_secret(self) -> None:
         """没配主密钥时：开发模式生成一个并保存在数据目录里（重启后用户的 API Key 还能解密）；生产模式报错。"""
+        if not self.auth:
+            raise ValueError(AUTH_REQUIRED)
         if self.secret_key:
             return
         if self.auth != "dev":
@@ -199,14 +250,18 @@ class Config:
         """
         if len(self.secret_key) < 32:
             raise ValueError("NCS_SECRET_KEY 至少 32 个字符")
-        if self.auth not in ("dev", "proxy"):
-            raise ValueError("NCS_AUTH 只能是 dev 或 proxy")
+        if not self.auth:
+            raise ValueError(AUTH_REQUIRED)
+        if self.auth not in AUTH_MODES:
+            raise ValueError("NCS_AUTH 只能是 github / proxy / dev")
+        if self.auth == "github":
+            self._validate_github()
         if self.auth == "proxy" and len(self.proxy_secret) < 16:
             raise ValueError("proxy 认证必须设置 NCS_PROXY_SECRET（至少 16 个字符），否则谁都能伪造身份请求头")
         if self.allow_private_upstreams and self.auth != "dev":
             raise ValueError("NCS_ALLOW_PRIVATE_UPSTREAMS 仅限 dev 认证模式")
         if self.auth == "dev" and self.host not in LOOPBACK:
-            raise ValueError("dev 认证（输入任意用户名登录）只能在只监听本机时使用，对外服务请用 NCS_AUTH=proxy")
+            raise ValueError("dev 认证（输入任意用户名登录）只能在只监听本机时使用，对外服务请用 NCS_AUTH=github 或 proxy")
         if self.launcher not in ("auto", "local", "docker", "k8s"):
             raise ValueError("NCS_LAUNCHER 只能是 auto / local / docker / k8s")
         if self.replicas < 1:
@@ -239,4 +294,4 @@ class Config:
             raise ValueError("NCS_PLATFORM_PROTOCOL 只能是 openai 或 anthropic")
 
 
-__all__ = ["Config", "ALL_MODES", "SAFE_MODES", "LOOPBACK"]
+__all__ = ["Config", "ALL_MODES", "SAFE_MODES", "LOOPBACK", "AUTH_MODES"]

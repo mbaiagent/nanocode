@@ -11,7 +11,7 @@ import support  # noqa: F401
 from nanocode_server.models import Credential
 from nanocode_server.storage import Database, Store
 from nanocode_server.storage.ratelimit import MemoryRateLimiter, RedisRateLimiter
-from nanocode_server.storage.sql import ConnectionPool, StorageBusy
+from nanocode_server.storage.sql import ConnectionPool, StorageBusy, SCHEMA_VERSION
 from support import PG_URL, REDIS_URL
 
 
@@ -181,9 +181,9 @@ class SchemaMigrationTest(unittest.TestCase):
         db = self.make_db()
         self.addCleanup(db.close)
         store = Store(db)
-        self.assertEqual(db.execute("SELECT version FROM schema_version WHERE id = 1")[0]["version"], 1)
+        self.assertEqual(db.execute("SELECT version FROM schema_version WHERE id = 1")[0]["version"], SCHEMA_VERSION)
         store.db.migrate()                                   # 再跑一遍不能出错
-        self.assertEqual(db.execute("SELECT version FROM schema_version WHERE id = 1")[0]["version"], 1)
+        self.assertEqual(db.execute("SELECT version FROM schema_version WHERE id = 1")[0]["version"], SCHEMA_VERSION)
         store.create_session("alice", "x", "mock")           # 升级完照常能用
 
     def test_old_database_without_version_table_is_upgraded(self):
@@ -201,7 +201,7 @@ class SchemaMigrationTest(unittest.TestCase):
         db = Database.open(f"sqlite:///{path}", "")
         self.addCleanup(db.close)
         store = Store(db)
-        self.assertEqual(db.execute("SELECT version FROM schema_version WHERE id = 1")[0]["version"], 1)
+        self.assertEqual(db.execute("SELECT version FROM schema_version WHERE id = 1")[0]["version"], SCHEMA_VERSION)
         self.assertIsNone(store.get_session("nope"))
 
     def test_newer_database_is_refused(self):

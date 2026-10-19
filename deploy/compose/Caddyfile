@@ -1,0 +1,9 @@
+# Caddy：自动申请和续期 HTTPS 证书（Let's Encrypt），反向代理到只监听 127.0.0.1 的控制面。
+# NCS_DOMAIN 的 DNS 要先指向这台机器，并开放 80 / 443。
+{$NCS_DOMAIN} {
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy 127.0.0.1:{$NCS_PORT} {
+		# 事件流（SSE）不缓冲，逐条转发
+		flush_interval -1
+	}
+}

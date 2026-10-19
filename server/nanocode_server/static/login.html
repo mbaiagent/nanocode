@@ -12,8 +12,17 @@
   <div class="login-card">
     <div class="brand"><span class="brand-mark">n</span>nanocode</div>
     <h1>登录</h1>
-    <p class="sub">多用户 Agent 平台 · 开发模式</p>
-    <form id="form" novalidate>
+    <p class="sub" id="sub">多用户 Agent 平台</p>
+    <div class="form-error" id="gh-err" role="alert"></div>
+    <form id="gh-form" hidden novalidate>
+      <div class="field">
+        <label for="invite">邀请码（第一次登录需要）</label>
+        <input id="invite" class="input" autocomplete="off" placeholder="XXXX-XXXX-XXXX-XXXX" maxlength="40">
+      </div>
+      <button class="btn primary block lg" type="submit">使用 GitHub 登录</button>
+      <div class="note">只读取你的 GitHub 公开资料和邮箱（read:user、user:email），不会访问你的仓库。已经注册过的账号不用填邀请码。</div>
+    </form>
+    <form id="form" hidden novalidate>
       <div class="field">
         <label for="user">用户名</label>
         <input id="user" class="input" autocomplete="username" placeholder="例如 alice" maxlength="64" required autofocus>
@@ -25,13 +34,43 @@
       <div class="form-error" id="err" role="alert"></div>
       <button class="btn primary block lg" type="submit" id="submit">登录</button>
     </form>
-    <div class="note">
+    <div class="note" id="dev-note" hidden>
       开发模式下输入任意用户名即可登录。不同用户的会话、工作区、API Key 和用量完全隔离。
       用不同的浏览器或无痕窗口，可以同时以多个用户登录。
     </div>
   </div>
 </main>
 <script>
+const ERRORS = {
+  state: "登录已过期或来源不对，请重新点击登录",
+  denied: "你在 GitHub 上取消了授权",
+  github: "和 GitHub 通信失败，请稍后再试",
+  invite_required: "第一次登录需要邀请码，请向管理员索取后填在上面",
+  invite_invalid: "邀请码无效、已用完、已过期或已被撤销",
+  disabled: "这个账号已被管理员停用",
+  rate: "登录太频繁，请一分钟后再试",
+  retry: "登录失败，请重试",
+};
+(async () => {
+  const code = new URLSearchParams(location.search).get("error");
+  if (code) document.getElementById("gh-err").textContent = ERRORS[code] || "登录失败";
+  let info = { mode: "dev" };
+  try { info = await (await fetch("/api/auth/info")).json(); } catch (e) { /* 用默认 */ }
+  if (info.mode === "github") {
+    document.getElementById("sub").textContent = "多用户 Agent 平台 · GitHub 登录";
+    const f = document.getElementById("gh-form");
+    f.hidden = false;
+    f.onsubmit = (e) => {
+      e.preventDefault();
+      const invite = document.getElementById("invite").value.trim();
+      location.href = "/auth/github" + (invite ? "?invite=" + encodeURIComponent(invite) : "");
+    };
+  } else {
+    document.getElementById("sub").textContent = "多用户 Agent 平台 · 开发模式";
+    document.getElementById("form").hidden = false;
+    document.getElementById("dev-note").hidden = false;
+  }
+})();
 const COLORS = ["#4f46e5", "#0e9384", "#dd2590", "#f79009", "#2e90fa", "#7a5af8"];
 const color = (name) => COLORS[[...name].reduce((a, c) => a + c.charCodeAt(0), 0) % COLORS.length];
 const quick = document.getElementById("quick");
