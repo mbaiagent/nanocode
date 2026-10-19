@@ -71,6 +71,8 @@ git checkout -b fix/<自己>-<topic> origin/main
 
 | 斜杠命令显示两次 | Muse | `fix/muse-dup-cmd` | **已合并到 main（af7d363）** | 已完成 | POST 的 r.output 和 SSE command 事件各渲染一次；改为只由 SSE 统一渲染 |
 
+| .gitignore 补全 | Muse | `fix/muse-gitignore` | **已合并到 main** | 已完成 | 忽略根目录 /.nanocode/ 和 /NANOCODE.md（examples/ 示例不受影响） |
+
 **空 issue 认领流程**：
 1. 先看 issue 是否被 main 覆盖（`git log --oneline | grep issue号`）
 2. 在本表加一行，写明分支和预计完成时间

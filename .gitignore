@@ -1,8 +1,12 @@
 __pycache__/
 *.pyc
 *.egg-info/
+# Agent 工作区状态：根目录的整个 .nanocode/ 都忽略（examples/ 下的是故意提交的示例，不动）；
+# 下面两行非锚定，继续覆盖 examples/ 这类嵌套目录里的 sessions/traces
 .nanocode/sessions/
 .nanocode/traces/
+/.nanocode/
+/NANOCODE.md
 nanocode_demo/
 notes.txt
 evals/polyglot/tasks/
