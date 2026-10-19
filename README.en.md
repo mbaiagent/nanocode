@@ -17,6 +17,8 @@ Pure Python stdlib · Zero dependencies · Every file has explanatory comments �
 [Architecture](#architecture) ·
 [How to learn](#how-to-learn) ·
 [Multi-user deployment](server/README.md) ·
+[Docs index (Chinese)](docs/README.md) ·
+[Changelog (Chinese)](CHANGELOG.md) ·
 [Development journey](docs/journey.md) ·
 [Resume-ready](docs/resume.md)
 
@@ -41,6 +43,10 @@ Pure Python stdlib · Zero dependencies · Every file has explanatory comments �
 - **440+ automated tests**: 370+ core, 70+ platform, covering the loop, streaming parsing, retrieval, security regressions, and eval self-check
 
 > nanocode is a from-scratch teaching implementation based on Claude Code's public docs and observable behavior. It does not contain and is not derived from Claude Code source. It aims to *explain the principles clearly*, not to match feature parity.
+
+## Try it online
+
+A hosted multi-user instance is available at **<https://nanocode.aipulse.lol>**: sign in with GitHub, registration needs an invite code (ask the admin), and you bring your own LLM API key (stored encrypted, used only by the platform's model gateway, never inside the sandbox). The built-in demo model works without a key. Screenshots of the platform are in the [Chinese README](README.md#在线使用).
 
 ## Screenshots
 
@@ -97,11 +103,11 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    B([Browser]) --> AP[Auth proxy<br/>OIDC / SSO]
+    B([Browser]) --> AP[Login<br/>GitHub OAuth + invite / auth proxy]
     AP --> CP[Control plane<br/>sessions · users · catalog · reverse proxy]
     CP --> DB[(SQLite / PostgreSQL)]
     CP --> RL[(in-memory / Redis rate limit)]
-    CP -->|start / recycle| L{{Launcher<br/>local process · Docker · K8s}}
+    CP -->|start / recycle| L{{Launcher<br/>local process · Docker · K8s · remote sandbox host}}
     L --> SB1[Sandbox: nanocode --web]
     L --> SB2[Sandbox: nanocode --web]
     SB1 -->|short-lived signed token| GW[Model gateway<br/>quota · metering · forced model]
@@ -109,7 +115,7 @@ flowchart LR
     GW -->|decrypted key| M[(Model vendor)]
 ```
 
-One sandbox per session. User API keys are encrypted at rest and decrypted only in the gateway; **sandboxes never see real keys**. Docker / K8s sandboxes have no outbound internet and can only reach the gateway. Design in [Chapter 12](docs/12-distributed-deployment.md); code and runbook in [server/README.md](server/README.md).
+One sandbox per session. User API keys are encrypted at rest and decrypted only in the gateway; **sandboxes never see real keys**. Docker / K8s sandboxes have no outbound internet and can only reach the gateway. Design in [Chapter 12](docs/12-distributed-deployment.md); code and runbook in [server/README.md](server/README.md). Deployment topologies, the full `NCS_*` reference, login / invites / admin and the security model are in [docs/](docs/README.md) (Chinese).
 
 ---
 
@@ -308,12 +314,12 @@ nanocode/
 ├── session.py         wiring, slash commands, session save (auto-saved each step)
 ├── cli.py             terminal UI
 └── web/               Web UI: server.py (HTTP + SSE + security checks), limits.py (/api/chat rate limit and daily budget), static/ (debug panel + architecture learn page)
-docs/                  chaptered architecture walkthrough (read in order)
+docs/                  chaptered architecture walkthrough (read in order) plus platform / deployment docs; start at docs/README.md
 examples/              MCP server examples, minimal Agent (minimal_agent.py), extension examples (extensions/: 4 MCP servers + 3 skills + 1 command), RAG eval (rag_eval/)
 evals/agent_tasks/     Agent task eval: 13 tasks, hidden tests, reference answers, runner
 verification/          real-environment verification checklist and results (real model, browser)
 server/                multi-user control plane and model gateway (separate package, see server/README.md and Chapter 12)
-deploy/                sandbox and control plane images, Kubernetes manifests (gVisor, egress allowlist)
+deploy/                sandbox and control plane images; compose/ (single-host platform), sandbox-host/ (remote sandbox host), firewall/ (host firewall scripts), k8s/ (gVisor, egress allowlist)
 tests/                 unit tests
 ```
 

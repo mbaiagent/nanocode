@@ -61,6 +61,14 @@ class SessionManager:
         self._admission = threading.Lock()          # 容量检查和占位必须是原子的
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
+        # 回收线程的「可能有运行中沙箱」标记（#131）。空闲时回收线程完全不碰数据库，
+        # 托管 Postgres（Neon 免费版）才能缩到零。启动对账时按数据库置位；本副本把沙箱
+        # 写成 running（或看到别的副本起好的）时置位；查到一个 running 都没有时清零。
+        # _reap_gen 防竞态：查询期间有新沙箱置位，这次查询的「没有」就不算数。
+        self._reap_guard = threading.Lock()
+        self._reap_pending = False
+        self._reap_gen = 0
+        self._reap_next = 0.0       # 已知最早的回收截止时间：没到就不用查库
 
     @property
     def control_gateway_url(self) -> str:
@@ -132,6 +140,7 @@ class SessionManager:
             if s is None:
                 raise SessionError(404, "会话不存在")
             if s.status == "running" and s.endpoint:
+                self._mark_live()       # 可能是别的副本起的：本副本也要能回收它
                 return s
             try:
                 option = self.catalog.option(s.owner, s.model_ref)
@@ -162,6 +171,7 @@ class SessionManager:
                 # 复活成 running（#59）。刚拉起的沙箱也没人管了，要收拾掉。
                 self.launcher.stop(sid)
                 raise SessionError(409, "启动期间会话被删除或停止了，请刷新后重试")
+            self._mark_live()
             s = self.store.get_session(sid)
             if s is None or s.status != "running":
                 # 极端竞态：finish_start 成功后的同一瞬间又被删了。沙箱一样要收掉，
@@ -228,36 +238,87 @@ class SessionManager:
 
     def reconcile(self) -> None:
         """控制面重启后：数据库里标着运行中、实际已经不在的沙箱，改成已停止；
-        再让启动器清掉数据库里已经没有对应会话的沙箱（无主容器 / 无主进程，#60）。"""
+        再让启动器清掉数据库里已经没有对应会话的沙箱（无主容器 / 无主进程，#60）。
+
+        这是启动时唯一一次必定查库的对账；之后回收线程只在可能有运行中沙箱时才查（#131）。"""
         for s in self.store.active_sessions():
             if not self.launcher.is_alive(s.id):
                 self.mark_dead(s.id)
-        self.launcher.reconcile({s.id for s in self.store.active_sessions()})
+        active = self.store.active_sessions()
+        self.launcher.reconcile({s.id for s in active})
+        if any(s.status == "running" for s in active):
+            self._mark_live()
+
+    # ---- 回收标记（#131）
+
+    def _mark_live(self) -> None:
+        """有（或可能有）运行中的沙箱：下一轮回收要查库。"""
+        with self._reap_guard:
+            self._reap_pending = True
+            self._reap_gen += 1
+            self._reap_next = 0.0
+
+    @property
+    def reap_pending(self) -> bool:
+        return self._reap_pending
+
+    def _deadline(self, s: Session) -> float:
+        """这个沙箱最早什么时候可能该回收。last_active 只会往后挪（touch），所以按查询时的值算是保守的。"""
+        due = s.last_active + self.cfg.idle_timeout
+        if s.started:
+            due = min(due, s.started + self.cfg.token_ttl - 300)
+        return due
 
     def reap_once(self, now: float | None = None) -> list[str]:
         """回收空闲的沙箱：超过 idle_timeout 没有请求、Agent 不在工作。只连着事件流的页面不算活动。
-        沙箱存活时间接近网关令牌有效期时也回收，下次访问带着新令牌重新启动。"""
+        沙箱存活时间接近网关令牌有效期时也回收，下次访问带着新令牌重新启动。
+
+        标记为空（本副本知道没有运行中的沙箱）时直接返回，不查库（#131）。"""
         now = time.time() if now is None else now
-        reaped = []
+        with self._reap_guard:
+            if not self._reap_pending:
+                return []
+            gen = self._reap_gen
+        reaped, next_due = [], float("inf")
         for s in self.store.active_sessions():
             if s.status != "running":
                 continue
             idle = now - s.last_active > self.cfg.idle_timeout
             expiring = s.started and now > s.started + self.cfg.token_ttl - 300
             if not (idle or expiring):
+                next_due = min(next_due, self._deadline(s))
                 continue
             state = self.sandbox_state(s)
             if state and (state.get("busy") or state.get("queue")) and not expiring:
                 self.touch(s.id)
+                next_due = min(next_due, now + self.cfg.idle_timeout)
                 continue
             self.stop(s.id)
             reaped.append(s.id)
+        with self._reap_guard:
+            if self._reap_gen == gen:       # 查询期间没有新沙箱置位，结论才可信
+                self._reap_pending = next_due != float("inf")
+                self._reap_next = next_due if self._reap_pending else 0.0
         return reaped
 
-    def reap_forever(self, stop: threading.Event, interval: float = 60) -> None:
+    def reap_tick(self, now: float | None = None) -> list[str]:
+        """回收线程的一轮：没有运行中的沙箱、或最早的截止时间还没到，都不查库（#131）。
+
+        多副本（NCS_REPLICAS>1）时保持原来的行为，每轮都查：别的副本起的沙箱本副本不一定
+        知道，那个副本被缩容掉以后只能靠其他副本回收。多副本本来就该用正经的数据库。"""
+        now = time.time() if now is None else now
+        if self.cfg.replicas > 1:
+            self._mark_live()
+        with self._reap_guard:
+            if not self._reap_pending or now < self._reap_next:
+                return []
+        return self.reap_once(now)
+
+    def reap_forever(self, stop: threading.Event, interval: float | None = None) -> None:
+        interval = self.cfg.reap_interval if interval is None else interval
         while not stop.wait(interval):
             try:
-                self.reap_once()
+                self.reap_tick()
             except Exception as e:  # noqa: BLE001 —— 回收线程不能因为一次异常就停掉
                 self.log(f"回收沙箱出错：{type(e).__name__}: {e}")
 

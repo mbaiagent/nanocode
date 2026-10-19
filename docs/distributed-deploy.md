@@ -1,7 +1,7 @@
 # 分布式部署：平台机 + 沙箱机 + 托管数据库
 
-> 状态：**规划 / 进行中**。本文描述的远程沙箱（`NCS_LAUNCHER=remote` + 沙箱代理）还在开发，代码以合并后的 PR 为准。
-> 前置的宿主机隔离修复见 [#123](https://github.com/mbaiagent/nanocode/issues/123) / [PR #124](https://github.com/mbaiagent/nanocode/pull/124)；远程沙箱的 PR 叠在 #124 之上。
+> 状态：**已实现**。宿主机隔离（[#123](https://github.com/mbaiagent/nanocode/issues/123) / [PR #124](https://github.com/mbaiagent/nanocode/pull/124)）、远程沙箱（`NCS_LAUNCHER=remote` + 沙箱代理 + 网关中继，[PR #126](https://github.com/mbaiagent/nanocode/pull/126)）和老版本 Docker 网关兜底（[PR #130](https://github.com/mbaiagent/nanocode/pull/130)）都已合并。逐步操作见 [deploy/sandbox-host/README.md](../deploy/sandbox-host/README.md)，三种部署形态的对比见 [deployment-topology.md](deployment-topology.md)，变量见 [configuration.md](configuration.md)。
+> 还没解决的：回收线程让托管 Postgres 缩不到零（[#131](https://github.com/mbaiagent/nanocode/issues/131)，修复在 [PR #133](https://github.com/mbaiagent/nanocode/pull/133)，未合并）；compose 不支持外部库、remote 模式仍挂 `docker.sock`（[#132](https://github.com/mbaiagent/nanocode/issues/132)，在那之前用 [deployment-topology.md 里的 override](deployment-topology.md#托管-postgres--redis)）；中继监听地址校验（[#129](https://github.com/mbaiagent/nanocode/issues/129)）。
 > 相关：#5、#106、#119；单机部署见 [deploy/compose/README.md](../deploy/compose/README.md)，总体设计见 [multiuser-1000-plan.md](multiuser-1000-plan.md)、[12-distributed-deployment.md](12-distributed-deployment.md)。
 
 本文所有地址、域名、账号都是**示例占位符**：
@@ -228,17 +228,19 @@ NCS_GATEWAY_PORT=8701 NCS_EGRESS_PORT=3128 ./check-sandbox-isolation.sh
 - **用 pooled 连接地址**（主机名里带 `-pooler` 的那个），控制面连接数多时不会顶满。
 - **缩到零**：闲置约 5 分钟后计算节点自动休眠，下一次请求有冷启动（通常零点几秒到一两秒）。数据不会丢，只是第一个请求慢一点。
 - **不要做保活 ping**：免费版每月计算时长有限（约 100 CU·小时），每几分钟 ping 一次会让节点一直醒着，几天就用完额度，额度用完库就停了。接受冷启动更划算。
+- **平台自己空闲时也不查库**：回收线程只在有运行中的沙箱时才查数据库，而且最早的回收时间没到也不查（#131）；平台空闲时 Postgres 能正常缩到零。启动时连库失败会退避重试约 30 秒，冷启动不会让平台直接退出。
 - 平台连接数据库要能扛住冷启动：连接超时设宽一点、首次失败重试。（接入时要在代码里核实现有的重试/连接池行为，不够就补。）
 - **老版本 libpq（< 14，例如 AlmaLinux 8 自带的 psql 13）**：
   - 不支持 SNI 方式识别 endpoint，要在连接串里加 `options=endpoint%3D<endpoint-id>`；
   - 不支持 `channel_binding=require`，要去掉这个参数（保留 `sslmode=require`）。
-  - 平台容器里用 psycopg 自带的较新 libpq 时一般没这个问题；主要影响在宿主机上用 `psql` 手动排查的时候。
+  - 平台容器里用 psycopg 自带的较新 libpq，**平台用的连接串里不要加 `options=endpoint...`**：新版 libpq 会发 SNI，主机名是 `-pooler` 那个时，SNI 推出的名字（带 `-pooler`）和 `options` 里的 endpoint ID 对不上，Neon 直接拒绝（`Inconsistent project name inferred from SNI ... and project option ...`）。`options` 只用在宿主机上的老 `psql` 手动排查。
+- 建议在平台的连接串里加 `connect_timeout=15`：libpq 默认不设连接超时，冷启动或网络抖动时宁可明确失败。
 
 示例（全部是占位符）：
 
 ```bash
 # 新版 libpq / psycopg
-NCS_DATABASE_URL=postgresql://<user>:<password>@<db-host>-pooler.<region>.<provider-domain>/<dbname>?sslmode=require&channel_binding=require
+NCS_DATABASE_URL=postgresql://<user>:<password>@<db-host>-pooler.<region>.<provider-domain>/<dbname>?sslmode=require&channel_binding=require&connect_timeout=15
 # 老版 psql 13 手动排查
 psql "postgresql://<user>:<password>@<db-host>-pooler.<region>.<provider-domain>/<dbname>?sslmode=require&options=endpoint%3D<endpoint-id>"
 ```
@@ -353,7 +355,7 @@ journalctl -u ncs-redis-keepalive.service --since -1d   # 看最近的结果
 
 ## 九、上线清单
 
-- [ ] 1. PR #124（#123 宿主机隔离）合并；远程沙箱 PR 合并。
+- [x] 1. PR #124（#123 宿主机隔离）、PR #126（远程沙箱）、PR #130（Docker 网关兜底）已合并。
 - [ ] 2. 两台机器：系统更新、SSH 只允许密钥登录、开 swap。
 - [ ] 3. 沙箱机：装 Docker，构建沙箱镜像；跑 `ncs-sandbox-firewalld.sh`。
 - [ ] 4. 两台机器装 WireGuard，生成各自密钥对，配 `wg0`（`10.77.0.1` / `10.77.0.2`），`AllowedIPs` 只写对端 `/32`，平台机 `[Peer]` 加 `PersistentKeepalive = 25`；沙箱机防火墙只对平台机 IP 开 WireGuard 端口；`wg show` 确认握手。
@@ -361,7 +363,7 @@ journalctl -u ncs-redis-keepalive.service --since -1d   # 看最近的结果
 - [ ] 6. 生成共享密钥（`openssl rand -hex 32`），分别写进两台机器 root 只读的 env 文件。
 - [ ] 7. 沙箱机启动沙箱代理（只听 `10.77.0.2`），用 systemd 管理、开机自启。
 - [ ] 8. 托管 Postgres：建项目和数据库，拿 pooled 连接串；托管 Valkey：建服务，拿 `rediss://` 连接串。都只写进平台机 root 只读的 `.env`，不进仓库、不进聊天、不进日志。
-- [ ] 9. 平台机 `.env`：`NCS_DATABASE_URL`、`NCS_REDIS_URL`、`NCS_LAUNCHER=remote` 以及代理地址和共享密钥（具体变量名以远程沙箱 PR 为准）；启动平台。
+- [ ] 9. 平台机 `.env`：`NCS_LAUNCHER=remote`、`NCS_REMOTE_AGENT_URL`、`NCS_REMOTE_AGENT_SECRET`、`NCS_GATEWAY_HOST=10.77.0.1`（可选 `NCS_REMOTE_GATEWAY_URL`）；数据库和 Redis 地址目前要经本机 `docker-compose.override.yml` 传入（#132，见 [deployment-topology.md](deployment-topology.md#托管-postgres--redis)）；启动平台。
 - [ ] 10. 配 Redis 保活 timer 和 `OnFailure=` 告警 unit；`systemd-analyze verify` 通过，手动触发一次告警**确认能收到**；**不要**给 Postgres 配保活。
 - [ ] 11. 验证：`curl http://127.0.0.1:8700/healthz`；登录、建会话、打开 `/s/<id>/`、调一次模型；沙箱里跑 `check-sandbox-isolation.sh`；从公网扫沙箱机，确认只开 SSH 和 WireGuard。
 - [ ] 12. （可选，**等 #134 落地**）打开出站代理：`NCS_EGRESS_PROXY=1`，防火墙脚本带 `NCS_EGRESS_PORT`，用 `check-sandbox-isolation.sh` 验证，见 3.5。

@@ -34,7 +34,7 @@ Docker 守护进程约 80–100 MB，代理约 30–40 MB（出站代理在同�
 
 ## 步骤
 
-下面用 `<平台IP>` / `<沙箱主机IP>` 表示两台机器的公网 IP，隧道地址平台 `10.77.0.1`、沙箱主机 `10.77.0.2`，WireGuard 端口 `51820/udp`。
+下面用 `<平台IP>` / `<沙箱主机IP>` 表示两台机器的公网 IP，隧道地址平台 `10.77.0.1`、沙箱主机 `10.77.0.2`，WireGuard 端口 `51820/udp`。**只有沙箱主机开 WireGuard 端口**；平台机器主动连出，靠 `PersistentKeepalive` 维持隧道，不用开端口（和 [docs/distributed-deploy.md 3.1](../../docs/distributed-deploy.md#31-wireguard) 一致，#132 第 4 点）。
 
 ### 1. 沙箱主机装 Docker CE（AlmaLinux / Rocky 8、9）
 
@@ -66,13 +66,13 @@ umask 077 && wg genkey | tee /etc/wireguard/private.key | wg pubkey > /etc/wireg
 ```ini
 [Interface]
 Address = 10.77.0.1/24
-ListenPort = 51820
 PostUp = wg set %i private-key /etc/wireguard/private.key
 
 [Peer]
 PublicKey = <沙箱主机 public.key 的内容>
 AllowedIPs = 10.77.0.2/32
 Endpoint = <沙箱主机IP>:51820
+# 平台机器不开 WireGuard 端口：靠它每 25 秒主动发包，维持隧道和防火墙的连接状态
 PersistentKeepalive = 25
 ```
 
@@ -87,19 +87,18 @@ PostUp = wg set %i private-key /etc/wireguard/private.key
 [Peer]
 PublicKey = <平台机器 public.key 的内容>
 AllowedIPs = 10.77.0.1/32
-Endpoint = <平台IP>:51820
-PersistentKeepalive = 25
+# 不写 Endpoint / PersistentKeepalive：平台机器没有监听端口，由它主动连过来
 ```
 
 两台都 `systemctl enable --now wg-quick@wg0`，然后 `ping 10.77.0.2` / `ping 10.77.0.1` 互通。
 
 ### 3. firewalld
 
-**两台的公网 zone**：只允许对端 IP 连 WireGuard 端口。
+**沙箱主机的公网 zone**：只允许平台机器的 IP 连 WireGuard 端口（平台机器不开端口，不用加这条）。
 
 ```bash
-# 平台机器上把 <对端IP> 换成 <沙箱主机IP>，沙箱主机上换成 <平台IP>
-firewall-cmd --permanent --zone=public --add-rich-rule='rule family="ipv4" source address="<对端IP>/32" port port="51820" protocol="udp" accept'
+# 只在沙箱主机上执行
+firewall-cmd --permanent --zone=public --add-rich-rule='rule family="ipv4" source address="<平台IP>/32" port port="51820" protocol="udp" accept'
 ```
 
 **隧道 zone**：按来源地址绑定（同 #123 的思路，来源优先于网卡），target=DROP，只开需要的端口。
@@ -138,7 +137,7 @@ cd deploy/sandbox-host && cp .env.example .env && chmod 600 .env
 secret=$(openssl rand -hex 32)
 sed -i "s/^NCS_REMOTE_AGENT_SECRET=.*/NCS_REMOTE_AGENT_SECRET=${secret}/" .env
 # 平台机器的 deploy/compose/.env 里写同一个值（经 SSH 管道，不落终端）：
-printf '%s' "${secret}" | ssh root@<平台IP> 'read -r s; cd /path/to/nanocode/deploy/compose && sed -i "s/^NCS_REMOTE_AGENT_SECRET=.*/NCS_REMOTE_AGENT_SECRET=${s}/" .env'
+printf '%s\n' "${secret}" | ssh root@<平台IP> 'read -r s; cd /path/to/nanocode/deploy/compose && sed -i "s/^NCS_REMOTE_AGENT_SECRET=.*/NCS_REMOTE_AGENT_SECRET=${s}/" .env'
 unset secret
 ```
 
@@ -172,7 +171,7 @@ curl -s http://127.0.0.1:8700/healthz                       # {"ok": true, "laun
 curl -s http://10.77.0.2:8790/healthz                       # 平台机器上能连到代理
 ```
 
-登录面板新建会话，能打开、能对话、换成自己的 Key 后能调用模型，就通了。平台机器上不再跑沙箱，`deploy/firewall` 那一步在平台机器上可以不做（沙箱镜像仍会在平台机器上构建一次，不会运行）。
+登录面板新建会话，能打开、能对话、换成自己的 Key 后能调用模型，就通了。平台机器上不再跑沙箱，`deploy/firewall` 那一步在平台机器上可以不做。目前 compose 在 remote 模式下仍会在平台机器上构建一次沙箱镜像（不会运行），并且仍挂载 `docker.sock`（[#132](https://github.com/mbaiagent/nanocode/issues/132)），可以用本机 override 去掉，见 [docs/deployment-topology.md](../../docs/deployment-topology.md#托管-postgres--redis)。
 
 ## 出站代理（可选，默认关）
 
