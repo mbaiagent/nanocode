@@ -124,7 +124,8 @@ class Renderer:
             self.w(paint(f"⚠ {e['message']}", "yellow") + "\n", err=True)
         elif t == "turn_end" and not sub:
             u = e["usage"]
-            self.w(paint(f"[tokens 输入 {u['input_tokens']} / 输出 {u['output_tokens']}{' 估算' if u['estimated'] else ''}]", "dim") + "\n", err=True)
+            think = f"（思考 {u['reasoning_tokens']}）" if u.get("reasoning_tokens") else ""
+            self.w(paint(f"[tokens 输入 {u['input_tokens']} / 输出 {u['output_tokens']}{think}{' 估算' if u['estimated'] else ''}]", "dim") + "\n", err=True)
 
 
 def interactive(session: Session) -> None:

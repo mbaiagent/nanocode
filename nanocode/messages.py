@@ -140,19 +140,26 @@ class Usage:
     input_tokens: int = 0
     output_tokens: int = 0
     estimated: bool = False  # provider 没返回 usage 时用估算值
+    # 输出里用在思考上的部分（已包含在 output_tokens 里，也占 max_tokens 预算）。
+    # 只有返回 completion_tokens_details.reasoning_tokens 的厂商（如 DeepSeek 思考模式）才有，#102
+    reasoning_tokens: int = 0
 
     def add(self, other: "Usage") -> None:
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
+        self.reasoning_tokens += other.reasoning_tokens
         self.estimated = self.estimated or other.estimated
 
     def to_dict(self) -> dict:
-        return {"input_tokens": self.input_tokens, "output_tokens": self.output_tokens, "estimated": self.estimated}
+        d = {"input_tokens": self.input_tokens, "output_tokens": self.output_tokens, "estimated": self.estimated}
+        if self.reasoning_tokens:            # 不思考的厂商：和以前完全一样
+            d["reasoning_tokens"] = self.reasoning_tokens
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Usage":
         return cls(int(d.get("input_tokens", 0) or 0), int(d.get("output_tokens", 0) or 0),
-                   bool(d.get("estimated", False)))
+                   bool(d.get("estimated", False)), int(d.get("reasoning_tokens", 0) or 0))
 
     def merge(self, other: "Usage") -> None:
         """线程安全地并进另一个 Usage（子 Agent 在工作线程里累加时用，见 #48）。"""

@@ -55,6 +55,35 @@ SUBAGENT_PROMPT = BASE_PROMPT + """
 不要把推测写成事实。任务如果限定了可以修改的范围或要求通过某条检查，系统会在你汇报后核对，不通过会让你重做。"""
 
 
+MAX_TOKENS_CEILING = 32768
+
+
+def max_tokens_ceiling() -> int:
+    """思考把预算用光时，重试最多加到多少（NANOCODE_MAX_TOKENS_CEILING，默认 32768，#102）。
+
+    DeepSeek 的上限是 384K，大多数厂商在 8K~64K 之间；默认值取得保守，需要更大就自己调。
+    """
+    try:
+        return max(0, int(os.environ.get("NANOCODE_MAX_TOKENS_CEILING", MAX_TOKENS_CEILING)))
+    except ValueError:
+        return MAX_TOKENS_CEILING
+
+
+def _reasoning_burned_budget(resp) -> bool:
+    """max_tokens 截断，而且没有正文、没有工具调用，只有思考。"""
+    if resp.stop_reason != "max_tokens":
+        return False
+    if any(b.get("type") == "tool_use" or (b.get("type") == "text" and b.get("text")) for b in resp.content):
+        return False
+    return any(b.get("type") == "reasoning" for b in resp.content) or resp.usage.reasoning_tokens > 0
+
+
+def _burned_message(budget: int, retried: bool) -> str:
+    head = f"(模型把 max_tokens（{budget}）全部用在了思考上，{'重试后' if retried else ''}仍然没有输出正文。"
+    return head + ("可以调大设置里的 max_tokens 或环境变量 NANOCODE_MAX_TOKENS_CEILING，"
+                   "或者换一个思考强度更低的模型后再试。)")
+
+
 class Agent:
     def __init__(self, provider: Provider, tools: ToolRegistry, permissions: PermissionManager,
                  hooks: HookRunner, bus: EventBus, cwd: str, system_prompt: Callable[[], str],
@@ -99,6 +128,30 @@ class Agent:
 
     def emit(self, type: str, **data) -> None:
         self.bus.emit(type, agent=self.name, **data)
+
+    def _complete(self, system: str, tools: list[dict]) -> tuple:
+        """调用模型；思考把 max_tokens 全部用光时，加大预算重试一次（#102）。
+
+        思考模式的模型（如 DeepSeek）的思考 token 也算在 max_tokens 里：复杂任务上可能还没
+        开始输出正文就被截断，回来的只有一段思考 —— 以前会被当成"(空回复)"悄悄结束这一轮。
+        只在"确实在思考"（有 reasoning 块或 reasoning_tokens）时才重试：不思考的厂商不会多发
+        请求，也不会收到一个可能超过它上限的 max_tokens。
+
+        返回 (resp, burned)：burned 非空表示重试后仍然没有正文，是要展示给用户的说明。
+        """
+        resp = self.provider.complete(system, self.messages, tools, self.max_tokens, on_text=self._on_text)
+        if not _reasoning_burned_budget(resp):
+            return resp, ""
+        budget = min(self.max_tokens * 2, max_tokens_ceiling())
+        if budget <= self.max_tokens:
+            return resp, _burned_message(self.max_tokens, retried=False)
+        self.usage.add(resp.usage)            # 第一次的用量也是真花了的（第二次的由调用方计入）
+        self.emit("warning", message=f"模型把 max_tokens（{self.max_tokens}）全部用在了思考上，没有输出正文；"
+                                     f"用 {budget} 重试这一步")
+        resp = self.provider.complete(system, self.messages, tools, budget, on_text=self._on_text)
+        if _reasoning_burned_budget(resp):
+            return resp, _burned_message(budget, retried=True)
+        return resp, ""
 
     # =================================================================== 主循环
 
@@ -151,7 +204,7 @@ class Agent:
                           context_tokens=context_tokens(system, self.messages, tools), context_window=self.context_window)
                 started = time.time()
                 try:
-                    resp = self.provider.complete(system, self.messages, tools, self.max_tokens, on_text=self._on_text)
+                    resp, burned = self._complete(system, tools)
                 except Cancelled:
                     final = "(已中断)"
                     break
@@ -161,7 +214,9 @@ class Agent:
                     break
                 self.usage.add(resp.usage)
                 content = resp.content
-                if not any(b.get("type") != "reasoning" for b in content):   # 只有思考、没有正文（#99）
+                if burned:                                                     # 加大预算重试后仍然全花在思考上（#102）
+                    content = content + [text_block(burned)]
+                elif not any(b.get("type") != "reasoning" for b in content):   # 只有思考、没有正文（#99）
                     content = content + [text_block("(空回复)")]
                 self.messages.append(assistant_message(content))
                 self.emit("llm_response", step=step, content=content, stop_reason=resp.stop_reason,
@@ -172,7 +227,7 @@ class Agent:
                 calls = tool_uses(self.messages[-1])
                 if not calls:
                     final = text_of(self.messages[-1])
-                    if resp.stop_reason == "max_tokens":
+                    if resp.stop_reason == "max_tokens" and not burned:
                         final += "\n\n(回复因达到 max_tokens 被截断)"
                     # 自动验证 —— 做过改动的话，先过一遍检查命令；不通过就把输出交还给模型
                     if self.verify and self._dirty and not self.cancel.is_set():

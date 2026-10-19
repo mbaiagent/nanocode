@@ -124,7 +124,9 @@ class OpenAICompatProvider(Provider):
                 raise LLMError(str(chunk["error"]))
             if chunk.get("usage"):
                 u = chunk["usage"]
-                usage = Usage(u.get("prompt_tokens", 0) or 0, u.get("completion_tokens", 0) or 0)
+                details = u.get("completion_tokens_details") or {}
+                usage = Usage(u.get("prompt_tokens", 0) or 0, u.get("completion_tokens", 0) or 0,
+                              reasoning_tokens=(details.get("reasoning_tokens") or 0) if isinstance(details, dict) else 0)
             for choice in chunk.get("choices") or []:
                 delta = choice.get("delta") or {}
                 if delta.get("reasoning_content"):
