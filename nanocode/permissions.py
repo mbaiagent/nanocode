@@ -86,6 +86,30 @@ class PermissionManager:
         return decision
 
     def _decide(self, tool, target: str, full: str) -> Decision:
+        """先按原有顺序得出决策，再用敏感读取检查收紧（#136）：只会 allow → ask，不会放松。
+
+        deny（含 plan 拒绝）原样保留；ask 保留原来的理由和 high_risk，只在理由后追加一句；
+        allow（含宽泛 allow 规则）升级成 ask。用户对这个具体目标点过「总是允许」、或 bypass 模式不收紧。
+        非交互时 _ask 会把 ask 变成 deny。
+        """
+        decision = self._base_decide(tool, target, full)
+        if decision.behavior == "deny" or self.mode == "bypass":
+            return decision
+        sensitive = self._sensitive_read(tool, target, full)
+        if not sensitive:
+            return decision
+        note = f"读取敏感文件（{sensitive}），内容会进入模型上下文"
+        if decision.behavior == "ask":
+            decision.reason = f"{decision.reason}；另外会{note}"
+            return decision
+        inside = not getattr(tool, "path_target", False) or is_inside(self.cwd, full)
+        forms = [norm_rel(safe_relpath(full, os.path.realpath(self.cwd))) if inside else norm_rel(full)] \
+            if getattr(tool, "path_target", False) else [target]
+        if self._exactly_allowed(tool, target, forms):
+            return decision
+        return Decision("ask", f"{note}，需要确认", high_risk=decision.high_risk)
+
+    def _base_decide(self, tool, target: str, full: str) -> Decision:
         inside = True
         allow_forms = deny_forms = [target]
         if getattr(tool, "path_target", False):
@@ -104,11 +128,6 @@ class PermissionManager:
                 return Decision("deny", "命中 deny 规则（复合命令里任何一段命中都算）")
         elif _matches_any(self.deny, tool.name, *deny_forms):
             return Decision("deny", "命中 deny 规则")
-        sensitive = self._sensitive_read(tool, target, full)
-        if sensitive and self.mode != "bypass" and not self._exactly_allowed(tool, target, allow_forms):
-            # 放在 allow 规则之前：`read_file` 或 `bash(cat *)` 这类宽泛规则不能顺带放开密钥文件。
-            # 用户对这个具体目标点过「总是允许」的除外。非交互时 _ask 会把 ask 变成 deny。
-            return Decision("ask", f"读取敏感文件（{sensitive}），内容会进入模型上下文，需要确认")
         if self.mode == "plan" and not tool.is_read_only:
             return Decision("deny", "当前处于 plan（只读规划）模式，不能执行修改类操作。请先给出方案，等用户切换模式后再执行。")
         if self.mode == "review":

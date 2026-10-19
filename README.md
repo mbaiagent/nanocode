@@ -282,7 +282,7 @@ nanocode --api-key sk-xxx                     # 直接给 API Key（更推荐用
 |---|---|---|
 | `"provider"` `"model"` `"base_url"` `"protocol"` `"headers"` | 用哪家模型、怎么连 | `provider` `base_url` `protocol` `headers` 需信任（会把 API Key 发往那里） |
 | `"mode"` | 权限模式：`default` `accept_edits` `plan` `review` `bypass` | 需信任 |
-| `"permissions"` | `{"allow": [...], "deny": [...]}` 规则，如 `"bash(git status*)"` | `allow` 需信任；`deny` 照常生效 |
+| `"permissions"` | `{"allow": [...], "deny": [...], "sensitive_read": [...], "sensitive_read_exclude": [...]}`：规则如 `"bash(git status*)"`；`sensitive_read` 追加需要确认才能读的敏感文件模式，`sensitive_read_exclude` 去掉默认模式（见 [第 4 章](docs/04-permissions-and-hooks.md#敏感文件读取136)） | `allow`、`sensitive_read_exclude` 需信任；`deny`、`sensitive_read` 照常生效 |
 | `"hooks"` | 生命周期钩子，见第 04 章 | 需信任 |
 | `"mcpServers"` | MCP 服务器，见第 07 章 | 需信任 |
 | `"verify"` | 自动验证命令，字符串或 `{"command": ..., "max_retries": 3, "timeout": 300}` | 需信任 |

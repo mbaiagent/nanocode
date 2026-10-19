@@ -63,6 +63,29 @@ class SensitiveReadTest(unittest.TestCase):
         self.assertEqual(pm.check(Bash(), {"command": "cat .env"}).behavior, "ask")
         self.assertEqual(pm.resolve(Bash(), {"command": "cat .env"}).behavior, "deny")   # 非交互
 
+    def test_never_loosens_stricter_decisions(self):
+        cmd = {"command": "cat .env && rm -rf src"}
+        self.assertEqual(self.decide(Bash(), cmd, mode="plan"), "deny")              # 与 main 一致
+        self.assertEqual(self.decide(Bash(), {"command": "cat .env > ~/.bashrc"}, mode="plan"), "deny")
+        d = PermissionManager(self.ws.dir, mode="review").check(Bash(), cmd)
+        self.assertEqual(d.behavior, "ask")
+        self.assertTrue(d.high_risk)                                                  # 不能"总是允许"
+        self.assertIn("敏感文件", d.reason)
+        d = PermissionManager(self.ws.dir, mode="review").check(Bash(), {"command": "cat .env; rm -rf ~"})
+        self.assertTrue(d.high_risk)
+        d = PermissionManager(self.ws.dir).check(Bash(), cmd)
+        self.assertEqual(d.behavior, "ask")
+        d = PermissionManager(self.ws.dir).check(Bash(), {"command": "cat .env > ~/.bashrc"})
+        self.assertIn("项目以外", d.reason)
+        self.assertIn("敏感文件", d.reason)
+        self.assertEqual(PermissionManager(self.ws.dir, mode="plan").resolve(Bash(), cmd).behavior, "deny")
+
+    def test_review_high_risk_always_not_allowed(self):
+        pm = PermissionManager(self.ws.dir, mode="review", ask_fn=lambda *a: "always")
+        r = pm.resolve(Bash(), {"command": "cat .env && rm -rf src"})
+        self.assertEqual(r.behavior, "allow")
+        self.assertEqual(pm.check(Bash(), {"command": "cat .env && rm -rf src"}).behavior, "ask")
+
     def test_patterns_configurable(self):
         pats = risk.sensitive_patterns(extra=["*.secret"], exclude=[".env"])
         self.assertEqual(self.decide(ReadFile(), {"path": "x.secret"}, sensitive_read=pats), "ask")
