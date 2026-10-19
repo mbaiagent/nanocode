@@ -71,6 +71,10 @@ class Handler(BaseHTTPRequestHandler):
         elif route == "/serper":
             self.reply(json.dumps({"organic": [
                 {"title": "Serper result", "link": "https://example.net/s", "snippet": "from serper"}]}))
+        elif route == "/v1/tools/search":
+            self.reply(json.dumps({"results": [
+                {"title": "DeepSeek official", "url": "https://example.net/o", "snippet": "short snippet",
+                 "summary": "long summary " * 40, "content": ""}]}))
         elif route == "/deepseek/v1/search":
             self.reply(json.dumps({"data": [
                 {"title": "DeepSeek result", "url": "https://example.net/d", "summary": "from deepseek"}]}))
@@ -148,6 +152,27 @@ class WebSearchTest(unittest.TestCase):
         seen = Handler.seen[-1]
         self.assertEqual(seen["headers"]["authorization"], "Bearer ds-key")
         self.assertEqual(json.loads(seen["body"]), {"query": "x", "count": 5})
+
+    def test_deepseek_bare_host_and_v1_use_official_endpoint(self):
+        for path in ("", "/", "/v1", "/v1/"):
+            Handler.seen.clear()
+            out = self.tool("deepseek", path, api_key="ds-key").run({"query": "x", "count": 3}, self.ctx)
+            seen = Handler.seen[-1]
+            self.assertEqual((seen["method"], seen["path"]), ("POST", "/v1/tools/search"), path)
+            self.assertEqual(json.loads(seen["body"]), {"query": "x", "count": 3})
+            self.assertIn("DeepSeek official", out)
+
+    def test_deepseek_prefers_short_snippet(self):
+        out = self.tool("deepseek", "", api_key="ds-key").run({"query": "x"}, self.ctx)
+        self.assertIn("short snippet", out)
+        self.assertNotIn("long summary", out)
+
+    def test_deepseek_defaults_to_official_api_with_only_a_key(self):
+        tool = WebSearch(provider="deepseek", base_url="", api_key="ds-key")
+        self.assertTrue(tool.available)
+        req = tool.provider.build("x", 2)
+        self.assertEqual(req.url, "https://api.deepseek.com/v1/tools/search")
+        self.assertFalse(WebSearch(provider="deepseek", base_url="", api_key="").available)
 
     def test_https_is_required_by_default(self):
         tool = WebSearch(provider="searxng", base_url="http://127.0.0.1:9", allow_ips={"127.0.0.1"})

@@ -12,11 +12,12 @@ HTTP 由 WebSearch 统一发：强制 https（除非显式允许 http）、解�
   tavily      JSON + API Key。
   brave       JSON + X-Subscription-Token。
   serper      JSON + X-API-KEY。
-  deepseek    兼容 /v1/search 的 JSON + Bearer（旧的单一形状，保留兼容）。
+  deepseek    DeepSeek 官方 POST /v1/tools/search，JSON + Bearer，只填 Key 即可；
+              base_url 写完整路径时原样使用（兼容旧的 /v1/search 端点）。
 
 配置（NANOCODE_SEARCH_* 优先，兼容旧 NCS_SEARCH_*）：
   PROVIDER        默认 duckduckgo
-  BASE_URL        searxng / deepseek 必填；也可覆盖其它 provider 的默认端点
+  BASE_URL        searxng 必填；也可覆盖其它 provider 的默认端点
   API_KEY         tavily / brave / serper / deepseek
   ALLOW_HTTP=1    允许 http（自建 SearXNG 常见）
   ALLOW_PRIVATE=1 允许内网地址（同上；等同于放弃公网校验，慎用）
@@ -264,15 +265,23 @@ class Serper(Provider):
 
 
 class DeepSeekCompat(Provider):
-    """旧的 /v1/search 形状：{query,count} + Bearer，响应 results/data/items。"""
+    """DeepSeek 官方搜索：POST /v1/tools/search，{query,count} + Bearer，响应 results。
+
+    base_url 只写到主机（或主机 + /v1）时补成 /v1/tools/search；写了别的完整路径
+    （比如旧的 /v1/search 兼容端点）就原样使用。
+    """
 
     name = "deepseek"
+    default_base_url = "https://api.deepseek.com"
     uses_base_url = True
     needs_key = True
+    SEARCH_PATH = "/v1/tools/search"
 
     def build(self, query: str, count: int) -> Request:
         parts = urlsplit(self.base_url)
-        path = parts.path or "/v1/search"
+        path = parts.path.rstrip("/")
+        if path in ("", "/v1"):
+            path = self.SEARCH_PATH
         url = f"{parts.scheme}://{parts.netloc}{path}"
         body = json.dumps({"query": query, "count": count}).encode()
         headers = {"content-type": "application/json", "user-agent": USER_AGENT,
@@ -281,11 +290,13 @@ class DeepSeekCompat(Provider):
 
     def parse(self, text: str) -> list[SearchResult]:
         data = _json(text)
+        # 官方 snippet 是 100~200 字的展示摘要，summary 是 600~800 字给模型读的长摘要；
+        # 输出只展示前 200 字，所以优先 snippet。
         return [
             SearchResult(
                 _clean(i.get("title") or i.get("name") or ""),
                 _safe_url(i.get("url") or i.get("link") or ""),
-                _clean(i.get("summary") or i.get("snippet") or i.get("content") or ""),
+                _clean(i.get("snippet") or i.get("summary") or i.get("content") or ""),
             )
             for i in _items(data, "results", "data", "items")
         ][:MAX_RESULTS]
