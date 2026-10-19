@@ -130,6 +130,22 @@ python3 -m nanocode
 
 想安装成命令：`pip install -e .`，之后直接用 `nanocode`。要求 Python ≥ 3.10。
 
+### 本地单机模式 vs 平台部署
+
+两种启动方式是分开的两个入口，互不依赖：
+
+| | 本地单机模式 | 平台部署（多用户） |
+|---|---|---|
+| 启动 | `nanocode` / `nanocode --web`（或 `python3 -m nanocode --web`） | `nanocode-server`（或 `PYTHONPATH=server:. python3 -m nanocode_server`），见 [server/README.md](server/README.md) |
+| 适合 | 在自己电脑上（macOS / Windows / Linux）一个人用 | 给多人提供服务：登录、每会话一个沙箱、模型网关 |
+| 依赖 | 只要 Python ≥ 3.10，纯标准库，`pip install -e .` 不装任何第三方包 | 可选 PostgreSQL / Redis（`pip install "./server[postgres,redis]"`）、Docker / K8s / 远程沙箱、GitHub 登录 |
+| 数据 | `~/.nanocode/` 下的文件（会话、设置、经验） | 数据库 + 沙箱工作区 |
+| 登录 | 不需要；只监听 127.0.0.1，页面带一次性令牌 | `NCS_AUTH=github` / `proxy` / `dev` |
+| 联网 | 只连你配置的模型厂商（默认 Mock 模型完全离线） | 平台机、沙箱机、数据库之间按部署文档连接 |
+
+本地模式不读任何 `NCS_*` 平台配置：环境里残留了 `NCS_DATABASE_URL`、`NCS_LAUNCHER=remote`、`DOCKER_HOST` 之类也照常启动，
+不 import 平台代码、不连数据库、不调 docker——`tests/test_local_mode.py` 在三个系统上的 CI 里保证这一点。
+
 ### 想先看骨架？`examples/minimal_agent.py`
 
 框架里有权限、hooks、上下文压缩、子 Agent 等一层层封装。`examples/minimal_agent.py` 把这些全部剥掉，只留 **约 260 行、零第三方依赖** 的 Agent 本质：
