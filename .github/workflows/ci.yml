@@ -34,4 +34,14 @@ jobs:
       - name: Run server tests
         env:
           PYTHONPATH: server:server/tests:.
-        run: python -m unittest discover -s server/tests -v
+          PYTHONUNBUFFERED: "1"
+          TMPDIR: ${{ runner.temp }}/nanocode-tests
+        run: |
+          mkdir -p "$TMPDIR"
+          if python -m unittest discover -s server/tests -v; then
+            exit 0
+          else
+            result=$?
+            find "$TMPDIR" -name sandbox.log -type f -print -exec tail -n 60 {} \;
+            exit "$result"
+          fi
