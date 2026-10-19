@@ -34,6 +34,8 @@ import tempfile
 import threading
 import time
 
+from nanocode.proc import force_utf8_stdio, utf8_env
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 TASKS = os.path.join(HERE, "tasks")
@@ -80,7 +82,8 @@ def run_check(task: dict, work: str, answer: str) -> tuple[bool, str]:
         f.write(answer or "")
     try:
         p = subprocess.run([sys.executable, os.path.join(task["dir"], "check.py"), work, answer_file],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=300, env=utf8_env())
         # stdout / stderr 可能因解码失败变成 None（Windows 上 locale 不匹配 UTF-8 时会发生）
         out = (p.stdout or "") + (p.stderr or "")
         lines = out.strip().splitlines()
@@ -178,6 +181,7 @@ def markdown(meta: dict, rows: list[dict]) -> str:
 
 
 def main(argv=None) -> int:
+    force_utf8_stdio()          # Windows 上重定向的 stdout 是 cp1252，打印 ⚠/✗ 会崩（#92）
     ap = argparse.ArgumentParser(description="nanocode Agent 任务评测")
     ap.add_argument("--provider", default=os.environ.get("NANOCODE_PROVIDER", "mock"))
     ap.add_argument("--model", default=os.environ.get("NANOCODE_MODEL", ""))

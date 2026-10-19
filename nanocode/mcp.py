@@ -30,7 +30,9 @@ import collections
 import json
 import os
 import queue
+import shutil
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass, field
 
@@ -47,14 +49,32 @@ _ENV_PASSTHROUGH = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR",
 
 
 def child_env(extra: dict | None) -> dict:
-    """MCP 子进程的环境：白名单里的基础变量 + 配置里显式声明的 env。"""
+    """MCP 子进程的环境：白名单里的基础变量 + 配置里显式声明的 env。
+
+    额外强制 PYTHONIOENCODING=utf-8：协议是"每行一条 UTF-8 JSON"，我们按 UTF-8 解码，
+    而 Windows 上 Python 写的 MCP 服务器默认按本机代码页编码 stdout —— 它的工具说明
+    里只要有一个中文字符就会在 write 时崩掉，客户端看到的只是"服务器连不上"。
+    """
     env = {k: os.environ[k] for k in _ENV_PASSTHROUGH if k in os.environ}
     env.update(extra or {})
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     return env
 
 
 class MCPError(Exception):
     pass
+
+
+def _resolve_command(command: str) -> str:
+    """`python3` 在 Windows 上通常不叫这个名字（叫 python / py）。
+
+    文档里的示例配置写的是 `python3`，照抄到 Windows 上会直接"服务器起不来"。
+    解释器名字找不到时退回当前解释器 —— 只覆盖这几个众所周知的名字，别的命令
+    原样交给系统解析，免得把一个打错的命令偷偷换掉。
+    """
+    if command in ("python", "python3", "py") and shutil.which(command) is None:
+        return sys.executable
+    return command
 
 
 class MCPClient:
@@ -68,7 +88,8 @@ class MCPClient:
         # encoding 必须显式指定：text=True 在 Windows 上按本机 locale（cp936 等）解码，
         # 而 MCP server 基本都输出 UTF-8（中文描述、中文错误信息很常见）。解码失败发生在
         # reader 线程里，异常只进 stderr，线程静默死掉，之后每个 tools/list 都等到超时（#74）。
-        self.proc = subprocess.Popen([command, *(args or [])], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        self.proc = subprocess.Popen([_resolve_command(command), *(args or [])],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
                                      cwd=cwd, bufsize=1,
                                      env=child_env(env))

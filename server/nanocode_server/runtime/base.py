@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 import urllib.error
 import urllib.request
@@ -36,22 +37,52 @@ class SandboxSpec:
         return a + ["--resume"] if self.resume else a
 
 
-def wait_ready(endpoint: str, web_token: str, timeout: float, alive=lambda: True) -> None:
-    """等沙箱里的 nanocode 能响应 /api/state。"""
+_TOKEN_IN_TEXT = re.compile(r"(token=)[\w.~-]+")
+
+
+def _log_tail(path: str, limit: int = 1500) -> str:
+    """把沙箱自己的日志尾巴附到报错里。
+
+    只报"30 秒内没就绪：timed out"等于什么都没说：到底是解释器没起来、策略拒绝了、
+    还是端口没通，全在沙箱进程自己的 stderr 里。启动失败时把它带出来（token 打码，
+    那串令牌能直接驱动沙箱）。
+    """
+    if not path:
+        return ""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - limit))
+            tail = f.read().decode("utf-8", "replace").strip()
+    except OSError:
+        return ""
+    if not tail:
+        return ""
+    return "\n--- 沙箱日志尾部 ---\n" + _TOKEN_IN_TEXT.sub(r"\1***", tail)
+
+
+def wait_ready(endpoint: str, web_token: str, timeout: float, alive=lambda: True,
+               probe_timeout: float = 5.0, log_path: str = "") -> None:
+    """等沙箱里的 nanocode 能响应 /api/state。
+
+    probe_timeout 不能太短：CI 上多个沙箱并行、机器被压满时，"连上了但 2 秒没回"
+    会把一个正常启动中的沙箱判死（#92）。失败时把沙箱日志尾巴一起带出来，否则
+    "30 秒内没有就绪：timed out" 这种错误什么也说明不了。
+    """
     deadline = time.time() + timeout
     last = ""
     while time.time() < deadline:
         if not alive():
-            raise LaunchError(f"沙箱启动后退出了。{last}")
+            raise LaunchError(f"沙箱启动后退出了。{last}" + _log_tail(log_path))
         req = urllib.request.Request(endpoint + "/api/state", headers={"x-nanocode-token": web_token, "Host": "localhost"})
         try:
-            with urllib.request.urlopen(req, timeout=2) as r:
+            with urllib.request.urlopen(req, timeout=probe_timeout) as r:
                 if r.status == 200:
                     return
         except (urllib.error.URLError, OSError) as e:
             last = str(e)
         time.sleep(0.2)
-    raise LaunchError(f"沙箱 {timeout:.0f} 秒内没有就绪：{last}")
+    raise LaunchError(f"沙箱 {timeout:.0f} 秒内没有就绪：{last}" + _log_tail(log_path))
 
 
 class Launcher(ABC):

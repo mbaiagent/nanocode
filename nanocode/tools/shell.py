@@ -12,14 +12,28 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import threading
 import time
 
 from .base import Tool, ToolError, truncate
-from ..proc import find_bash, kill_tree, popen_kwargs
+from ..proc import WINDOWS, find_bash, kill_tree, popen_kwargs, utf8_env
 
 _MARK = "__NANOCODE_PWD__"
+_MSYS_PATH = re.compile(r"^/([A-Za-z])/(.*)$")
+
+
+def _native_path(path: str, windows: bool = WINDOWS) -> str:
+    """把 Git Bash 的 MSYS 路径（/c/Users/x）转成 Windows 路径（C:\\Users\\x）。
+
+    工具靠输出里的 `pwd` 记住 `cd` 之后的位置，但 Windows 的 os.path.isdir 不认 MSYS
+    路径 —— 结果 `cd sub` 下一条命令就"忘了"自己在哪。POSIX 上原样返回。
+    """
+    m = _MSYS_PATH.match(path)
+    if windows and m:
+        return m.group(1).upper() + ":\\" + m.group(2).replace("/", "\\")
+    return path
 
 
 class Bash(Tool):
@@ -52,7 +66,7 @@ class Bash(Tool):
         script = f"{input['command']}\n__nc=$?\necho; echo {_MARK}; pwd; exit $__nc"
         proc = subprocess.Popen([bash, "-c", script], cwd=cwd, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                encoding="utf-8", errors="replace", **popen_kwargs())
+                                encoding="utf-8", errors="replace", env=utf8_env(), **popen_kwargs())
         # 必须边运行边读输出：如果等进程结束再读，输出超过管道缓冲区（约 64KB）时进程会卡死
         chunks: list[str] = []
         reader = threading.Thread(target=lambda: chunks.append(proc.stdout.read()), daemon=True)
@@ -78,6 +92,7 @@ class Bash(Tool):
         if _MARK in out:
             out, _, tail = out.rpartition(_MARK)
             new_cwd = tail.strip().splitlines()[0] if tail.strip() else ""
+            new_cwd = _native_path(new_cwd)
             if new_cwd and os.path.isdir(new_cwd):
                 ctx.state["shell_cwd"] = new_cwd
             out = out.rstrip("\n")

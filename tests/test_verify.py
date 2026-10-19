@@ -161,10 +161,11 @@ class CliExitCodeTest(unittest.TestCase):
         d = tempfile.mkdtemp(prefix="nanocode-cli-")
         env = dict(os.environ, NANOCODE_HOME=os.path.join(d, "home"), PYTHONPATH=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         return subprocess.run([sys.executable, "-m", "nanocode", "--provider", "mock", "--mode", "bypass", "--verify", verify,
-                               "-p", "创建文件 hello.py"], cwd=d, env=env, capture_output=True, text=True, timeout=60)
+                               "-p", "创建文件 hello.py"], cwd=d, env=env, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=60)
 
     def test_single_shot_exits_nonzero_when_verification_fails(self):
-        r = self.run_cli("echo 报错内容; exit 1")
+        r = self.run_cli(py("print('报错内容'); raise SystemExit(1)"))   # Windows 的 cmd 不认 `;`
         self.assertEqual(r.returncode, 1, r.stderr[-500:])
         self.assertIn("自动验证未通过", r.stderr)
         self.assertIn("报错内容", r.stderr)

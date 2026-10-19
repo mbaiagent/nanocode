@@ -65,7 +65,9 @@ class Workspace:
     def write(self, rel, content):
         path = os.path.join(self.dir, rel)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        # newline="" 与工具的行为保持一致：不做 \n -> \r\n 翻译，否则 Windows 上
+        # "写出去再写回来"会被 diff 判成有改动（#92）
+        with open(path, "w", encoding="utf-8", newline="") as f:
             f.write(content)
         return path
 

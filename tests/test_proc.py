@@ -9,7 +9,7 @@ import time
 import unittest
 from unittest import mock
 
-from nanocode.proc import _is_wsl_stub, find_bash, kill_tree, popen_kwargs
+from nanocode.proc import _is_wsl_stub, find_bash, kill_tree, popen_kwargs, utf8_env
 
 # 拉起一个孙进程（模拟沙箱里的 pytest / dev server），把它的 pid 写进文件，然后自己也不退出
 _CHILD = """
@@ -59,6 +59,22 @@ class KillTreeTest(unittest.TestCase):
         proc = subprocess.Popen([sys.executable, "-c", "pass"], stdout=subprocess.DEVNULL, **popen_kwargs())
         proc.wait(timeout=10)
         kill_tree(proc)                            # 不该抛异常，也不该卡住
+
+
+class Utf8EnvTest(unittest.TestCase):
+    """子进程必须按 UTF-8 写 stdout，否则 Windows 上打印中文就崩（#92）。"""
+
+    def test_sets_pythonioencoding(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(utf8_env().get("PYTHONIOENCODING"), "utf-8")
+
+    def test_keeps_explicit_value(self):
+        with mock.patch.dict(os.environ, {"PYTHONIOENCODING": "cp936"}):
+            self.assertEqual(utf8_env()["PYTHONIOENCODING"], "cp936")
+
+    def test_copies_other_variables(self):
+        with mock.patch.dict(os.environ, {"NANOCODE_TEST_MARK": "1"}):
+            self.assertEqual(utf8_env()["NANOCODE_TEST_MARK"], "1")
 
 
 class FindBashTest(unittest.TestCase):

@@ -34,6 +34,11 @@ import subprocess
 import sys
 import tempfile
 
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, ROOT)          # 直接 `python3 evals/polyglot/convert.py` 时也要能 import nanocode
+
+from nanocode.proc import force_utf8_stdio, utf8_env  # noqa: E402
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_OUT = os.path.join(HERE, "tasks")
 
@@ -61,7 +66,11 @@ for rel in TESTS:
     try:
         p = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", os.path.join(work, os.path.dirname(rel)),
                             "-t", work, "-p", os.path.basename(rel)],
-                           cwd=work, capture_output=True, text=True, timeout=TIMEOUT)
+                           cwd=work, capture_output=True, text=True, timeout=TIMEOUT,
+                           # 生成出来的 check.py 是自包含的（不 import 仓库里的东西），
+                           # 所以这里内联 UTF-8 环境，别用 utf8_env()（#92）
+                           encoding="utf-8", errors="replace",
+                           env={{**os.environ, "PYTHONIOENCODING": "utf-8"}})
     except subprocess.TimeoutExpired:
         print("FAIL: 测试超时（可能有死循环）")
         sys.exit(1)
@@ -173,7 +182,8 @@ def run_check(task_dir: str, work: str) -> tuple[bool, str]:
     os.close(fd)
     try:
         p = subprocess.run([sys.executable, os.path.join(task_dir, "check.py"), work, answer],
-                           capture_output=True, text=True, timeout=300)
+                           capture_output=True, text=True, timeout=300,
+                           encoding="utf-8", errors="replace", env=utf8_env())
     except subprocess.TimeoutExpired:
         return False, "判定超时"
     finally:
@@ -213,6 +223,7 @@ def select(names: list[str], exercises: str, limit: int, seed: int) -> list[str]
 
 
 def main(argv=None) -> int:
+    force_utf8_stdio()          # Windows 上重定向的 stdout 是 cp1252，打印中文会崩（#92）
     ap = argparse.ArgumentParser(description="把 Aider Polyglot 习题转成 nanocode 评测任务")
     ap.add_argument("--src", required=True, help="polyglot-benchmark 仓库的根目录")
     ap.add_argument("--language", default="python", choices=sorted(LANGUAGES))

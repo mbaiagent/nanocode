@@ -38,7 +38,10 @@ def run_tests(work: str, pattern: str = "test_hidden*.py", timeout: int = 60) ->
     """返回 (是否全部通过, 输出末尾, 运行的测试数)。"""
     try:
         p = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", work, "-t", work, "-p", pattern],
-                           cwd=work, capture_output=True, text=True, timeout=timeout)
+                           cwd=work, capture_output=True, text=True, timeout=timeout,
+                           encoding="utf-8", errors="replace",
+                           # 自包含：不 import 仓库里的 nanocode（隐藏测试可能在任何目录里跑，#92）
+                           env={**os.environ, "PYTHONIOENCODING": "utf-8"})
     except subprocess.TimeoutExpired:
         return False, "测试超时（可能有死循环）", 0
     out = p.stdout + p.stderr

@@ -5,7 +5,7 @@ import json
 import os
 import unittest
 
-from helpers import ScriptedProvider, Workspace, call, make_agent
+from helpers import ScriptedProvider, Workspace, call, make_agent, py
 
 from nanocode import lessons, verify as v
 from nanocode.cli import Renderer
@@ -13,7 +13,10 @@ from nanocode.context import MEMORY_FILE, load_memory
 from nanocode.messages import text_block
 from nanocode.session import Options, Session
 
-CHECK = 'test "$(cat a.txt)" = good || { echo "FAIL: test_a 期望 good，实际 $(cat a.txt)"; exit 1; }'
+# 跨平台：Windows 上没有 `test` / `$(cat ...)`（#92）。py() 见 tests/helpers.py
+CHECK = py("import sys; t = open('a.txt').read().strip(); ok = t == 'good'; "
+           "(None if ok else sys.stderr.write('FAIL: test_a 期望 good，实际 ' + t)); "
+           "sys.exit(0 if ok else 1)")
 
 
 def say(t="好了"):

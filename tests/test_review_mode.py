@@ -6,7 +6,7 @@ import sys
 import unittest
 from unittest import mock
 
-from helpers import Workspace, call, make_agent
+from helpers import Workspace, call, make_agent, py
 
 from nanocode import review, risk, subcheck, verify as verify_mod
 from nanocode.messages import text_block
@@ -67,9 +67,10 @@ class RiskClassifierTest(unittest.TestCase):
                 self.assertTrue(risk.is_protected_path(p), p)
             self.assertFalse(risk.is_protected_path("src/a.py"))
             self.assertEqual(risk.classify_bash("cat .ENV"), "unknown")     # 终审模式下不会免确认执行
-        # POSIX 保持大小写敏感：那是另一个文件
-        self.assertFalse(risk.is_protected_path(".ENV"))
-        self.assertEqual(risk.classify_bash("cat .ENV"), "safe")
+        # POSIX 保持大小写敏感：那是另一个文件（Windows 磁盘本来就不区分大小写）
+        if os.name != "nt":
+            self.assertFalse(risk.is_protected_path(".ENV"))
+            self.assertEqual(risk.classify_bash("cat .ENV"), "safe")
 
     def test_reason_is_human_readable(self):
         self.assertEqual(risk.risk_reason("rm -rf x"), "删除或覆盖文件")
@@ -235,11 +236,11 @@ class ReviewSummaryTest(unittest.TestCase):
 
     def test_verify_result_is_included(self):
         replies = [[call("read_file", path="a.py")], [call("write_file", path="a.py", content="q\n")], say(), say()]
-        _, _, ev = self.agent(replies, verify=verify_mod.VerifyConfig("true", 3, 20))
+        _, _, ev = self.agent(replies, verify=verify_mod.VerifyConfig(py("pass"), 3, 20))
         self.assertEqual(reviews(ev)[0]["verify"], "pass")
         self.ws.write("a.py", "x = 1\ny = 2\n")
         replies = [[call("read_file", path="a.py")], [call("write_file", path="a.py", content="q\n")], say(), say(), say()]
-        agent, _, ev = self.agent(replies, verify=verify_mod.VerifyConfig("echo bad; exit 1", 0, 20))
+        agent, _, ev = self.agent(replies, verify=verify_mod.VerifyConfig(py("raise SystemExit(1)"), 0, 20))   # cmd 不认 `;`
         self.assertEqual(reviews(ev)[0]["verify"], "fail")           # 验证放弃的那条提前返回的路径也要有汇总
 
     def test_subagent_edits_are_included_with_diff(self):
@@ -297,7 +298,8 @@ class WiringTest(unittest.TestCase):
         env = dict(os.environ, NANOCODE_HOME=os.path.join(d, "home"),
                    PYTHONPATH=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         return subprocess.run([sys.executable, "-m", "nanocode", "--provider", "mock", *args, "-p", "创建文件 hello.py"],
-                              cwd=d, env=env, capture_output=True, text=True, timeout=60)
+                              cwd=d, env=env, capture_output=True, text=True, timeout=60,
+                              encoding="utf-8", errors="replace")
 
     def test_cli_accepts_review_mode_and_prints_the_summary(self):
         r = self.run_cli("--mode", "review")

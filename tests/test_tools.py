@@ -76,6 +76,14 @@ class ToolTest(unittest.TestCase):
         self.assertIn("f.txt", Bash().execute({"command": py("import os; print(*os.listdir('.'))")}, self.ctx).content)
         self.assertIn("[退出码 3]", Bash().execute({"command": "exit 3"}, self.ctx).content)
 
+    def test_msys_pwd_is_converted_for_windows(self):
+        """Git Bash 的 pwd 是 /c/Users/x，Windows 的 os.path 不认；不转就记不住 cd（#92）。"""
+        from nanocode.tools.shell import _native_path
+        self.assertEqual(_native_path("/c/Users/a/b", windows=True), r"C:\Users\a\b")
+        self.assertEqual(_native_path("/c/Users/a", windows=False), "/c/Users/a")
+        self.assertEqual(_native_path("/usr/local/bin", windows=True), "/usr/local/bin")
+        self.assertEqual(_native_path(r"C:\already\native", windows=True), r"C:\already\native")
+
     def test_bash_timeout_and_cancel(self):
         r = Bash().execute({"command": py("import time; time.sleep(5)"), "timeout": 1}, self.ctx)
         self.assertTrue(r.is_error)
