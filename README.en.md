@@ -115,7 +115,7 @@ flowchart LR
     GW -->|decrypted key| M[(Model vendor)]
 ```
 
-One sandbox per session. User API keys are encrypted at rest and decrypted only in the gateway; **sandboxes never see real keys**. Docker / K8s sandboxes have no outbound internet and can only reach the gateway. Design in [Chapter 12](docs/12-distributed-deployment.md); code and runbook in [server/README.md](server/README.md). Deployment topologies, the full `NCS_*` reference, login / invites / admin and the security model are in [docs/](docs/README.md) (Chinese).
+One sandbox per session. User API keys are encrypted at rest and decrypted only in the gateway; **sandboxes never see real keys**. Docker / K8s sandboxes have no outbound internet and can only reach the gateway. Optional **workspace snapshots** (`NCS_OBJECT_STORE=s3`): when a sandbox stops, is idle-reaped or deleted, its workspace is archived to S3-compatible storage (Backblaze B2, MinIO, R2, ...) and restored automatically if the local copy is gone; credentials stay on the control plane, the sandbox host only gets single-object presigned URLs, and the sandbox gets nothing. Off by default, so single-machine use needs no cloud services ([deploy guide, in Chinese](docs/distributed-deploy.md)). Design in [Chapter 12](docs/12-distributed-deployment.md); code and runbook in [server/README.md](server/README.md). Deployment topologies, the full `NCS_*` reference, login / invites / admin and the security model are in [docs/](docs/README.md) (Chinese).
 
 ---
 

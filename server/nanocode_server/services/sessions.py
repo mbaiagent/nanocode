@@ -2,6 +2,8 @@
 
 一个会话 = 数据库里的一条记录 + 运行时的一个沙箱（可能没在运行）。沙箱随用随启：
 访问一个已停止的会话时自动启动，并恢复上次的对话；一段时间不用就回收，工作区保留。
+开了对象存储（NCS_OBJECT_STORE=s3）时，停止 / 回收 / 删除后工作区会在后台存一份快照，
+本机工作区没了时启动前自动恢复（services/snapshots.py）。
 """
 
 from __future__ import annotations
@@ -43,8 +45,10 @@ def build_policy(cfg: Config, option: ModelOption, gateway_url: str) -> dict:
 
 
 class SessionManager:
-    def __init__(self, cfg: Config, store: Store, launcher: Launcher, catalog: ModelCatalog, log=print):
+    def __init__(self, cfg: Config, store: Store, launcher: Launcher, catalog: ModelCatalog, log=print,
+                 snapshots=None):
         self.cfg = cfg
+        self.snapshots = snapshots                  # SnapshotManager；None = 没开对象存储
         self.store = store
         self.launcher = launcher
         self.catalog = catalog
@@ -159,6 +163,10 @@ class SessionManager:
             spec = SandboxSpec(sid, s.owner, web_token, api_key, build_policy(self.cfg, option, self.gateway_url),
                                resume=bool(s.started))
             try:
+                if self.snapshots is not None and s.started:
+                    # 拿到启动租约之后再恢复：多个副本不会同时往同一个工作区里解压
+                    self.snapshots.settle(sid)
+                    self.snapshots.restore_if_missing(s.owner, sid)
                 endpoint = self.launcher.start(spec)
             except LaunchError as e:
                 if self.store.fail_start(sid, web_token, str(e)[:500]):
@@ -180,15 +188,62 @@ class SessionManager:
                 raise SessionError(409, "启动期间会话被删除或停止了，请刷新后重试")
             return s
 
-    def stop(self, sid: str) -> None:
+    def stop(self, sid: str, snapshot: bool = True) -> None:
+        """停沙箱（保留工作区）。开了对象存储时随后在后台存快照——不等它，失败也不影响停止。"""
         with self._lock(sid):
+            s = self.store.get_session(sid)
+            was_active = bool(s and s.started and s.active)     # 本来就停着的再点停止：不重复存
             self.launcher.stop(sid)
             self.store.stop_session(sid)
+        if snapshot and self.snapshots is not None and was_active:
+            self.snapshots.schedule(s.owner, sid)
 
     def delete(self, sid: str) -> None:
         with self._lock(sid):
+            s = self.store.get_session(sid)
+            if self.snapshots is not None and s is not None and s.started:
+                self.launcher.stop(sid)
+                self.store.update_session(sid, status="deleted", endpoint="", web_token="")
+                if self.cfg.snapshot_purge_on_delete:
+                    # 默认：删除会话 = 连云端快照一起删（等这个会话排着的快照做完再删，免得删完又传上去一份）
+                    self.snapshots.schedule(s.owner, sid, work=self.snapshots.purge,
+                                            then=lambda: self.launcher.delete(sid))
+                    return
+                if self.cfg.snapshot_on_delete:
+                    # 不清理云端时可选：先存最后一份（误删能找回），之后再删本地工作区
+                    self.snapshots.schedule(s.owner, sid, then=lambda: self.launcher.delete(sid))
+                    return
             self.launcher.delete(sid)
             self.store.update_session(sid, status="deleted", endpoint="", web_token="")
+
+    def snapshot_now(self, owner: str, sid: str) -> dict:
+        """手动快照（会话主人）。沙箱在运行也可以：打包在容器外面做，不跟随链接。"""
+        if self.snapshots is None:
+            raise SessionError(404, "没有开启工作区快照（NCS_OBJECT_STORE=off）")
+        s = self.owned(owner, sid)
+        if not s.started:
+            raise SessionError(409, "这个会话还没有启动过，没有工作区")
+        from ..runtime.snapshot import SnapshotError
+        from ..storage.objectstore import ObjectStoreError
+        from .snapshots import SnapshotBusy
+        try:
+            if not self.launcher.has_workspace(sid):
+                raise SessionError(409, "本机没有这个会话的工作区（打开会话会先从快照恢复）")
+            return self.snapshots.snapshot_now(s.owner, sid, manual=True)
+        except SnapshotBusy as e:
+            raise SessionError(409, str(e)) from None
+        except (SnapshotError, ObjectStoreError, LaunchError) as e:
+            raise SessionError(502, f"快照失败：{e}") from None
+
+    def list_snapshots(self, owner: str, sid: str) -> list[dict]:
+        if self.snapshots is None:
+            return []
+        s = self.owned(owner, sid)
+        from ..storage.objectstore import ObjectStoreError
+        try:
+            return [{k: v for k, v in x.items() if k != "key"} for x in self.snapshots.list(s.owner, sid)]
+        except ObjectStoreError as e:
+            raise SessionError(502, f"列不出快照：{e}") from None
 
     def mark_dead(self, sid: str) -> None:
         """转发失败：沙箱已经不在了。标记为已停止，下次访问会重新启动。"""
@@ -221,7 +276,7 @@ class SessionManager:
                 if state and (state.get("busy") or state.get("queue")):
                     raise SessionError(409, "Agent 正在工作，等它做完（或先中断）再换模型")
             was_running = s.status == "running"
-            self.stop(sid)
+            self.stop(sid, snapshot=False)          # 马上要重启，不值得存快照（也免得启动等它）
             self.store.update_session(sid, model_ref=ref)
             # 重启也用刚写进去的 ref：锁保证了这中间没人能拿旧配置先把沙箱拉起来
             return self.ensure_running(sid) if was_running else self.store.get_session(sid)

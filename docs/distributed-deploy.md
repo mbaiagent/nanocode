@@ -13,6 +13,7 @@
 | `198.51.100.20` | 沙箱机公网 IP（RFC 5737 文档网段） |
 | `10.77.0.1` / `10.77.0.2` | WireGuard 内网地址：平台机 / 沙箱机 |
 | `<endpoint-id>`、`<db-host>`、`<redis-host>` 等 | 托管服务控制台里给的值，**不要提交到仓库** |
+| `<bucket>`、`<region>`、`<key-id>`、`<application-key>` | 对象存储（例：Backblaze B2）的桶名、区域、访问密钥，**不要提交到仓库** |
 
 ---
 
@@ -28,6 +29,7 @@
 | 每个会话的沙箱容器 + 沙箱代理 | **沙箱机**（另一台小 VPS） | 只跑沙箱；代理只听 WireGuard 地址 |
 | PostgreSQL | **托管 Postgres**（例：Neon 免费版） | 用户、会话、邀请码等持久数据 |
 | Redis 兼容 | **托管 Valkey/Redis**（例：Aiven Valkey 免费版） | 限流计数、跨副本事件 |
+| 对象存储（S3 兼容，可选） | **托管对象存储**（例：Backblaze B2 私有桶） | 工作区快照：沙箱机磁盘丢了 / 换机器还能恢复（见第十节） |
 
 平台机不再跑数据库和沙箱，内存宽松很多；沙箱机就算被打穿，也碰不到数据库和平台机上的密钥。
 
@@ -61,6 +63,8 @@ flowchart LR
     CP -->|TLS, pooled| PG[(托管 Postgres<br/>Neon)]
     CP -->|rediss://| R[(托管 Valkey<br/>Aiven)]
     GW -->|HTTPS| LLM[用户自带 Key 的模型 API]
+    CP -.->|列目录 / 删旧快照<br/>持有密钥| OBJ[(S3 兼容对象存储<br/>例：B2 私有桶)]
+    AG -.->|预签名 PUT / GET<br/>没有密钥| OBJ
 ```
 
 请求路径：
@@ -326,6 +330,8 @@ journalctl -u ncs-redis-keepalive.service --since -1d   # 看最近的结果
 | 数据库连不上（持续） | 免费额度用完、凭据轮换、服务端故障 | 登录、建会话都失败 | 看托管控制台；必要时临时切回单机 compose 自带的 PostgreSQL |
 | 限流 / 事件异常，Redis 报连接错误 | Aiven 因不活跃关机，或保活 timer 停了 | 限流计数失效 | 保活失败应先收到 `OnFailure` 告警；控制台开机；查 `ncs-redis-keepalive` 日志 |
 | 沙箱能连到宿主机其它端口 | 防火墙没配或被 Docker 重置 | 安全事故 | 重跑 `ncs-sandbox-firewalld.sh` 和 `check-sandbox-isolation.sh` |
+| 日志里 `[snapshot] upload failed` | 对象存储不通、密钥失效、沙箱机出不了外网 | 停止照常；这次没留快照（本地工作区还在） | 看 `/api/admin/snapshots` 的 `last_error`；从沙箱机 `curl -I https://s3.<region>.backblazeb2.com` |
+| 打开会话报"工作区快照都恢复不了" | 本地没有工作区，且对象存储不通或快照都坏了 | 这个会话打不开（不会拿空工作区启动） | 修好连接后刷新重试；见第十节 10.4 |
 | `web_fetch` 报 `Tunnel connection failed: 403 …` / `Could not resolve host` | 前者：代理拒绝了，原因写在状态行里（内网地址、端口、名单）。后者：出站代理没开（`NCS_EGRESS_PROXY=0`），或者沙箱是开代理之前启动的 | 只影响上网 | 看 `docker compose logs agent` 里的 `egress` 行；开代理后重启会话 |
 
 ## 八、1 GB 小机器的内存预算（估算）
@@ -370,7 +376,168 @@ journalctl -u ncs-redis-keepalive.service --since -1d   # 看最近的结果
 - [ ] 11. 验证：`curl http://127.0.0.1:8700/healthz`；登录、建会话、打开 `/s/<id>/`、调一次模型；沙箱里跑 `check-sandbox-isolation.sh`；从公网扫沙箱机，确认只开 SSH 和 WireGuard。
 - [ ] 12. （可选，确认已部署包含 #134 修复的版本后）打开出站代理：`NCS_EGRESS_PROXY=1`，防火墙脚本带 `NCS_EGRESS_PORT`，用 `check-sandbox-isolation.sh` 验证，见 3.5。
 - [ ] 13. 演练回退：停掉 WireGuard，确认控制面报错清楚；恢复后新会话正常。
+- [ ] 14. （可选）工作区快照：建私有桶和只限这个桶的密钥，写进平台机 `.env`（第十节）；先升级沙箱代理再升级平台；停一个会话确认 `[snapshot] uploaded`，再做一次恢复演练。
 
-## 十、隐私提醒（本仓库是公开的）
+## 十、工作区快照（S3 兼容对象存储）
+
+不开的时候（默认 `NCS_OBJECT_STORE=off`），工作区只在沙箱机本地盘 `<数据目录>/sandboxes/<会话>/data/` 下，沙箱机坏了就没了。开了之后，沙箱停止 / 空闲回收 / 删除时把工作区打包存进 S3 兼容的对象存储（Backblaze B2、MinIO、Cloudflare R2、AWS S3 都行），下次打开会话时本地没有就自动恢复。
+
+代码：`server/nanocode_server/storage/objectstore.py`（S3 客户端，纯标准库 SigV4）、`runtime/snapshot.py`（打包 / 校验 / 恢复）、`services/snapshots.py`（生命周期、重试、保留份数）。**不需要 boto3**，单机模式不开对象存储时什么都不用装。
+
+### 10.1 谁持有密钥、谁搬数据
+
+```mermaid
+sequenceDiagram
+    participant CP as 控制面（平台机，持有 S3 密钥）
+    participant AG as 沙箱代理（沙箱机，没有密钥）
+    participant SB as 沙箱容器（什么都拿不到）
+    participant S3 as 对象存储（私有桶）
+    CP->>AG: 停止沙箱
+    AG->>SB: 删除容器（工作区留在磁盘）
+    Note over CP: 立即返回，快照在后台做
+    CP->>CP: 为 <前缀>/<用户>/<会话>/<时间>.tar.gz 签一个 PUT（1 小时有效）
+    CP->>AG: POST /v1/sandboxes/<id>/snapshot {url, max_bytes, ignore}
+    AG->>AG: 打包 workspace/ + home/（不跟随链接、跳过忽略列表）
+    AG->>S3: PUT 预签名地址
+    CP->>S3: 列出这个会话的快照，只留最近 N 份（DELETE 旧的）
+```
+
+| 方案 | 沙箱机被打穿时 | 结论 |
+|---|---|---|
+| 沙箱机上放桶级密钥（哪怕只限这一个桶） | 能读、改、删**所有用户**的快照 | ✗ |
+| **控制面持有密钥，沙箱机只拿预签名地址（本方案）** | 只能对正在打包 / 恢复的那**一个对象**做**一种操作**，1 小时后作废；而那些工作区本来就在它的磁盘上 | ✓ |
+| 数据经控制面中转 | 同上，但工作区大小的流量要走两次 WireGuard，1 GB 的平台机扛不住 | ✗ |
+
+沙箱机跑的是不可信代码，是两台机器里更容易被打穿的一台，所以密钥放在平台机。列目录、删旧快照这些需要桶级权限的操作只在控制面做。沙箱容器拿不到任何东西：预签名地址只出现在控制面 → 代理的管理接口里（WireGuard + 共享密钥），打包和上传都在容器外、容器停掉之后。单机 / Docker 模式下"搬数据的一方"就是控制面自己，代码路径相同。
+
+### 10.2 生命周期
+
+| 事件 | 行为 |
+|---|---|
+| 用户点停止、空闲回收（`NCS_IDLE_TIMEOUT`）、管理员停用账号 | 先停容器（**不等快照**），再在后台打包上传 |
+| 换模型 | 停了马上重启，不存快照 |
+| 删除会话 | 停容器、标记删除；默认（`NCS_SNAPSHOT_PURGE_ON_DELETE=1`）在后台**删掉桶里这个会话的全部快照**，再删本地工作区（排着的快照先做完，免得删完又传上去一份）。关掉 purge 并设 `NCS_SNAPSHOT_ON_DELETE=1`：改为先存最后一份再删本地，云端快照留着方便误删找回 |
+| 打开已停止的会话 | 本地有工作区：直接启动。本地没有（换了沙箱机、磁盘清过）且会话以前启动过：先下载最近一份恢复再启动 |
+| 同一个会话的快照还在后台跑时又被打开 | 启动先等它结束（最多 5 分钟），不会一边打包一边写 |
+| 手动 | `POST /api/sessions/<id>/snapshot`（会话主人，运行中也可以）；`GET /api/sessions/<id>/snapshots` 列出快照。手动快照**单独一个名额**、不占后台的 2 个名额；已有手动快照在跑就立即回 409，不排队，所以连点也挡不住别人的停止快照 |
+| 管理员 | `GET /api/admin/snapshots`：上传 / 失败 / 重试 / 恢复 / 清理计数和最近一次错误 |
+| 控制面退出 | 不再等重试退避；正在上传的最多等 30 秒 |
+
+快照内容是沙箱数据目录下的 `workspace/`（项目文件）和 `home/`（对话记录、nanocode 配置）；平台策略、pid、日志每次启动都会重新生成，不进快照。
+
+### 10.3 打包和恢复的安全校验
+
+打包和恢复都以沙箱机上的 root 运行，而工作区内容由沙箱里的 Agent 完全控制（可能被提示词注入）。
+
+打包时：
+
+- **不跟随符号链接**：用 `os.fwalk` + `O_NOFOLLOW` 按目录 fd 逐级打开，打包过程中把文件换成链接也绕不过去。沙箱里 `ln -s /etc/shadow x` 不会把宿主机文件打进快照。
+- 只收普通文件、目录和**指向快照内部的相对**符号链接（字符串检查 + 按磁盘上的真实解析确认，链式链接也算）；设备、FIFO、socket、指向外面的链接一律跳过（计入 `skipped`）。
+- 权限去掉 setuid / setgid / sticky，属主写成 0。
+- 未压缩总大小超过 `NCS_SNAPSHOT_MAX_BYTES` 直接失败，不传半个快照；文件数上限 20 万。
+- 默认忽略（按文件名 / 目录名匹配，任意层级）：`node_modules`、`.venv`、`venv`、`__pycache__`、`.cache`、`.npm`、`.pnpm-store`、`.yarn`、`.mypy_cache`、`.pytest_cache`、`.ruff_cache`、`.tox`、`.nox`、`.gradle`、`.next`、`.nuxt`、`.turbo`、`.parcel-cache`、`*.pyc`。追加用 `NCS_SNAPSHOT_IGNORE`。
+
+恢复时（归档来自对象存储，按"可能被篡改"处理），**先完整校验，任何一项不合格整份拒绝**：
+
+- 不能有绝对路径、`..`、反斜杠、盘符；顶层只能是 `workspace/` 或 `home/`；不能有重复路径；
+- 只允许普通文件、目录、符号链接；**硬链接、字符 / 块设备、FIFO 一律拒绝**；
+- 符号链接必须是相对的，并且**按归档里的链接表逐段模拟解析**（遇到归档内的链接就展开，`..` 作用在展开后的物理位置上，最多展开 40 次、成环即拒绝），最终必须落在 `workspace/` 或 `home/` 下。只做字符串规范化挡不住链式链接，例如 `home/a/b/k -> ../../../workspace` 加 `workspace/l -> ../home/a/b/k/../../..`，两条各自看都在里面，物理上却指到根目录上两级——这个例子就是测试用例；
+- 任何路径的上级都不能是归档里的符号链接（"先建链接、再顺着链接写文件"的穿越）；
+- **流式读取**（不先把全部成员头读进内存）：边读边计数，文件数超过 20 万或解压后总大小超过 `NCS_SNAPSHOT_MAX_BYTES` 立即停止；下载的压缩包 ≤ 上限 + 5% + 16 MiB（防解压炸弹）；
+- 解压到全新的临时目录：文件用 `O_CREAT|O_EXCL|O_NOFOLLOW` 创建，符号链接全部读完、整体校验通过后最后才建，全部成功后才换进工作区位置；本地已有非空工作区时**不覆盖**；
+- 下载 / 上传预签名地址**不跟随 HTTP 重定向**（对象存储不该回 3xx），少一个被引到别处的口子。
+- Docker 启动器把工作区 chown 给沙箱用户时不跟随符号链接（本 PR 一并修复：以前 `os.chown` 会跟随链接，沙箱里的 `ln -s /etc/shadow` 能让 root 把宿主机文件交给沙箱用户）。
+
+这些都有测试：`server/tests/test_snapshots.py` 的 `TarTraversalTest`、`PackRestoreTest`。
+
+### 10.4 保留与失败
+
+- **对象 key**：`<NCS_S3_PREFIX>/<用户 id>/<会话 id>/<UTC 时间到毫秒>Z.tar.gz`，例如 `snapshots/gh-12345/AbCdEfGh12345678/20260101T120000123Z.tar.gz`。用户 id 只保留 `[A-Za-z0-9._-]`，有替换时加一段哈希防撞。
+- **保留**：每次上传成功后列出这个会话的快照，只留最近 `NCS_SNAPSHOT_KEEP` 份（默认 3）。
+- **删除会话**：默认连云端快照一起删（`NCS_SNAPSHOT_PURGE_ON_DELETE=1`，隐私优先）。清理失败重试 3 次，之后只记日志（`[snapshot] purge failed`，计数 `purge_failed`），桶的生命周期规则兜底。关掉 purge 时这个会话的快照会一直留在桶里，直到生命周期规则清掉。
+- **上传失败**：后台重试 3 次（间隔 5 秒、30 秒），**从不阻塞停止**；超过大小上限这类"重试也没用"的错误不重试。每次失败都有一行日志，`/api/admin/snapshots` 里计数。
+- **清理失败**：只记日志，下次上传成功时再清。
+- **恢复失败**：最近一份坏了就试更早的（网络错误每份重试一次）；**全都恢复不了，这次启动失败**并把原因显示给用户——不能拿空工作区启动，否则下次停止时空快照会把好快照挤出保留名额。处理：查日志 → 修好对象存储连接后重试；确认快照真的都坏了，删掉这个会话前缀下的对象后再打开（得到空工作区）。
+- 日志行（`docker compose logs platform | grep '\[snapshot\]'`）：
+
+```text
+[snapshot] uploaded session=<id> bytes=… raw=… files=… skipped=… seconds=…
+[snapshot] upload failed session=<id> attempt=2/3: 上传快照失败：对象存储返回 HTTP 503
+[snapshot] restored session=<id> from=<时间>Z.tar.gz files=… bytes=…
+[snapshot] restore failed session=<id> from=… attempt=1: …
+[snapshot] prune failed session=<id>: …
+[snapshot] purged session=<id> objects=…
+[snapshot] purge failed session=<id> attempt=1/3: …
+```
+
+日志和报错里**不会**出现预签名地址的查询串（里面有签名）和密钥。
+
+### 10.5 配置 Backblaze B2（其它 S3 兼容服务同理）
+
+1. B2 控制台建一个 **Private** 桶 `<bucket>`；记下桶详情里的 S3 Endpoint：`s3.<region>.backblazeb2.com`，`<region>` 形如 `us-west-NNN`。
+2. Application Keys → Add a New Application Key：**只允许访问这个桶**，权限 Read and Write。得到 `keyID`（`<key-id>`）和 `applicationKey`（`<application-key>`，只显示一次）。
+3. 桶的 Lifecycle Settings 选 **Keep only the last version of the file**。B2 的桶默认保留所有版本，S3 接口的 DELETE 只是"隐藏"，不配这条的话按保留份数删掉的旧快照仍然占空间、照样计费。
+   （可选）再加一条按前缀 `snapshots/` 的规则，上传 N 天后隐藏，兜底清理已删除会话的快照。注意它对所有快照生效：N 天没再停止过的会话，快照也会被清掉；N 按你愿意保留闲置工作区多久来定。
+4. 把下面几行写进**平台机** root 只读（`chmod 600`）的 `deploy/compose/.env`，经 SSH 管道写入，不要贴进终端或聊天：
+
+```bash
+NCS_OBJECT_STORE=s3
+NCS_S3_ENDPOINT=https://s3.<region>.backblazeb2.com
+NCS_S3_REGION=<region>
+NCS_S3_BUCKET=<bucket>
+NCS_S3_ACCESS_KEY_ID=<key-id>
+NCS_S3_SECRET_ACCESS_KEY=<application-key>
+NCS_S3_PREFIX=snapshots
+NCS_SNAPSHOT_KEEP=3
+NCS_SNAPSHOT_MAX_BYTES=1Gi
+```
+
+如果凭据已经以别的名字存在平台机的某个 root 只读文件里，可以在服务器上直接转换，值不经过终端输出：
+
+```bash
+sudo sh -c '. /path/to/creds.env && umask 077 && {
+  printf "NCS_OBJECT_STORE=s3\n"
+  printf "NCS_S3_ENDPOINT=%s\n" "$EXISTING_ENDPOINT"
+  printf "NCS_S3_REGION=%s\n" "$EXISTING_REGION"
+  printf "NCS_S3_BUCKET=%s\n" "$EXISTING_BUCKET"
+  printf "NCS_S3_ACCESS_KEY_ID=%s\n" "$EXISTING_KEY_ID"
+  printf "NCS_S3_SECRET_ACCESS_KEY=%s\n" "$EXISTING_SECRET"
+} >> /path/to/deploy/compose/.env'
+```
+
+（`NCS_S3_ENDPOINT` 要带 `https://`；原文件里只有主机名时写成 `"https://$EXISTING_ENDPOINT"`。）
+
+5. **沙箱机不需要任何新配置**：它没有密钥，只用控制面给的预签名地址。只要确认沙箱机本身（不是沙箱容器）能出站访问 `https://s3.<region>.backblazeb2.com`（代理是 host 网络）。沙箱容器仍然没有外网。
+6. 重启：沙箱机 `docker compose up -d --build agent`（新版代理才有快照接口），平台机 `docker compose up -d --build platform`。先升级代理，再升级平台。
+7. 验证：
+
+```bash
+docker compose logs platform | grep 工作区快照              # 启动信息里有 "工作区快照 s3 <bucket>"
+# 新建会话、写个文件、点"停止"，然后：
+docker compose logs platform | grep '\[snapshot\] uploaded'
+# 管理员登录后访问 /api/admin/snapshots，uploaded 应该 ≥ 1、upload_failed = 0
+```
+
+恢复演练：停掉一个会话，在沙箱机上把 `<数据目录>/sandboxes/<会话>` 挪走，再打开会话，文件应该回来，日志有 `[snapshot] restored`。
+
+### 10.6 变量
+
+| 变量 | 设在哪 | 说明 | 默认 |
+|---|---|---|---|
+| `NCS_OBJECT_STORE` | 平台机 | `off` / `s3` | `off` |
+| `NCS_S3_ENDPOINT` | 平台机 | S3 API 地址，必须 `https://`（只有本机 MinIO 可以 `http://127.0.0.1:…`），path-style 访问 | — |
+| `NCS_S3_REGION` | 平台机 | 签名用的区域，B2 是 endpoint 里那段 `<region>` | `us-east-1` |
+| `NCS_S3_BUCKET` | 平台机 | 私有桶名 | — |
+| `NCS_S3_ACCESS_KEY_ID` / `NCS_S3_SECRET_ACCESS_KEY` | 平台机（root 只读 .env） | 只限这个桶的读写密钥 | — |
+| `NCS_S3_PREFIX` | 平台机 | key 前缀 | `snapshots` |
+| `NCS_SNAPSHOT_KEEP` | 平台机 | 每个会话保留几份（1–100） | `3` |
+| `NCS_SNAPSHOT_MAX_BYTES` | 平台机 | 工作区未压缩大小上限（1Mi–5Gi，认 `512Mi`、`1g` 写法），恢复时同样限制解压大小 | `1Gi` |
+| `NCS_SNAPSHOT_IGNORE` | 平台机 | 追加的忽略规则，逗号分隔的文件名通配，例如 `*.log,dist` | 空 |
+| `NCS_SNAPSHOT_PURGE_ON_DELETE` | 平台机 | 删除会话时删掉桶里这个会话的全部快照 | `true` |
+| `NCS_SNAPSHOT_ON_DELETE` | 平台机 | 只在 purge 关掉时生效：删除前先存最后一份 | `false` |
+
+沙箱机：**无新增变量**。K8s 启动器不支持（工作区在 PVC 里，用存储类自己的卷快照），配了 `NCS_OBJECT_STORE=s3` 会拒绝启动。
+
+## 十一、隐私提醒（本仓库是公开的）
 
 提交文档、配置、日志之前检查：没有真实 IP、域名、托管服务的主机名 / endpoint ID / 项目 ID、账号邮箱、密码和令牌。示例一律用本文开头的占位符（RFC 5737 文档网段、`example.com`）。提交前可以跑 `gitleaks` 扫一遍。

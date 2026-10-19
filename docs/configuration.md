@@ -96,6 +96,24 @@
 | `NCS_EGRESS_DENY_DOMAINS` | 空 | 代理 | 域名黑名单，先于白名单判断 |
 | `NCS_EGRESS_BLOCK_NETWORKS` | 空 | 代理 | 额外拦住的网段（WireGuard 网段、经 NAT 进来的公网 IP 等）；私网、CGNAT、链路本地、ULA、沙箱网段、本机地址已经自动拦了 |
 
+## 4a. 工作区快照（`NCS_OBJECT_STORE=s3`，PR #144）
+
+设计、生命周期、恢复时的安全校验、B2 配置见 [distributed-deploy.md 第十节](distributed-deploy.md#十工作区快照s3-兼容对象存储)。**只有平台需要这些变量**：沙箱代理没有对象存储密钥，只用控制面给的单对象预签名地址。local / docker / remote 启动器支持，k8s 配了会拒绝启动。
+
+| 变量 | 默认 | 谁读 | 说明 |
+|---|---|---|---|
+| `NCS_OBJECT_STORE` | `off` | 平台 | `off` / `s3`。`off` 时工作区只在本机 / 沙箱机磁盘上，不需要任何云服务 |
+| `NCS_S3_ENDPOINT` | 空 | 平台 | S3 API 地址，必须 `https://`（只有本机 MinIO 可以 `http://127.0.0.1:…`），path-style。B2 形如 `https://s3.<region>.backblazeb2.com` |
+| `NCS_S3_REGION` | `us-east-1` | 平台 | 签名区域，B2 是 endpoint 里那段 `<region>` |
+| `NCS_S3_BUCKET` | 空 | 平台 | 私有桶名 |
+| `NCS_S3_ACCESS_KEY_ID` / `NCS_S3_SECRET_ACCESS_KEY` | 空 | 平台 | 只限这个桶的读写密钥，放 root 只读的 env 文件 |
+| `NCS_S3_PREFIX` | `snapshots` | 平台 | 对象 key：`<前缀>/<用户>/<会话>/<UTC 时间>Z.tar.gz` |
+| `NCS_SNAPSHOT_KEEP` | `3` | 平台 | 每个会话保留最近几份（1–100） |
+| `NCS_SNAPSHOT_MAX_BYTES` | `1Gi` | 平台 | 工作区未压缩大小上限（1Mi–5Gi）；恢复时同样限制解压大小 |
+| `NCS_SNAPSHOT_IGNORE` | 空 | 平台 | 追加的忽略规则（逗号分隔的文件名通配）；默认已忽略 `node_modules`、`.venv`、`__pycache__`、`.cache` 等 |
+| `NCS_SNAPSHOT_PURGE_ON_DELETE` | `true` | 平台 | 删除会话时删掉桶里这个会话的全部快照 |
+| `NCS_SNAPSHOT_ON_DELETE` | `false` | 平台 | 只在 purge 关掉时生效：删除前先存最后一份 |
+
 ## 5. 模型网关与模型
 
 | 变量 | 默认 | 谁读 | 说明 |
@@ -141,7 +159,6 @@
 |---|---|---|
 | `NCS_SEARCH_*` | 兼容旧名 | `web_search` 的旧前缀，新名是 `NANOCODE_SEARCH_*`（见 README） |
 | `NCS_REAP_INTERVAL` | **进行中**：[PR #133](https://github.com/mbaiagent/nanocode/pull/133)（未合并） | 回收线程间隔（默认 60 秒）；空闲时不查数据库，让托管 Postgres 能缩到零（[#131](https://github.com/mbaiagent/nanocode/issues/131)） |
-| 工作区快照（B2 / S3 兼容对象存储） | **计划中**，变量名以 PR 为准 | 沙箱停止时把工作区打包上传、下次打开时恢复；对象存储凭据只在服务器上，不进沙箱 |
 
 ## 附：沙箱内 nanocode 进程的相关变量
 

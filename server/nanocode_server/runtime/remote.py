@@ -75,6 +75,29 @@ class RemoteLauncher(Launcher):
         except LaunchError:
             return False            # 代理连不上：当作不在了，下次访问会重新启动
 
+    # ------------------------------------------------------------------ 快照：由沙箱代理在沙箱主机上打包 / 恢复
+    # 代理只拿到某一个对象的预签名地址，对象存储的密钥留在控制面（见 services/snapshots.py）
+    supports_snapshots = True
+
+    def has_workspace(self, session_id: str) -> bool:
+        return bool(self._call("GET", f"/v1/sandboxes/{session_id}/workspace").get("exists"))
+
+    def snapshot(self, session_id: str, upload_url: str, max_bytes: int, ignore=()) -> dict:
+        return self._snapshot_call("snapshot", session_id, {"url": upload_url, "max_bytes": max_bytes,
+                                                            "ignore": list(ignore)})
+
+    def restore(self, session_id: str, download_url: str, max_bytes: int) -> dict:
+        return self._snapshot_call("restore", session_id, {"url": download_url, "max_bytes": max_bytes})
+
+    def _snapshot_call(self, op: str, session_id: str, body: dict) -> dict:
+        from .snapshot import SnapshotError
+        try:
+            data = self._call("POST", f"/v1/sandboxes/{session_id}/{op}", body, timeout=900)
+        except LaunchError as e:
+            # 代理用 422 表示"重试也没用"（太大、归档不合法），其它当作暂时性错误
+            raise SnapshotError(str(e), permanent="HTTP 422" in str(e)) from None
+        return data.get("stats") or {}
+
     def reconcile(self, keep: set[str]) -> None:
         try:
             self._call("POST", "/v1/reconcile", {"keep": sorted(keep)}, timeout=60)

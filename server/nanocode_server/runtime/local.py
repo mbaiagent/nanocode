@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 
 from .base import Launcher, LaunchError, SandboxSpec, wait_ready
+from .snapshot import LocalSnapshots
 
 # 不要漏给沙箱的环境变量：控制面自己的配置、各家模型的 Key
 _SECRET_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
@@ -142,7 +143,7 @@ def _kill_pid(pid: int) -> None:
             return
 
 
-class LocalLauncher(Launcher):
+class LocalLauncher(LocalSnapshots, Launcher):
     name = "local"
     isolated = False
 
@@ -270,6 +271,9 @@ class LocalLauncher(Launcher):
 
     def workspace(self, session_id: str) -> str:
         return self._dirs(session_id)[1]
+
+    def snapshot_root(self, session_id: str) -> str:
+        return self._dirs(session_id)[0]          # 下面是 workspace/ 和 home/
 
     def reconcile(self, keep: set[str]) -> None:
         """停掉 keep 之外的沙箱进程：控制面重启后数据库里已经没有会话的那些（#60）。"""

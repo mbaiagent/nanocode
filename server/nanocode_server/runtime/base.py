@@ -132,5 +132,22 @@ class Launcher(ABC):
     def shutdown(self) -> None:
         """控制面退出时调用。"""
 
+    # ------------------------------------------------------------------ 工作区快照（NCS_OBJECT_STORE=s3）
+    # 只有工作区在"某台机器的本地磁盘"上的启动器支持：本机子进程、Docker（runtime/snapshot.py 的
+    # LocalSnapshots），以及转给沙箱代理去做的远程启动器。K8s 的工作区在 PVC 里，用存储类自己的快照。
+    supports_snapshots = False
+
+    def has_workspace(self, session_id: str) -> bool:
+        """本地有没有这个会话的工作区（没有时才从快照恢复）。"""
+        raise NotImplementedError
+
+    def snapshot(self, session_id: str, upload_url: str, max_bytes: int, ignore=()) -> dict:
+        """把工作区打包，PUT 到预签名地址。返回 bytes / raw_bytes / files / skipped / seconds。"""
+        raise NotImplementedError
+
+    def restore(self, session_id: str, download_url: str, max_bytes: int) -> dict:
+        """从预签名地址下载快照，校验后恢复成工作区（本地必须还没有工作区）。"""
+        raise NotImplementedError
+
 
 __all__ = ["Launcher", "SandboxSpec", "LaunchError", "wait_ready", "SANDBOX_PORT"]

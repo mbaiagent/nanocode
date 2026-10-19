@@ -32,6 +32,7 @@ PYTHONPATH=server:. python3 -m nanocode_server demo --users 10
 | 数据库 | SQLite 文件（数据目录下） | PostgreSQL：控制面和网关可以多副本 | `NCS_DATABASE_URL=postgresql://...`，需要 `pip install "psycopg[binary]"` |
 | 限流计数 | 进程内存 | Redis：多副本共享计数。redis-py 5.0+ 默认用 RESP2（URL 没写 protocol 时），兼容老版本 Redis（#72）；需要 RESP3 时 URL 加 `?protocol=3` | `NCS_REDIS_URL=redis://...`，需要 `pip install redis` |
 | 沙箱 | `auto`：本机子进程（**没有隔离**，只适合开发） | Docker 容器 / Kubernetes Pod | 构建沙箱镜像后 `auto` 会自动用 Docker；在 K8s 集群里自动用 K8s；也可以 `NCS_LAUNCHER=local/docker/k8s` 指定；沙箱放另一台机器用 `remote` |
+| 工作区快照 | 工作区只在本机（或沙箱机）磁盘上 | 停止 / 回收 / 删除时打包存进 S3 兼容对象存储（B2、MinIO、R2…），本地没了自动恢复 | `NCS_OBJECT_STORE=s3` + `NCS_S3_*`，**不用装任何包**（纯标准库 SigV4）；设计和 B2 配置见 [distributed-deploy.md 第十节](../docs/distributed-deploy.md#十工作区快照s3-兼容对象存储) |
 | 平台模型 | 只有演示模型和用户自己的 Key | 平台提供、平台付费的模型，按每人每日额度限制 | `NCS_PLATFORM_BASE_URL`、`NCS_PLATFORM_API_KEY`、`NCS_PLATFORM_MODELS` |
 | 登录 | 必须显式选择。`NCS_AUTH=dev`：输入任意用户名（只允许监听本机，开发用） | `NCS_AUTH=github`：GitHub 登录 + 邀请码注册（见下文"账号与登录"）；或 `NCS_AUTH=proxy`：前面放认证代理（oauth2-proxy 等对接 SSO） | `NCS_AUTH`，github 模式另需 `NCS_GITHUB_CLIENT_ID/SECRET`、`NCS_PUBLIC_URL` |
 
@@ -80,9 +81,10 @@ nanocode_server/
 ├── services/          业务（不知道 HTTP）
 │   ├── catalog.py       模型目录：演示 / 平台 / 用户自己的 Key；添加 Key 的校验
 │   ├── sessions.py      会话生命周期：创建、启动、换模型、停止、回收
+│   ├── snapshots.py     工作区快照：后台上传 + 重试、保留最近 N 份、本地没有时恢复
 │   └── upstream.py      访问模型厂商：地址安全检查（防 SSRF）、流式读取、用量计量
-├── runtime/           沙箱启动器：local / docker / kubernetes / remote（经沙箱代理），同一个接口
-├── storage/           SQL 存储（SQLite 和 PostgreSQL 同一套代码）、限流（内存 / Redis）
+├── runtime/           沙箱启动器：local / docker / kubernetes / remote（经沙箱代理），同一个接口；snapshot.py 打包和安全恢复
+├── storage/           SQL 存储（SQLite 和 PostgreSQL 同一套代码）、限流（内存 / Redis）、objectstore.py（S3 兼容客户端）
 ├── security/          签名令牌、API Key 加密、身份认证、账号与邀请码（accounts.py）、GitHub OAuth（github.py）
 ├── demo.py            多用户模拟（含一个假的 OpenAI 兼容模型）
 └── static/            页面：登录、主界面（会话列表 + 对话 + 模型与密钥）、管理页（admin.html）
@@ -103,6 +105,7 @@ nanocode_server/
 | 登录会话被盗用 / 无法吊销 | 服务端保存登录会话（不是 JWT），库里只存令牌的 SHA-256；退出、停用账号立即失效；有绝对和闲置两个有效期 |
 | 暴力尝试邀请码 / 刷登录 | 每个 IP 每分钟限 `NCS_LOGIN_PER_MINUTE` 次（多副本时用 Redis 计数）；邀请码约 64 位随机、只存哈希 |
 | 多个控制面副本同时启动同一个会话 | 数据库里原子地"抢占启动"，只有抢到的那个去启动 |
+| 对象存储密钥泄露 / 快照被篡改 | 密钥只在控制面；搬数据的一方（单机的控制面 / 沙箱代理）只拿单个对象、1 小时有效的预签名地址，沙箱容器什么都拿不到；打包不跟随符号链接，恢复时流式读取并完整校验（无绝对路径、`..`、硬链接、设备；符号链接按链接表逐段解析、链式链接也不能越界；文件数和解压大小边读边限）；下载不跟随重定向；删除会话默认连云端快照一起删 |
 
 ## 测试
 
@@ -186,6 +189,13 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 | `NCS_REMOTE_GATEWAY_URL` | 远程沙箱访问网关的地址（沙箱主机上的中继）；空 = 启动时问代理 | — |
 | `NCS_AGENT_BIND` / `NCS_AGENT_UPSTREAM_GATEWAY` / `NCS_AGENT_RELAY_BIND` | 沙箱代理（`python -m nanocode_server sandbox-agent`）：监听的隧道地址（不能是 0.0.0.0）/ 平台的网关 / 中继监听地址（空 = 沙箱网桥） | — |
 | `NCS_AGENT_RELAY_MAX_CONNECTIONS` / `NCS_AGENT_RELAY_PER_SANDBOX` / `NCS_AGENT_RELAY_IDLE_TIMEOUT` | 沙箱代理的网关中继：全局连接上限 / 每个沙箱上限 / 空闲断开秒数 | `128` / `16` / `300` |
+| `NCS_OBJECT_STORE` | 工作区快照：`off` / `s3`（只有控制面需要；沙箱代理不需要任何对象存储配置）。local / docker / remote 启动器支持，k8s 不支持 | `off` |
+| `NCS_S3_ENDPOINT` / `NCS_S3_REGION` / `NCS_S3_BUCKET` | S3 兼容服务的 API 地址（必须 https，本机 MinIO 除外）/ 签名区域 / 私有桶名 | — / `us-east-1` / — |
+| `NCS_S3_ACCESS_KEY_ID` / `NCS_S3_SECRET_ACCESS_KEY` | 只限这个桶的读写密钥，放 root 只读的 .env | — |
+| `NCS_S3_PREFIX` | 对象 key 前缀：`<前缀>/<用户>/<会话>/<UTC 时间>.tar.gz` | `snapshots` |
+| `NCS_SNAPSHOT_KEEP` / `NCS_SNAPSHOT_MAX_BYTES` | 每个会话保留几份 / 工作区未压缩大小上限（恢复时同样限制解压大小） | `3` / `1Gi` |
+| `NCS_SNAPSHOT_IGNORE` | 追加的忽略规则（逗号分隔的文件名通配；默认已忽略 node_modules、.venv、__pycache__、.cache 等） | 空 |
+| `NCS_SNAPSHOT_PURGE_ON_DELETE` / `NCS_SNAPSHOT_ON_DELETE` | 删除会话时删掉云端快照 / 只在不 purge 时：删除前先存最后一份 | `true` / `false` |
 | `NCS_EGRESS_PROXY` | 沙箱代理里的出站代理：沙箱经它访问公网 HTTP/HTTPS，内网、元数据、本机地址一律拒绝，并把 `HTTP(S)_PROXY` / `NO_PROXY` / `NANOCODE_EGRESS_PROXY=1` 注入沙箱。生产打开前确认镜像已包含 #134 的修复（PR #146），打开前先在防火墙放行端口。见 [distributed-deploy.md 3.5](../docs/distributed-deploy.md#35-出站代理沙箱上网默认关) | `0` |
 | `NCS_EGRESS_BIND` / `NCS_EGRESS_PORT` | 出站代理的监听地址（空 = 和网关中继相同；不能是 0.0.0.0）/ 端口（不能等于网关端口） | 空 / `3128` |
 | `NCS_EGRESS_ALLOWED_PORTS` | 允许的目标端口（CONNECT 和明文 HTTP 共用） | `80,443` |
@@ -214,6 +224,7 @@ python3 -m nanocode_server loadtest --users 10 25 50 100   # 本机 Docker 沙�
 - **K8s 清单没有在真实集群里跑过**：YAML 和代码的一致性有测试，Pod 创建流程用假的 API 服务器测过；gVisor、NetworkPolicy、oauth2-proxy 的实际效果需要在你的集群里验证。单机上的 Docker、PostgreSQL、Redis 都实测过。
 - 容量满时直接拒绝，没有排队。
 - 审计日志写在沙箱里，Agent 能改，还不能当作可信审计（[#135](https://github.com/mbaiagent/nanocode/issues/135)）。沙箱环境变量里的令牌对子进程可见（[#134](https://github.com/mbaiagent/nanocode/issues/134)）。完整的安全边界见 [docs/security-model.md](../docs/security-model.md)。
+- 工作区快照是"停止时的磁盘快照"：运行中途机器挂了，丢的是上次停止（或手动快照）之后的改动；快照用 gzip 压缩，没有客户端加密（依赖桶是私有的和服务商的静态加密）。
 - 没有指标、链路追踪和告警，没有计费。管理后台只有 `/admin` 的邀请码和账号停用 / 启用。压测数据见上文「压测」。
 - Docker 沙箱的网络隔离依赖 Docker 的内部网络加宿主机防火墙（[deploy/firewall/](../deploy/firewall/README.md)，只放行网关端口）；Docker 沙箱默认也装不了依赖（出不了外网）。远程沙箱可以打开只放行 HTTP/HTTPS 的出站代理（`NCS_EGRESS_PROXY`，默认关，见 [distributed-deploy.md 3.5](../docs/distributed-deploy.md#35-出站代理沙箱上网默认关)），默认关；单机 Docker / K8s 模式还没有。
 - 全部 `NCS_*` 变量（含上表没列的 `NCS_LOGIN_TTL`、`NCS_MAX_CONNECTIONS`、`NCS_ALLOW_UNISOLATED` 和 compose 专用变量）见 [docs/configuration.md](../docs/configuration.md)。

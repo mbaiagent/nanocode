@@ -377,6 +377,23 @@ class ControlApp(App):
             self.sessions.stop(self.sessions.owned(req.user, req.params["sid"]).id)
             return Response.json({"ok": True})
 
+        @r("GET", "/api/sessions/{sid}/snapshots")
+        def list_snapshots(req):
+            return Response.json({"ok": True, "enabled": self.sessions.snapshots is not None,
+                                  "snapshots": self.sessions.list_snapshots(req.user, req.params["sid"])})
+
+        @r("POST", "/api/sessions/{sid}/snapshot")
+        def snapshot(req):
+            req.json()
+            info = self.sessions.snapshot_now(req.user, req.params["sid"])
+            return Response.json({"ok": True, "snapshot": {k: v for k, v in info.items() if k != "key"}}, 201)
+
+        @r("GET", "/api/admin/snapshots")
+        def snapshot_stats(req):
+            self._admin(req)
+            snaps = self.sessions.snapshots
+            return Response.json({"ok": True, "enabled": snaps is not None, "stats": snaps.stats() if snaps else {}})
+
         @r("POST", "/api/sessions/{sid}/delete")
         def delete(req):
             req.json()

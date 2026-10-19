@@ -10,6 +10,10 @@
     GET  /v1/sandboxes/<id>             {"alive": bool}
     POST /v1/reconcile                  body: {"keep": [...]}，停掉其它沙箱
     POST /v1/shutdown                   控制面退出：停掉全部沙箱
+    GET  /v1/sandboxes/<id>/workspace   {"exists": bool}：本机有没有这个会话的工作区
+    POST /v1/sandboxes/<id>/snapshot    body: url（预签名 PUT）/ max_bytes / ignore：打包工作区并上传
+    POST /v1/sandboxes/<id>/restore     body: url（预签名 GET）/ max_bytes：下载、校验、恢复（本机没有工作区时）
+      快照只拿预签名地址，对象存储的密钥留在控制面，沙箱主机上没有（services/snapshots.py）。
   转发（凭每个沙箱自己的 web_token，和本机 Docker 一样）：
     GET/POST /sbx/<id>/<路径>           转给沙箱容器，事件流逐行转发
   网关中继：
@@ -162,6 +166,9 @@ class SandboxAgent(App):
         self.route("GET", "/v1/sandboxes/{sid}")(self.alive)
         self.route("POST", "/v1/reconcile")(self.reconcile)
         self.route("POST", "/v1/shutdown")(self.shutdown)
+        self.route("GET", "/v1/sandboxes/{sid}/workspace")(self.workspace)
+        self.route("POST", "/v1/sandboxes/{sid}/snapshot")(self.snapshot)
+        self.route("POST", "/v1/sandboxes/{sid}/restore")(self.restore)
         for method in ("GET", "POST"):
             self.route(method, "/sbx/{sid}/{rest:path}")(self.proxy)
 
@@ -266,6 +273,51 @@ class SandboxAgent(App):
             self._endpoints.clear()
         self._run(self.launcher.shutdown)
         return Response.json({"ok": True})
+
+    # ------------------------------------------------------------------ 快照
+
+    def _snapshot_args(self, req: Request) -> tuple[str, str, int, dict]:
+        if not getattr(self.launcher, "supports_snapshots", False):
+            raise HttpError(501, f"{self.launcher.name} 启动器不支持工作区快照")
+        sid = self._sid(req)
+        body = req.json()
+        url, max_bytes = body.get("url"), body.get("max_bytes")
+        if not isinstance(url, str) or not url.startswith(("https://", "http://")):
+            raise HttpError(400, "url 必须是 http(s) 预签名地址")
+        if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes <= 0:
+            raise HttpError(400, "max_bytes 必须是正整数")
+        return sid, url, max_bytes, body
+
+    def _snapshot_run(self, fn, *args) -> Response:
+        from .runtime.snapshot import SnapshotError
+        try:
+            stats = fn(*args)
+        except SnapshotError as e:
+            # 422 = 重试也没用（太大、归档不合法）；502 = 暂时性错误（网络、对象存储）
+            raise HttpError(422 if e.permanent else 502, str(e)) from None
+        except (LaunchError, OSError) as e:
+            raise HttpError(502, f"{type(e).__name__}: {e}") from None
+        return Response.json({"ok": True, "stats": stats})
+
+    def workspace(self, req: Request) -> Response:
+        if not getattr(self.launcher, "supports_snapshots", False):
+            raise HttpError(501, f"{self.launcher.name} 启动器不支持工作区快照")
+        return Response.json({"exists": self._run(self.launcher.has_workspace, self._sid(req))})
+
+    def snapshot(self, req: Request) -> Response:
+        sid, url, max_bytes, body = self._snapshot_args(req)
+        ignore = body.get("ignore")
+        if not isinstance(ignore, list) or not all(isinstance(x, str) for x in ignore):
+            raise HttpError(400, "ignore 必须是字符串列表")
+        with self._lock(sid):                    # 和起停互斥：不会一边打包一边被重新拉起
+            return self._snapshot_run(self.launcher.snapshot, sid, url, max_bytes, ignore)
+
+    def restore(self, req: Request) -> Response:
+        sid, url, max_bytes, _ = self._snapshot_args(req)
+        with self._lock(sid):
+            if self._run(self.launcher.is_alive, sid):
+                raise HttpError(409, "沙箱在运行，不能恢复工作区")
+            return self._snapshot_run(self.launcher.restore, sid, url, max_bytes)
 
     # ------------------------------------------------------------------ 转发
 
