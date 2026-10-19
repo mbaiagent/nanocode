@@ -45,6 +45,7 @@ nanocode 的文档分三类：**学习章节**（看懂一个编程 Agent 怎么
 | [web-multisession-plan.md](web-multisession-plan.md) | 单机 Web 面板多会话并行方案 |
 | [issue-7-rate-limit.md](issue-7-rate-limit.md) | #7 `/api/chat` 限流方案 |
 | [platform/README.md](platform/README.md) | Agent 平台设计文档集（企业级 / 通用 Agent，千到十亿用户的愿景与架构） |
+| [maintenance/agent-playbook.md](maintenance/agent-playbook.md) | **维护交接手册**：权限边界、巡检 / issue 处理 / PR 审查合并 / 保活四个自动化、修复 PR 流程、部署与 CD（[English](maintenance/agent-playbook.en.md)） |
 | [workflow.md](workflow.md) | 开发流程与测试流程 |
 | [journey.md](journey.md) | 开发历程与踩过的坑 |
 | [resume.md](resume.md) | 把这个项目写进简历 |
