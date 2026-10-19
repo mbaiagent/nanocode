@@ -5,9 +5,9 @@ import json
 import os
 import threading
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 
-from helpers import Workspace, call, make_agent
+from helpers import LocalHTTPServer, Workspace, call, make_agent
 
 from nanocode.messages import text_block
 from nanocode.permissions import PermissionManager
@@ -74,7 +74,7 @@ class Handler(BaseHTTPRequestHandler):
 class Base(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        cls.server = LocalHTTPServer(("127.0.0.1", 0), Handler)
         cls.port = cls.server.server_address[1]
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
 
@@ -251,7 +251,7 @@ class HttpsTest(unittest.TestCase):
                         "-subj", "/CN=pinned.test", "-addext", "subjectAltName=DNS:pinned.test"], check=True, capture_output=True)
         server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         server_ctx.load_cert_chain(cert, key)
-        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        cls.server = LocalHTTPServer(("127.0.0.1", 0), Handler)
         cls.server.socket = server_ctx.wrap_socket(cls.server.socket, server_side=True)
         cls.port = cls.server.server_address[1]
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()

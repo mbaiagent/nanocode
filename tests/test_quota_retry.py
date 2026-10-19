@@ -4,10 +4,11 @@ import json
 import threading
 import time
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from unittest import mock
 
 import helpers  # noqa: F401  （把 NANOCODE_HOME 指到临时目录）
+from helpers import LocalHTTPServer
 
 from nanocode.llm import base
 from nanocode.llm.base import LLMError, QuotaExhausted, parse_reset, quota_exhausted_message
@@ -39,7 +40,7 @@ class ErrorServer:
                 self.end_headers()
                 self.wfile.write(payload)
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.server = LocalHTTPServer(("127.0.0.1", 0), H)
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 

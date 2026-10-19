@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import socketserver
 import sys
 import tempfile
 import threading
@@ -18,6 +19,19 @@ from nanocode.llm.base import Provider
 from nanocode.messages import LLMResponse, Usage, text_block, tool_use_block
 from nanocode.permissions import PermissionManager
 from nanocode.tools import ToolRegistry, default_tools
+
+
+class LocalHTTPServer(ThreadingHTTPServer):
+    """测试用的本机 HTTP 服务器：绑定时不做反向 DNS。
+
+    标准库 HTTPServer.server_bind() 会调 socket.getfqdn() 反查绑定地址；GitHub 的 macOS
+    runner 上这一步能卡几十秒（#92，生产代码在 #97 已修）。测试服务器用不到 server_name。
+    """
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = self.server_address[0]
+        self.server_port = self.server_address[1]
 
 
 class ScriptedProvider(Provider):
@@ -105,7 +119,7 @@ class FakeSSEServer:
                 self.end_headers()
                 self.wfile.write(body)
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.server = LocalHTTPServer(("127.0.0.1", 0), H)
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
