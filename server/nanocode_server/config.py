@@ -111,6 +111,7 @@ class Config:
     requests_per_minute: int = 30
     max_output_tokens: int = 8192
     max_connections: int = 256              # HTTP 服务并发连接上限（线程数），超限直接 503：防慢连接/半开连接占满资源
+    replicas: int = 1                       # 控制面 + 网关的副本数；>1 时必须用 PostgreSQL，SQLite 不能跨副本共享（#72）
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -160,6 +161,7 @@ class Config:
             requests_per_minute=_int("NCS_RPM", d.requests_per_minute),
             max_output_tokens=_int("NCS_MAX_OUTPUT_TOKENS", d.max_output_tokens),
             max_connections=_int("NCS_MAX_CONNECTIONS", d.max_connections),
+            replicas=_int("NCS_REPLICAS", d.replicas),
         )
 
     # ------------------------------------------------------------ 派生值
@@ -207,6 +209,18 @@ class Config:
             raise ValueError("dev 认证（输入任意用户名登录）只能在只监听本机时使用，对外服务请用 NCS_AUTH=proxy")
         if self.launcher not in ("auto", "local", "docker", "k8s"):
             raise ValueError("NCS_LAUNCHER 只能是 auto / local / docker / k8s")
+        if self.replicas < 1:
+            raise ValueError("NCS_REPLICAS 至少为 1")
+        # SQLite 是本地文件，多副本各写各的：登录写在这个副本、下一个请求落到那个副本，
+        # 就会"登录成功后被踢回登录页"（#72 跨机器实测复现）。宁可拒绝启动。
+        if self.replicas > 1 and not self.database_url.startswith(("postgres://", "postgresql://")):
+            raise ValueError(
+                f"NCS_REPLICAS={self.replicas} 但数据库是 SQLite（NCS_DATABASE_URL 未配或不是 postgresql://）："
+                "SQLite 不能跨副本共享，多副本会脑裂。请设置 NCS_DATABASE_URL=postgresql://...，"
+                "或把 NCS_REPLICAS 设回 1")
+        if self.replicas > 1 and not self.redis_url:
+            # 进程内存限流每个副本各算各的，N 个副本就是 N 倍额度（#56）
+            raise ValueError(f"NCS_REPLICAS={self.replicas} 需要共享的限流计数：请设置 NCS_REDIS_URL=redis://...")
         if launcher_needed and self.auth != "dev" and self.launcher == "local" and not self.allow_unisolated:
             # 没有隔离时，"每个用户一个沙箱"的所有保证都不成立（#36）：Agent 会以控制面同一个
             # 系统用户运行，读得到主密钥、数据库里所有会话的令牌和别人的工作区。/api/me 里的

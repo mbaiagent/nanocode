@@ -178,7 +178,7 @@
 1. 面板不动，单人本地用法不受影响。
 2. `server/` 加迁移 v2，回填用户：把 sessions、credentials、usage 里出现过的 `owner` 字符串去重后建 `users` 行（像邮箱的就当 email，否则当用户名），然后把 `owner` 换成 user_id。迁移要幂等，和 #64 的约定一致。
 3. `dev` 和 `proxy` 模式照常工作：proxy 首次见到一个身份就自动建用户。`builtin` 是新增模式，不影响现有部署。
-4. 启动检查补上 #72：监听非本机地址或声明了多副本、而数据库还是 SQLite 时拒绝启动；Redis 默认用 RESP2，或者文档注明要 ≥6。
+4. 启动检查（P0 已做，#72）：`NCS_REPLICAS>1` 且数据库不是 PostgreSQL，或没配 Redis 时拒绝启动；redis-py 5.0+ 在 URL 没写 `protocol` 时默认用 RESP2，URL 里显式写 `?protocol=3` 可切回 RESP3。
 
 ## 12. 分期计划（规模和时间都是 [估]，按一个人全职算）
 

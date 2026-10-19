@@ -1,0 +1,102 @@
+# 单机部署：控制面 + 模型网关（一个进程）+ PostgreSQL + Redis + Docker 沙箱。
+# 用法见同目录 README.md。只支持 Linux 宿主机（用了 network_mode: host）。
+#
+#   cp .env.example .env && 编辑 .env
+#   docker compose up -d --build
+#
+# 为什么平台用 host 网络：Docker 启动器要（1）把模型网关监听在沙箱内部网络的网桥地址上，
+# （2）直接访问沙箱容器在内部网络里的 IP。这两件事都要在宿主机的网络命名空间里做。
+# PostgreSQL / Redis 只发布到宿主机 127.0.0.1，沙箱（内部网络、只能到网桥地址）访问不到。
+
+name: nanocode
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ncs
+      POSTGRES_USER: ncs
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?在 .env 里设置 POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:${NCS_PG_PORT:-15432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ncs -d ncs"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # 限流计数可以丢：不持久化。必须带密码（#72 / 45-postgres-redis.example.yaml 同理）
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?在 .env 里设置 REDIS_PASSWORD}", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:${NCS_REDIS_PORT:-16379}:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+  # 只用来构建沙箱镜像：容器本身立即退出。平台每个会话用这个镜像起一个容器。
+  sandbox-image:
+    image: ${NCS_SANDBOX_IMAGE:-nanocode-sandbox:latest}
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.sandbox
+    entrypoint: ["true"]
+    network_mode: none
+    restart: "no"
+
+  platform:
+    image: nanocode-server:latest
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.server
+    command: ["standalone"]          # 控制面 + 模型网关在一个进程里
+    restart: unless-stopped
+    network_mode: host
+    # 要操作宿主机 Docker（docker.sock 本身就等于 root），并把工作区 chown 给沙箱里的 10001，
+    # 所以以 root 运行。沙箱容器仍是非 root、只读根、无 capabilities、内部网络。
+    user: "0:0"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      sandbox-image: {condition: service_completed_successfully}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # 宿主机路径和容器内路径必须相同：沙箱容器由宿主机 Docker 创建，绑定挂载用的是宿主机路径
+      - ${NCS_HOST_DATA_DIR:-/srv/nanocode}:${NCS_HOST_DATA_DIR:-/srv/nanocode}
+    environment:
+      NCS_DATA_DIR: ${NCS_HOST_DATA_DIR:-/srv/nanocode}
+      NCS_SECRET_KEY: ${NCS_SECRET_KEY:?在 .env 里设置 NCS_SECRET_KEY（至少 32 个字符）}
+      NCS_DATABASE_URL: postgresql://ncs:${POSTGRES_PASSWORD}@127.0.0.1:${NCS_PG_PORT:-15432}/ncs
+      NCS_REDIS_URL: redis://:${REDIS_PASSWORD}@127.0.0.1:${NCS_REDIS_PORT:-16379}/0
+      NCS_REPLICAS: "1"
+      NCS_LAUNCHER: docker
+      NCS_SANDBOX_IMAGE: ${NCS_SANDBOX_IMAGE:-nanocode-sandbox:latest}
+      NCS_DOCKER_RUNTIME: ${NCS_DOCKER_RUNTIME:-}
+      NCS_SANDBOX_CPU: ${NCS_SANDBOX_CPU:-1}
+      NCS_SANDBOX_MEMORY: ${NCS_SANDBOX_MEMORY:-2Gi}
+      NCS_MAX_SANDBOXES: ${NCS_MAX_SANDBOXES:-50}
+      NCS_MAX_SESSIONS_PER_USER: ${NCS_MAX_SESSIONS_PER_USER:-3}
+      NCS_HOST: ${NCS_HOST:-127.0.0.1}
+      NCS_PORT: ${NCS_PORT:-8700}
+      NCS_GATEWAY_PORT: ${NCS_GATEWAY_PORT:-8701}
+      NCS_AUTH: ${NCS_AUTH:-dev}
+      NCS_PROXY_SECRET: ${NCS_PROXY_SECRET:-}
+      NCS_PUBLIC_URL: ${NCS_PUBLIC_URL:-}
+      NCS_ENABLE_MOCK_MODEL: ${NCS_ENABLE_MOCK_MODEL:-true}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:%s/healthz' % os.environ.get('NCS_PORT','8700'),timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+volumes:
+  pgdata:

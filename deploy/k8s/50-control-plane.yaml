@@ -58,6 +58,7 @@ spec:
             - {name: NCS_HOST, value: "0.0.0.0"}
             - {name: NCS_PORT, value: "8700"}
             - {name: NCS_AUTH, value: proxy}
+            - {name: NCS_REPLICAS, value: "2"}         # 与上面的 replicas 一致；>1 时启动检查要求 PostgreSQL + Redis
             - {name: NCS_AUTH_HEADER, value: X-Forwarded-Email}     # oauth2-proxy 反向代理模式传给上游的身份头
             - {name: NCS_PUBLIC_URL, value: "https://nanocode.example.com"}
             - {name: NCS_LAUNCHER, value: k8s}
