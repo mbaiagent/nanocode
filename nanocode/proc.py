@@ -49,6 +49,61 @@ def utf8_env(base: dict | None = None) -> dict:
     return env
 
 
+# 工具子进程（bash、verify 命令、hook）不该继承 nanocode 自己的凭据（#134）。
+# 平台模式下沙箱环境里有网关令牌 NANOCODE_API_KEY 和面板令牌 NANOCODE_WEB_TOKEN：
+# 一次提示词注入只要 `env` 或 `cat /proc/self/environ` 就能拿走。nanocode 进程自己
+# 照常从 os.environ 读取，只是不往下传。
+_SCRUB_EXACT = frozenset({
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "DEEPSEEK_API_KEY",
+    "DASHSCOPE_API_KEY", "MOONSHOT_API_KEY", "ZHIPUAI_API_KEY", "SILICONFLOW_API_KEY",
+    "OPENROUTER_API_KEY",
+})
+_SCRUB_PREFIXES = ("NANOCODE_", "NCS_")
+# 只在平台模式（控制面注入了 NANOCODE_WEB_TOKEN）额外去掉的"看名字像密钥"的变量。
+# 本地模式不动它们：用户自己电脑上的脚本可能就靠 GITHUB_TOKEN 之类跑。
+_SECRET_HINTS = ("API_KEY", "APIKEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "PRIVATE_KEY")
+# 显式放行：NANOCODE_TOOL_ENV_KEEP=FOO,BAR（逗号分隔），nanocode 自己的变量不能放行。
+KEEP_ENV = "NANOCODE_TOOL_ENV_KEEP"
+
+
+def _platform_mode(env: dict) -> bool:
+    return bool(env.get("NANOCODE_WEB_TOKEN"))
+
+
+def tool_env(base: dict | None = None) -> dict:
+    """给工具子进程（bash / verify / hook）的环境：utf8_env 再去掉敏感变量（#134）。"""
+    src = dict(os.environ if base is None else base)
+    strict = _platform_mode(src)
+    keep = {k.strip() for k in src.get(KEEP_ENV, "").split(",") if k.strip()}
+    env = {}
+    for k, v in src.items():
+        up = k.upper()
+        if up.startswith(_SCRUB_PREFIXES) or up in _SCRUB_EXACT:
+            continue
+        if strict and k not in keep and any(h in up for h in _SECRET_HINTS):
+            continue
+        env[k] = v
+    return utf8_env(env)
+
+
+def harden_process() -> None:
+    """平台模式下把本进程设为不可 dump（Linux PR_SET_DUMPABLE=0）。
+
+    子进程环境清理掉了，但同一个 uid 的子进程仍能读父进程的 /proc/<ppid>/environ、
+    /proc/<ppid>/mem —— 里面有启动时的完整环境。不可 dump 后这些文件归 root，
+    同 uid 的进程读不到，也不能 ptrace。exec 出来的子进程恢复默认，不影响 bash 正常工作。
+    本地模式不调用；非 Linux 静默跳过。
+    """
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.prctl(4, 0, 0, 0, 0)       # PR_SET_DUMPABLE = 4
+    except (OSError, AttributeError):
+        pass
+
+
 def popen_kwargs() -> dict:
     """Popen 的平台无关参数。
 

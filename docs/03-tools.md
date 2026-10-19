@@ -100,6 +100,16 @@ class Tool:
 - **进程组**：用 `start_new_session=True` 启动，超时或中断时杀掉整个进程组，避免留下孤儿进程。
 - **退出码**：非 0 退出码不算"工具错误"，而是作为信息告诉模型（测试失败是有用的反馈，不是异常）。
 
+### 子进程拿不到 nanocode 的凭据（#134）
+
+bash、verify 命令、hook 的子进程环境由 `proc.tool_env()` 生成：
+
+- 一律去掉 `NANOCODE_*`、`NCS_*` 和各家模型的 Key 变量（`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`DEEPSEEK_API_KEY` 等）。nanocode 自己照常从环境读取，只是不往下传。
+- 平台模式（设了 `NANOCODE_WEB_TOKEN`）下，名字里带 `TOKEN`、`SECRET`、`PASSWORD`、`API_KEY`、`CREDENTIAL` 等字样的变量也去掉；确实要传给命令的，用 `NANOCODE_TOOL_ENV_KEEP=FOO,BAR` 显式放行。本地模式不动这类变量。
+- 平台模式下 Web 服务进程设为不可 dump（Linux `PR_SET_DUMPABLE=0`），同 uid 的子进程读不到它的 `/proc/<pid>/environ`。
+
+这只是减少泄漏面，不是沙箱：工具仍然以同一个用户身份运行，能读到的文件照样能读。
+
 ## 输出截断
 
 一次 `cat` 一个日志文件可能有几 MB，直接塞进上下文会立刻撑爆。`truncate()` 保留头尾、截掉中间，并明确告诉模型"省略了多少字符"，模型就知道可以用 offset/limit 或 grep 去看具体部分。
