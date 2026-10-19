@@ -12,7 +12,7 @@ concurrency:
 jobs:
   core-tests:
     name: Core tests (macOS, Python 3.12)
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -25,7 +25,7 @@ jobs:
 
   server-tests:
     name: Server tests (macOS, Python 3.12)
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
