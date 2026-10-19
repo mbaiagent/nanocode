@@ -215,9 +215,39 @@ body.is-busy .status .dot { background: var(--warn); box-shadow: 0 0 0 3px var(-
 .msg.assistant {
   position: relative;
   padding-left: 24px;
-  white-space: pre-wrap; word-break: break-word;
+  word-break: break-word;
   font-size: 14.5px; line-height: 1.75;
+  white-space: pre-wrap;
 }
+.msg.assistant.rendered { white-space: normal; }
+.msg.assistant p { margin: 0 0 .6em; }
+.msg.assistant p:last-child { margin-bottom: 0; }
+.msg.assistant ul, .msg.assistant ol { margin: .4em 0; padding-left: 1.4em; }
+.msg.assistant li { margin: .15em 0; }
+.msg.assistant li > ul, .msg.assistant li > ol { margin: .15em 0; }
+.msg.assistant h1, .msg.assistant h2, .msg.assistant h3, .msg.assistant h4 {
+  margin: .8em 0 .4em; font-weight: 600; line-height: 1.4;
+}
+.msg.assistant h1 { font-size: 1.2em; }
+.msg.assistant h2 { font-size: 1.1em; }
+.msg.assistant h3, .msg.assistant h4 { font-size: 1.02em; }
+.msg.assistant code {
+  font-family: var(--font-mono); font-size: .88em;
+  background: var(--surface-2, rgba(128,128,128,.12));
+  padding: .1em .35em; border-radius: 4px;
+}
+.msg.assistant pre {
+  background: var(--surface-2, rgba(128,128,128,.1));
+  padding: 10px 12px; border-radius: 8px; overflow-x: auto;
+  margin: .5em 0; font-size: .88em; line-height: 1.5;
+}
+.msg.assistant pre code { background: none; padding: 0; }
+.msg.assistant a { color: var(--accent); text-decoration: underline; }
+.msg.assistant blockquote {
+  margin: .4em 0; padding-left: .8em; border-left: 3px solid var(--border-strong);
+  color: var(--muted);
+}
+.msg.assistant hr { border: none; border-top: 1px solid var(--border); margin: .8em 0; }
 .msg.assistant::before {
   content: "✦";
   position: absolute; left: 2px; top: 1px;
@@ -798,7 +828,7 @@ function onEvent(e) {
     case "llm_response": {
       const text = e.content.filter((b) => b.type === "text").map((b) => b.text).join("");
       if (text && !currentText[a]) currentText[a] = add("assistant", "", a);
-      if (currentText[a] && text) { currentText[a].innerHTML = renderMd(text); }
+      if (currentText[a] && text) { currentText[a].classList.add("rendered"); currentText[a].innerHTML = renderMd(text); }
       currentText[a] = null; rawText[a] = "";
       const s = steps[a + e.step];
       if (s) { s.stop = e.stop_reason; s.usage = e.usage; s.secs = e.seconds; s.calls = e.content.filter((b) => b.type === "tool_use").map((b) => b.name); }
