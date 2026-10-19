@@ -73,7 +73,7 @@ git checkout -b fix/<自己>-<topic> origin/main
 
 | .gitignore 补全 | Muse | `fix/muse-gitignore` | **已合并到 main** | 已完成 | 忽略根目录 /.nanocode/ 和 /NANOCODE.md（examples/ 示例不受影响） |
 | #145 轮询缩容 | Muse | `fix/muse-poll-idle-145` | 进行中 | 2026-10-19 17:30 PT | 隐藏页签暂停轮询+退避拉长 |
-| #129 中继 bind 校验 | Muse | `fix/muse-relay-bind-129` | 进行中 | 2026-10-19 17:30 PT | NCS_AGENT_RELAY_BIND 拒绝 0.0.0.0/:: |
+| #129 中继 bind 校验 | Muse | `fix/muse-relay-bind-129` | PR #155 待合并 | 已完成 | NCS_AGENT_RELAY_BIND 拒绝 0.0.0.0/::，Copilot review 已请求 |
 | #115 审计日志设计 | Muse | — | 评估中 | 2026-10-19 17:30 PT | 先评论分析+设计方案，不直接实现 |
 
 
