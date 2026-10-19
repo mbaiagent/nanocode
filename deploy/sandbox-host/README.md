@@ -173,5 +173,6 @@ curl -s http://10.77.0.2:8790/healthz                       # 平台机器上能
 
 - **升级代理**：`docker compose up -d --build agent`。代理重启不停沙箱；重启后转发会按容器名找回正在跑的沙箱（令牌由沙箱自己核对）。
 - **平台重启**：控制面退出时让代理停掉全部沙箱，启动时对账，清掉数据库里已经没有的会话的沙箱。
-- **工作区**在沙箱主机的 `/srv/nanocode/sandboxes/<会话>/`，备份要备这台机器。
+- **工作区**在沙箱主机的 `/srv/nanocode/sandboxes/<会话>/`。平台开了工作区快照（`NCS_OBJECT_STORE=s3`，[distributed-deploy.md 第十节](../../docs/distributed-deploy.md#十工作区快照s3-兼容对象存储)）时，代理在停止 / 回收 / 删除后把它打包上传，本机没有时恢复：**这台机器上不放对象存储密钥**，代理只用控制面给的单个对象的预签名地址（代理是 host 网络，这台机器本身要能出站访问对象存储的 https 地址；沙箱容器仍然没有外网）。没开快照时，备份要备这台机器。
+- **升级顺序**（快照接口是新加的）：先 `docker compose up -d --build agent`，再升级平台。
 - **代理连不上**：控制面把会话标成已停止，用户刷新时重试启动；`docker compose logs agent` 看原因。

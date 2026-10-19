@@ -93,6 +93,18 @@ services:
       NCS_REMOTE_AGENT_SECRET: ${NCS_REMOTE_AGENT_SECRET:-}
       NCS_REMOTE_GATEWAY_URL: ${NCS_REMOTE_GATEWAY_URL:-}
       NCS_GATEWAY_HOST: ${NCS_GATEWAY_HOST:-127.0.0.1}
+      # 工作区快照（可选，docs/distributed-deploy.md 第十节）：只有平台需要密钥，沙箱主机只拿预签名地址
+      NCS_OBJECT_STORE: ${NCS_OBJECT_STORE:-off}
+      NCS_S3_ENDPOINT: ${NCS_S3_ENDPOINT:-}
+      NCS_S3_REGION: ${NCS_S3_REGION:-us-east-1}
+      NCS_S3_BUCKET: ${NCS_S3_BUCKET:-}
+      NCS_S3_ACCESS_KEY_ID: ${NCS_S3_ACCESS_KEY_ID:-}
+      NCS_S3_SECRET_ACCESS_KEY: ${NCS_S3_SECRET_ACCESS_KEY:-}
+      NCS_S3_PREFIX: ${NCS_S3_PREFIX:-snapshots}
+      NCS_SNAPSHOT_KEEP: ${NCS_SNAPSHOT_KEEP:-3}
+      NCS_SNAPSHOT_MAX_BYTES: ${NCS_SNAPSHOT_MAX_BYTES:-1Gi}
+      NCS_SNAPSHOT_IGNORE: ${NCS_SNAPSHOT_IGNORE:-}
+      NCS_SNAPSHOT_ON_DELETE: ${NCS_SNAPSHOT_ON_DELETE:-true}
       NCS_SANDBOX_IMAGE: ${NCS_SANDBOX_IMAGE:-nanocode-sandbox:latest}
       NCS_DOCKER_RUNTIME: ${NCS_DOCKER_RUNTIME:-}
       # #123：沙箱网桥名和网段固定下来，宿主机防火墙（deploy/firewall/）按它们只放行网关端口

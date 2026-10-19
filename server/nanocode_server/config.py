@@ -4,6 +4,8 @@
 
     数据库      NCS_DATABASE_URL=postgresql://...  → PostgreSQL（需要 psycopg）；不配 → SQLite 文件
     限流计数    NCS_REDIS_URL=redis://...          → Redis（需要 redis 包）；不配 → 进程内存
+    工作区快照  NCS_OBJECT_STORE=s3 + NCS_S3_*        → 沙箱停止 / 回收 / 删除时打包上传到 S3 兼容存储（B2、MinIO、R2…）；
+                                                     默认 off：不需要任何云服务（纯标准库实现，不依赖 boto3）
     沙箱        NCS_LAUNCHER=auto                  → 在 K8s 里就用 K8s；本机有 Docker 且有沙箱镜像就用 Docker；
                                                      否则本机子进程（没有隔离，只适合开发）。
                                                      生产模式（NCS_AUTH != dev）拒绝这种静默退化，也拒绝显式
@@ -160,6 +162,20 @@ class Config:
     agent_relay_per_sandbox: int = 16       # 每个沙箱（按来源 IP）最多几条中继连接：一个沙箱占不满全局名额
     agent_relay_idle_timeout: int = 300     # 中继连接两个方向都没数据超过这么多秒就断开
 
+    # ------------------------------------------------------------ 工作区快照（services/snapshots.py）
+    # 只有控制面需要这些：它持有密钥、只给工作区所在的机器（单机的自己 / 沙箱代理）发某一个对象的预签名地址
+    object_store: str = "off"               # off（默认，单机不需要任何云服务）/ s3
+    s3_endpoint: str = ""                   # 例如 https://s3.<region>.backblazeb2.com、http://127.0.0.1:9000（MinIO）
+    s3_region: str = "us-east-1"
+    s3_bucket: str = ""
+    s3_access_key_id: str = ""
+    s3_secret_access_key: str = ""
+    s3_prefix: str = "snapshots"            # 对象 key：<前缀>/<用户>/<会话>/<UTC 时间>.tar.gz
+    snapshot_keep: int = 3                  # 每个工作区保留最近几份
+    snapshot_max_bytes: str = "1Gi"         # 工作区未压缩大小上限，超了不打包（恢复时同样按它限制解压大小）
+    snapshot_ignore: list[str] = field(default_factory=list)  # 追加的忽略规则（文件名通配），默认规则见 runtime/snapshot.py
+    snapshot_on_delete: bool = True         # 删除会话前也留一份（误删能找回；不想留就关掉，或给桶配生命周期规则）
+
     gateway_host: str = "127.0.0.1"
     gateway_port: int = 8701
     gateway_url: str = ""                   # 沙箱访问网关的地址；空 = http://<gateway_host>:<gateway_port>
@@ -227,6 +243,17 @@ class Config:
             agent_relay_per_sandbox=_int("NCS_AGENT_RELAY_PER_SANDBOX", d.agent_relay_per_sandbox),
             agent_relay_idle_timeout=_int("NCS_AGENT_RELAY_IDLE_TIMEOUT", d.agent_relay_idle_timeout),
             sandbox_mcp_servers=_json_dict("NCS_SANDBOX_MCP_SERVERS"),
+            object_store=_env("NCS_OBJECT_STORE", d.object_store).lower(),
+            s3_endpoint=_env("NCS_S3_ENDPOINT"),
+            s3_region=_env("NCS_S3_REGION", d.s3_region),
+            s3_bucket=_env("NCS_S3_BUCKET"),
+            s3_access_key_id=_env("NCS_S3_ACCESS_KEY_ID"),
+            s3_secret_access_key=_env("NCS_S3_SECRET_ACCESS_KEY"),
+            s3_prefix=_env("NCS_S3_PREFIX", d.s3_prefix),
+            snapshot_keep=_int("NCS_SNAPSHOT_KEEP", d.snapshot_keep),
+            snapshot_max_bytes=_env("NCS_SNAPSHOT_MAX_BYTES", d.snapshot_max_bytes),
+            snapshot_ignore=_list("NCS_SNAPSHOT_IGNORE", []),
+            snapshot_on_delete=_bool("NCS_SNAPSHOT_ON_DELETE", True),
             k8s_api=_env("NCS_K8S_API", d.k8s_api),
             k8s_namespace=_env("NCS_K8S_NAMESPACE", d.k8s_namespace),
             k8s_runtime_class=_env("NCS_K8S_RUNTIME_CLASS", d.k8s_runtime_class),
@@ -283,6 +310,37 @@ class Config:
             raise ValueError("NCS_LAUNCHER=remote 需要 NCS_REMOTE_AGENT_SECRET（至少 32 个字符，和沙箱代理那边一致）")
         if self.remote_gateway_url and urlparse(self.remote_gateway_url).scheme not in ("http", "https"):
             raise ValueError("NCS_REMOTE_GATEWAY_URL 必须是 http(s):// 地址")
+
+    @property
+    def snapshot_max(self) -> int:
+        return parse_size(self.snapshot_max_bytes)
+
+    def _validate_object_store(self) -> None:
+        if self.object_store not in ("off", "s3"):
+            raise ValueError("NCS_OBJECT_STORE 只能是 off 或 s3")
+        if self.object_store != "s3":
+            return
+        u = urlparse(self.s3_endpoint)
+        if u.scheme not in ("http", "https") or not u.hostname or u.query:
+            raise ValueError("NCS_OBJECT_STORE=s3 需要 NCS_S3_ENDPOINT，例如 https://s3.<region>.backblazeb2.com")
+        if u.scheme == "http" and u.hostname not in LOOPBACK:
+            raise ValueError("NCS_S3_ENDPOINT 必须是 https://（只有本机测试用的 MinIO 可以用 http）")
+        missing = [n for n, v in (("NCS_S3_BUCKET", self.s3_bucket), ("NCS_S3_ACCESS_KEY_ID", self.s3_access_key_id),
+                                  ("NCS_S3_SECRET_ACCESS_KEY", self.s3_secret_access_key)) if not v]
+        if missing:
+            raise ValueError(f"NCS_OBJECT_STORE=s3 还需要：{', '.join(missing)}")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", self.s3_bucket):
+            raise ValueError("NCS_S3_BUCKET 不是合法的桶名（3-63 个小写字母、数字、. -）")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,200}", self.s3_prefix.strip("/") or "x") or ".." in self.s3_prefix:
+            raise ValueError("NCS_S3_PREFIX 只能包含字母、数字和 . _ - /")
+        if not 1 <= self.snapshot_keep <= 100:
+            raise ValueError("NCS_SNAPSHOT_KEEP 要在 1 到 100 之间")
+        try:
+            size = parse_size(self.snapshot_max_bytes)
+        except ValueError as e:
+            raise ValueError(f"NCS_SNAPSHOT_MAX_BYTES：{e}") from None
+        if not (1 << 20) <= size <= (5 << 30):
+            raise ValueError("NCS_SNAPSHOT_MAX_BYTES 要在 1Mi 到 5Gi 之间（单次 PUT 的上限是 5 GB）")
 
     def validate_agent(self) -> None:
         """沙箱代理（sandbox-agent）的启动检查：它能起停容器，接口只能开在内网地址上。"""
@@ -354,6 +412,7 @@ class Config:
             raise ValueError("NCS_LAUNCHER 只能是 auto / local / docker / k8s / remote")
         if launcher_needed and self.launcher == "remote":
             self._validate_remote()
+        self._validate_object_store()
         if self.replicas < 1:
             raise ValueError("NCS_REPLICAS 至少为 1")
         # SQLite 是本地文件，多副本各写各的：登录写在这个副本、下一个请求落到那个副本，

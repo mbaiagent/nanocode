@@ -112,6 +112,7 @@ flowchart LR
 ```
 
 每个会话一个沙箱，用户的 API Key 加密存在库里、只在网关解密，**沙箱里永远没有真密钥**；Docker / K8s 沙箱没有外网，只能访问网关。
+可选的**工作区快照**（`NCS_OBJECT_STORE=s3`）：沙箱停止 / 空闲回收 / 删除时把工作区存进 S3 兼容对象存储（Backblaze B2、MinIO、R2…），换机器或磁盘丢了自动恢复；密钥只在控制面，沙箱主机只拿单个对象的预签名地址，沙箱里什么都拿不到。默认关闭，单机使用不依赖任何云服务（[部署说明](docs/distributed-deploy.md#十工作区快照s3-兼容对象存储)）。
 设计见 [第 12 章](docs/12-distributed-deployment.md)，代码和运行方式见 [server/README.md](server/README.md)。
 
 ---

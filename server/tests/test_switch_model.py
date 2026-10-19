@@ -136,9 +136,9 @@ class SwitchModelTest(unittest.TestCase):
         seen = {}
         real_stop, real_ensure = mgr.stop, mgr.ensure_running
 
-        def fake_stop(sid):
+        def fake_stop(sid, **kw):
             seen["during_stop"] = lock_is_free(mgr)
-            real_stop(sid)
+            real_stop(sid, **kw)
 
         def fake_ensure(sid):
             seen["during_restart"] = lock_is_free(mgr)

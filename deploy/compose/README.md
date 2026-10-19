@@ -107,3 +107,5 @@ docker compose down -v         # 连 PostgreSQL 数据和证书一起删（工�
 ```
 
 备份数据库：`docker compose exec postgres pg_dump -U ncs ncs > ncs.sql`。
+
+工作区可以自动备份到 S3 兼容对象存储（`NCS_OBJECT_STORE=s3`，见 `.env.example` 最后一段和 [distributed-deploy.md 第十节](../../docs/distributed-deploy.md#十工作区快照s3-兼容对象存储)）：沙箱停止 / 回收 / 删除时存一份，本地工作区没了时打开会话会自动恢复。

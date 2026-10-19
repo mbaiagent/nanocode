@@ -39,7 +39,7 @@ class Platform:
         self.store = open_store(cfg)
         self.limiter = make_rate_limiter(cfg)
         self.catalog = ModelCatalog(cfg, self.store, SecretBox(cfg.secret_key))
-        self.launcher = self.sessions = self.control = self.gateway = self.accounts = None
+        self.launcher = self.sessions = self.control = self.gateway = self.accounts = self.snapshots = None
         self.control_server = self.gateway_server = None
         self._stop = threading.Event()
         if role in ("all", "control"):
@@ -47,7 +47,12 @@ class Platform:
             bind = self.launcher.gateway_bind_host()     # Docker：网关要监听在沙箱网络的网桥地址上
             if role == "all" and bind and cfg.gateway_host in ("127.0.0.1", "localhost"):
                 cfg.gateway_host = bind
-            self.sessions = SessionManager(cfg, self.store, self.launcher, self.catalog, log)
+            self.snapshots = None
+            if cfg.object_store == "s3":
+                from .services.snapshots import SnapshotManager
+                from .storage.objectstore import make_object_store
+                self.snapshots = SnapshotManager(cfg, self.launcher, make_object_store(cfg), log)
+            self.sessions = SessionManager(cfg, self.store, self.launcher, self.catalog, log, self.snapshots)
             self.accounts = Accounts(cfg, self.store)
             github = (GitHubOAuth(cfg.github_client_id, cfg.github_client_secret, cfg.github_callback_url,
                                   cfg.github_oauth_url, cfg.github_api_url) if cfg.auth == "github" else None)
@@ -62,6 +67,7 @@ class Platform:
         if self.launcher:
             parts.append(f"沙箱 {self.launcher.name}{'' if self.launcher.isolated else '（没有隔离，只适合开发）'}")
             parts.append(f"认证 {self.cfg.auth}")
+            parts.append(f"工作区快照 {'s3 ' + self.cfg.s3_bucket if self.snapshots else '关'}")
         return " · ".join(parts)
 
     def start(self) -> None:
@@ -97,6 +103,8 @@ class Platform:
             if s:
                 s.shutdown()
                 s.server_close()
+        if self.snapshots:
+            self.snapshots.close()                  # 正在上传的快照最多等 30 秒
         if self.launcher:
             self.launcher.shutdown()
         self.store.close()

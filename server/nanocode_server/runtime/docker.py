@@ -24,6 +24,7 @@ from urllib.parse import quote
 
 from ..config import parse_size
 from .base import SANDBOX_PORT, Launcher, LaunchError, SandboxSpec, wait_ready
+from .snapshot import LocalSnapshots
 
 DOCKER_SOCKET = "/var/run/docker.sock"
 UID = 10001
@@ -98,7 +99,7 @@ def _first_host(subnet: str) -> str:
     return str(next(ipaddress.ip_network(subnet, strict=False).hosts()))
 
 
-class DockerLauncher(Launcher):
+class DockerLauncher(LocalSnapshots, Launcher):
     name = "docker"
     isolated = True
     bridge_name = ""                # #123：固定的网桥网卡名（宿主机防火墙规则引用它）；空 = Docker 自动起名
@@ -257,7 +258,9 @@ class DockerLauncher(Launcher):
         if os.name != "nt" and os.geteuid() == 0:  # 容器里以 10001 运行，工作区要归它所有（Windows 无 geteuid）
             for root, dirs, files in os.walk(data_dir):
                 for p in [root, *(os.path.join(root, n) for n in dirs + files)]:
-                    os.chown(p, uid, gid)
+                    # 不跟随符号链接：工作区内容由沙箱控制，`ln -s /etc/shadow x` 之后
+                    # 跟随链接的 chown 会把宿主机文件交给沙箱用户（从快照恢复的工作区同理）
+                    os.chown(p, uid, gid, follow_symlinks=False)
         else:
             # 非 root：容器和控制面同 uid，工作区必须是当前用户能写的，否则容器里一定写不了盘（#58）。
             # 这里早报告早好，不然要等 wait_ready 超时才变成一个没有上下文的 502。
@@ -282,6 +285,9 @@ class DockerLauncher(Launcher):
             self.stop(sid)
             raise LaunchError(f"沙箱容器没有就绪。日志：{logs}") from None
         return endpoint
+
+    def snapshot_root(self, session_id: str) -> str:
+        return self._dirs(session_id)[1]          # <会话>/data：下面是 workspace/ 和 home/
 
     def _container_ip(self, name: str) -> str:
         """控制面直接访问容器在沙箱网络里的地址：内部网络不能发布端口，也就不用在宿主机上开端口。"""
