@@ -153,7 +153,15 @@ class Provider(ABC):
                 retryable = e.code == 429 or e.code >= 500
                 if retryable and attempt < self.max_retries:
                     attempt += 1
-                    time.sleep(min(2 ** attempt, 20))
+                    delay = min(2 ** attempt, 20)
+                    if e.code == 429:
+                        reset = parse_reset(e.headers)
+                        if reset is not None:
+                            # 服务端明确说了等多久就按它等，不要固定 2/4/8 提前白发重试（#141）。
+                            # 远期重置（配额用尽）已经在上面的 quota 检查里 raise 了，
+                            # 能走到这里的都是短期可恢复的；上限仍然封顶，防止服务端给离谱的值。
+                            delay = max(0.0, min(reset - time.time(), QUOTA_WAIT_SECONDS))
+                    time.sleep(delay)
                     continue
                 raise LLMError(f"HTTP {e.code}: {detail}", status=e.code) from None
             except (urllib.error.URLError, TimeoutError, ConnectionError) as e:

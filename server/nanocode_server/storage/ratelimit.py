@@ -37,6 +37,10 @@ class RateLimiter(ABC):
     def allow(self, key: str) -> bool:
         """这次请求是否允许。允许时同时计数。"""
 
+    def retry_after(self, key: str, now: float | None = None) -> float:
+        """被限流时还要等多少秒才有名额；没被限流返回 0。基类不知道真实时间，给 1 秒兜底。"""
+        return 1.0
+
 
 class MemoryRateLimiter(RateLimiter):
     backend = "memory"
@@ -58,6 +62,19 @@ class MemoryRateLimiter(RateLimiter):
                 return False
             q.append(now)
             return True
+
+    def retry_after(self, key: str, now: float | None = None) -> float:
+        if self.per_minute <= 0:
+            return 0.0
+        now = time.time() if now is None else now
+        with self._lock:
+            q = self._hits[key]
+            while q and q[0] <= now - 60:
+                q.popleft()
+            if len(q) < self.per_minute:
+                return 0.0
+            # 滑动窗口：最早那次请求满 60 秒时才释放名额
+            return max(0.0, q[0] + 60 - now)
 
 
 class RedisRateLimiter(RateLimiter):
@@ -86,6 +103,17 @@ class RedisRateLimiter(RateLimiter):
         pipe.expire(bucket, 120)
         count, _ = pipe.execute()
         return int(count) <= self.per_minute
+
+    def retry_after(self, key: str, now: float | None = None) -> float:
+        if self.per_minute <= 0:
+            return 0.0
+        now = time.time() if now is None else now
+        bucket = f"{self.prefix}{key}:{int(now // 60)}"
+        count = self.client.get(bucket)
+        if count is None or int(count) < self.per_minute:
+            return 0.0
+        # 固定窗口：到下一分钟才释放名额
+        return max(0.0, 60 - (now % 60))
 
 
 __all__ = ["RateLimiter", "MemoryRateLimiter", "RedisRateLimiter", "redis_options"]

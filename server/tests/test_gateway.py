@@ -137,6 +137,8 @@ class GatewayTest(unittest.TestCase):
         status, headers, data = self.post({"messages": []}, self.token(self.own))
         self.assertEqual(status, 429)
         self.assertIsNone(quota_exhausted_message(headers, data.decode()))       # 普通限流，nanocode 会退避重试
+        # retry-after 是滑动窗口的真实剩余时间（刚用掉名额，约 60 秒），不是写死的 10 秒（#141）
+        self.assertTrue(55 <= int(headers["retry-after"]) <= 60)
 
     def test_upstream_error_and_protocol_mismatch(self):
         self.status = 503

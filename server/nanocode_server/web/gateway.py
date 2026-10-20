@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import math
 import time
 
 from ..config import Config
@@ -138,7 +139,10 @@ class GatewayApp(App):
             raise HttpError(400, f"this session's model speaks {up.protocol}")
         body = self._rewrite(up, req.json())
         if not self.limiter.allow(owner):
-            raise HttpError(429, "too many requests per minute. 请求太频繁，请稍后重试。", [("retry-after", "10")])
+            # 限流是 60 秒窗口，固定回 10 秒会让客户端重试得太早、白占请求数；
+            # 返回真实还要等的时间，客户端按它退避（#141）
+            wait = max(1, math.ceil(self.limiter.retry_after(owner)))
+            raise HttpError(429, "too many requests per minute. 请求太频繁，请稍后重试。", [("retry-after", str(wait))])
         reserved = self._reserve_quota(owner, up, body)
         try:
             # 平台模型的地址是管理员配置的（可能是内网的自建推理服务），用户自己填的地址才做公网检查

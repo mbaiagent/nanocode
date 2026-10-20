@@ -53,6 +53,38 @@ def err_body(message="Rate limit exceeded"):
     return {"error": {"code": 429, "message": message, "metadata": {"error_type": "rate_limit_exceeded"}}}
 
 
+class FlakyServer:
+    """按顺序返回给定的响应（(status, 原始字节, headers)），用完后重复最后一个；记录收到了多少次请求。"""
+
+    def __init__(self, responses):
+        self.hits = 0
+        outer = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers["content-length"]))
+                outer.hits += 1
+                status, payload, headers = responses[min(outer.hits - 1, len(responses) - 1)]
+                self.send_response(status)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(payload)))
+                for k, v in (headers or {}).items():
+                    self.send_header(k, v)
+                self.end_headers()
+                self.wfile.write(payload)
+
+        self.server = LocalHTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
 class QuotaRetryTest(unittest.TestCase):
     def call(self, server):
         sleeps = []
@@ -85,14 +117,35 @@ class QuotaRetryTest(unittest.TestCase):
         self.assertEqual((srv.hits, sleeps), (1, []))
         self.assertIn("没有说明什么时候恢复", str(err))
 
-    def test_transient_429_is_still_retried_with_backoff(self):
-        reset_ms = str(int((time.time() + 30) * 1000))      # 30 秒后就恢复：普通的每分钟限流
-        srv = ErrorServer(429, err_body(), {"X-RateLimit-Reset": reset_ms})
+    def test_transient_429_uses_server_wait_time(self):
+        # 30 秒后就恢复的普通限流：按服务端给的 Retry-After 等，不再固定 2/4/8 提前白发（#141）
+        srv = ErrorServer(429, err_body(), {"Retry-After": "30"})
         self.addCleanup(srv.close)
         err, sleeps = self.call(srv)
         self.assertIsInstance(err, LLMError)
         self.assertNotIsInstance(err, QuotaExhausted)
-        self.assertEqual((srv.hits, sleeps), (4, [2, 4, 8]))
+        self.assertEqual(srv.hits, 4)
+        self.assertEqual(len(sleeps), 3)
+        for s in sleeps:
+            self.assertAlmostEqual(s, 30.0, delta=1.0)
+
+    def test_429_recovers_after_retry_after(self):
+        # 先 429 + Retry-After，再 200：等够时间后重试成功（#141 的端到端场景）
+        sse = b'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+        srv = FlakyServer([
+            (429, json.dumps(err_body()).encode(), {"Retry-After": "1"}),
+            (200, sse, {}),
+        ])
+        self.addCleanup(srv.close)
+        sleeps = []
+        p = OpenAICompatProvider("m", api_key="<redacted>", base_url=srv.url)
+        with mock.patch.object(base.time, "sleep", lambda s: sleeps.append(s)):
+            resp = p.complete("", MSGS, [])
+        self.assertEqual(srv.hits, 2)
+        self.assertEqual(len(sleeps), 1)
+        self.assertAlmostEqual(sleeps[0], 1.0, delta=0.5)
+        texts = "".join(b["text"] for b in resp.content if b["type"] == "text")
+        self.assertEqual(texts, "ok")
 
     def test_429_without_any_hint_is_retried(self):
         srv = ErrorServer(429, err_body())
