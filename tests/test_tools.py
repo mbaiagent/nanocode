@@ -257,6 +257,7 @@ class AtomicWriteTest(unittest.TestCase):
         self.assertTrue(r.is_error)
         self.assertIn("先用 read_file", r.content)
 
+    @unittest.skipIf(os.name == "nt", "Windows 无 Unix 权限位语义")
     def test_write_new_file_permissions(self):
         """新文件权限保持 0o666 & ~umask（不能变成 mkstemp 的 0600）。"""
         r = WriteFile().execute({"path": "n.txt", "content": "hi"}, self.ctx)
@@ -267,6 +268,7 @@ class AtomicWriteTest(unittest.TestCase):
         self.assertEqual(mode, 0o666 & ~umask)
         self._no_leftovers()
 
+    @unittest.skipIf(os.name == "nt", "Windows 无 Unix 权限位语义")
     def test_write_keeps_existing_permissions(self):
         """覆盖已有文件时权限位跟原文件走。"""
         full = self._prepare()
