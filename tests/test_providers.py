@@ -2,11 +2,16 @@
 
 import json
 import os
+import socket
+import struct
+import threading
+import time
 import unittest
+from http.server import BaseHTTPRequestHandler
 
 os.environ["no_proxy"] = os.environ["NO_PROXY"] = "127.0.0.1,localhost"
 
-from helpers import FakeSSEServer  # noqa: E402
+from helpers import FakeSSEServer, LocalHTTPServer  # noqa: E402
 
 from nanocode.llm import AnthropicProvider, LLMError, MockProvider, OpenAICompatProvider, make_provider  # noqa: E402
 from nanocode.llm.base import iter_sse  # noqa: E402
@@ -250,3 +255,80 @@ class TestFactory(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _HalfStreamServer:
+    """发半截 SSE 流然后停住或断开的服务器（#139）。"""
+
+    def __init__(self, mode):
+        self.mode = mode
+        outer = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                n = int(self.headers["content-length"])
+                self.rfile.read(n)
+                self.send_response(200)
+                self.send_header("content-type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n')
+                self.wfile.flush()
+                if outer.mode == "stall":
+                    time.sleep(5)  # 停住不动：客户端读超时
+                else:
+                    # RST 中断：客户端读到 ConnectionResetError
+                    self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                                               struct.pack("ii", 1, 0))
+                    self.connection.close()
+
+        self.server = LocalHTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class TestStreamInterruption(unittest.TestCase):
+    """流式响应中途出错要包装成 LLMError，而不是裸抛原始异常（#139）。"""
+
+    @staticmethod
+    def _complete(p):
+        return p.complete("", [{"role": "user", "content": [{"type": "text", "text": "x"}]}], [])
+
+    def test_mid_stream_timeout_becomes_llmerror(self):
+        srv = _HalfStreamServer("stall")
+        try:
+            p = OpenAICompatProvider("m", base_url=srv.url, timeout=1, max_retries=0)
+            with self.assertRaises(LLMError) as ctx:
+                self._complete(p)
+            self.assertIn("流式响应中断", str(ctx.exception))
+        finally:
+            srv.close()
+
+    def test_mid_stream_drop_becomes_llmerror(self):
+        srv = _HalfStreamServer("drop")
+        try:
+            p = OpenAICompatProvider("m", base_url=srv.url, timeout=5, max_retries=0)
+            with self.assertRaises(LLMError):
+                self._complete(p)
+        finally:
+            srv.close()
+
+    def test_non_json_data_line_is_skipped(self):
+        stream = ('data: {"choices":[{"delta":{"content":"a"}}]}\n\n'
+                  'data: keep-alive\n\n'
+                  'data: [1, 2]\n\n'
+                  'data: {"choices":[{"delta":{"content":"b"}}]}\n\n'
+                  'data: [DONE]\n\n')
+        srv = FakeSSEServer(stream)
+        try:
+            r = OpenAICompatProvider("m", base_url=srv.url).complete(
+                "", [{"role": "user", "content": [{"type": "text", "text": "x"}]}], [])
+        finally:
+            srv.close()
+        self.assertEqual("".join(b["text"] for b in r.content if b["type"] == "text"), "ab")

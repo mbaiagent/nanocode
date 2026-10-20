@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import datetime
+import http.client
 import json
 import time
 import urllib.error
@@ -133,7 +134,8 @@ class Provider(ABC):
         """POST 一个流式请求，逐个产出 (event, data)。带指数退避重试。
 
         只在"还没开始收到数据"时重试：流已经开始后失败就直接抛错，
-        否则用户会看到重复的输出。
+        否则用户会看到重复的输出。读流时的网络错误包装成 LLMError，
+        让主循环走"模型调用失败"分支而不是"内部错误"（#139）。
         """
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         all_headers = {"content-type": "application/json", **headers, **self.extra_headers}
@@ -163,7 +165,13 @@ class Provider(ABC):
                     continue
                 raise LLMError(f"网络错误：{e}") from None
             with resp:
-                yield from iter_sse(resp)
+                try:
+                    yield from iter_sse(resp)
+                except (OSError, http.client.HTTPException) as e:
+                    # 流已经开始：读超时、连接被重置、读到半截就断开。
+                    # 不重试（重试会让用户看到重复输出），但包装成 LLMError，
+                    # 让主循环走"模型调用失败"分支（#139）。
+                    raise LLMError(f"流式响应中断：{e}") from None
             return
 
 

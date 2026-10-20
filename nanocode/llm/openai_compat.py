@@ -119,7 +119,14 @@ class OpenAICompatProvider(Provider):
         for _event, data in self._post_stream(f"{self.base_url}/chat/completions", headers, body):
             if data.strip() == "[DONE]":
                 break
-            chunk = json.loads(data)
+            try:
+                chunk = json.loads(data)
+            except json.JSONDecodeError:
+                # 代理/网关插入的非 JSON 行（如 keep-alive）：跟 Anthropic 那边 #20 一样跳过，
+                # 不能让整轮对话崩溃（#139）
+                continue
+            if not isinstance(chunk, dict):
+                continue
             if chunk.get("error"):
                 raise LLMError(str(chunk["error"]))
             if chunk.get("usage"):
