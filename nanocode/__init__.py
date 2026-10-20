@@ -9,4 +9,4 @@
     permissions.py / hooks.py / context.py / mcp.py → 围绕循环的"安全带"与"扩展口"
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

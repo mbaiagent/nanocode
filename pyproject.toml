@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nanocode"
-version = "0.1.0"
+version = "0.2.0"
 description = "一个用来学习 Agent 与 Claude Code 核心架构的迷你编程 Agent（纯标准库，可接入任意厂商模型）"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,11 +19,3 @@ include = ["nanocode*"]
 
 [tool.setuptools.package-data]
 "nanocode.web" = ["static/*.html", "static/*.svg", "static/*.js"]
-
-[tool.pytest.ini_options]
-# 只收集主仓库的单元测试；evals 下的 hidden/test_*.py 是评测运行时复制到隔离目录执行的，
-# server/ 是独立子项目（自带 pyproject.toml 和同名 test_security.py），examples/docs 不需要收集。
-testpaths = ["tests"]
-norecursedirs = ["evals", "examples", "nanocode_demo", "server", "deploy", "docs", "verification"]
-pythonpath = [".", "tests"]
-addopts = "-q"

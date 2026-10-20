@@ -368,7 +368,6 @@ class ParallelSafetyTest(Base):
         ]
         agent, prov, ev = make_agent(self.ws, replies)
         agent.run("x")
-        starts = [i for i, x in enumerate(order) if x.endswith(":start")]
         self.assertEqual(order, ["a:start", "b:start"])
         # 关键不在顺序而在"不重叠"：乙开工时甲已经收工
         ends = [e for e in ev if e["type"] == "subagent_end"]

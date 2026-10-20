@@ -2,7 +2,6 @@
 
 import http.client
 import os
-import sqlite3
 import tempfile
 import threading
 import time

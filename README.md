@@ -9,7 +9,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
 ![CI](https://github.com/mbaiagent/nanocode/actions/workflows/ci.yml/badge.svg)
-![Tests](https://img.shields.io/badge/tests-400%2B%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-900%2B-brightgreen)
 ![Eval](https://img.shields.io/badge/agent%20eval-37%2F39-blue)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -32,17 +32,16 @@
 
 ## 亮点
 
-- **纯 Python 标准库**，零依赖，核心代码约 8200 行（含大量中文注释），每个文件开头都有讲解
-- **500+ 个单元测试**，覆盖循环的每个分支、两种协议的流式解析、检索管线、安全回归、评测框架自检，以及一个让文档和代码保持一致的测试
+- **纯 Python 标准库**，零依赖，核心（`nanocode/`）代码约 8600 行（含大量中文注释），每个文件开头都有讲解；多用户平台在 `server/`，是可选的独立子项目，只学 Agent 可以不看
 - **可接入任何一家模型**：Claude、GPT、DeepSeek、通义千问、Kimi、智谱 GLM、硅基流动、OpenRouter、本地 Ollama，或任何 OpenAI / Anthropic 兼容的中转服务
 - **实现了 Claude Code 的核心机制**：Agent 循环、流式输出、文件/命令/搜索/读网页工具、权限模式与规则、Hooks、项目记忆、上下文压缩、待办清单、子 Agent、Skills、自定义斜杠命令、MCP、会话保存
 - **检查 → 纠正 → 终审的闭环**：自动验证（改完先跑检查，不过就回头修）、子 Agent 验收（系统核对，不信自述）、终审模式（无害步骤自动放行、高风险永远确认、结束时汇总 diff）、经验沉淀（被打回的原因经你确认后写入项目记忆），见 [第 11 章](docs/11-verification-loop.md)
 - **自带 Web 调试面板**：实时看到每一圈循环、每次发给模型的完整上下文、系统提示词、工具定义、已安装的 MCP 服务器和技能；刷新或重启后对话记录还在（事件缓冲区是内存里的，时间线用会话消息折回来兜底）
 - **自带 Mock 模型**：不需要 API Key，就能把整套流程跑起来、看清楚
 - **内置小而完整的 RAG**：切块、中文 BM25、可选向量检索、RRF 混合、增量索引，外加一个评测脚本对比 grep 与检索
-- **Agent 任务评测**：13 个编程任务、隐藏测试判定，统计成功率、步数和 token，用来比较模型和改动
+- **Agent 任务评测**：13 个编程任务、隐藏测试判定，统计成功率、步数和 token，用来比较模型和改动。任务只有 13 个、模型有随机性，单次结果噪声很大，比较时请用 `--repeat 3` 或更多次
 - **多用户部署平台**（[server/](server/README.md)）：按千人规模设计的控制面 + 模型网关 + 沙箱，PostgreSQL / Redis / Docker / K8s 有就用、没有也能在单机跑
-- **600+ 个自动化测试**：核心 500+ 个、平台 120+ 个，覆盖循环、两种协议的流式解析、检索管线、安全回归和评测框架自检
+- **900+ 个自动化测试**（核心 600+ 个、平台 300+ 个，Python 3.10–3.12 × 三平台 CI），覆盖循环、两种协议的流式解析、检索管线、安全回归和评测框架自检，以及一个让文档和代码保持一致的测试
 
 > nanocode 是依据 Claude Code 的公开文档和可观察行为，从零写的教学实现，不包含也不来自 Claude Code 的源代码。它追求的是"把原理讲清楚"，不是"功能一样多"。
 

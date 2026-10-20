@@ -146,7 +146,7 @@ def open_nofollow(path: str, mode: str = "rb", **kw):
     flags |= getattr(os, "O_BINARY", 0) | _NOFOLLOW
     try:
         fd = os.open(path, flags, 0o666)
-    except OSError as e:
+    except OSError:
         if _NOFOLLOW and os.path.islink(path):
             raise ToolError(f"{path} 在权限确认之后被换成了软链接，为安全起见没有执行。") from None
         raise
