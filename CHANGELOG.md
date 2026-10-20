@@ -16,6 +16,7 @@
 - **修复 老版本 Docker 网络没有 Gateway 字段**（[#130](https://github.com/mbaiagent/nanocode/pull/130)）：建网络时显式写网关，已有网络按网段第一个地址兜底；Docker 26 上沙箱代理不再反复重启。
 - **新增 工作区快照**（[#144](https://github.com/mbaiagent/nanocode/pull/144)）：`NCS_OBJECT_STORE=s3`（默认 off），沙箱停止 / 空闲回收时把工作区存进 S3 兼容对象存储（B2、MinIO、R2…），每个会话保留最近 `NCS_SNAPSHOT_KEEP` 份，本地没有时自动恢复，删除会话默认清理云端快照；密钥只在控制面，沙箱代理只拿预签名地址；恢复前流式校验（含链式符号链接）；纯标准库实现，不依赖 boto3。顺带修复 Docker 启动器 chown 跟随符号链接。见 [docs/distributed-deploy.md 第十节](docs/distributed-deploy.md#十工作区快照s3-兼容对象存储)。
 - **安全 中继监听地址拒绝 0.0.0.0**（Fixes [#129](https://github.com/mbaiagent/nanocode/issues/129)）：沙箱代理启动时 `NCS_AGENT_RELAY_BIND` 非空且为 `0.0.0.0` / `::` / `*` 直接拒绝启动，和 `NCS_AGENT_BIND` 同一规则；配错不再静默把网关中继暴露到公网。
+- **性能 面板轮询退避**（[#145](https://github.com/mbaiagent/nanocode/issues/145)）：面板轮询 `/api/me` + `/api/sessions` 从固定 10 秒改成自适应——无变化时间隔 10s→60s 退避，有变化或回到前台立刻重置；隐藏页签本来就不轮询。闲置页签不再每 10 秒唤醒托管 Postgres。
 - **安全 平台页面加 CSP / 防点击劫持**（Fixes #113）：控制面页面默认带 CSP、`frame-ancestors 'none'`、`X-Frame-Options: DENY`；`/s/<id>/` 转发的沙箱面板由平台统一加 CSP（`frame-ancestors 'self'`）和 `X-Frame-Options: SAMEORIGIN`，不再依赖沙箱自己发的头。
 - **调参 小机器资源**（#119）：`NCS_SANDBOX_TMPFS`、`NCS_SANDBOX_PIDS`、PG / Redis / 容器内存上限；大小同时认 `384Mi` 和 `384m` 写法。
 
