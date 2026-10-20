@@ -14,7 +14,7 @@ from helpers import Workspace
 from nanocode.llm.base import LLMError, QuotaExhausted
 from nanocode.messages import text_block
 from nanocode.session import Options, Session
-from nanocode.web.server import WebApp, friendly_error, make_server
+from nanocode.web.server import friendly_error, make_server
 
 STATIC = os.path.join(os.path.dirname(__file__), "..", "nanocode", "web", "static")
 

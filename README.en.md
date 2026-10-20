@@ -8,7 +8,7 @@ Pure Python stdlib · Zero dependencies · Every file has explanatory comments �
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
-![Tests](https://img.shields.io/badge/tests-440%2B%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-900%2B-brightgreen)
 ![Eval](https://img.shields.io/badge/agent%20eval-37%2F39-blue)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -30,17 +30,16 @@ Pure Python stdlib · Zero dependencies · Every file has explanatory comments �
 
 ## Highlights
 
-- **Pure Python stdlib**, zero dependencies, ~6,200 lines of core code (with extensive Chinese comments); every file starts with an explanation
-- **380+ unit tests** covering every branch of the loop, streaming parsing for both protocols, the retrieval pipeline, security regressions, eval framework self-check, and a test that keeps docs and code in sync
+- **Pure Python stdlib**, zero dependencies, ~8,600 lines of core code in `nanocode/` (with extensive Chinese comments); every file starts with an explanation. The multi-user platform lives in `server/` as an optional sub-project you can skip
 - **Works with any model**: Claude, GPT, DeepSeek, Qwen, Kimi, Zhipu GLM, SiliconFlow, OpenRouter, local Ollama, or any OpenAI / Anthropic-compatible proxy
 - **Implements Claude Code's core mechanics**: Agent loop, streaming output, file/shell/search/web tools, permission modes and rules, hooks, project memory, context compaction, todos, sub-agents, Skills, custom slash commands, MCP, session persistence
 - **Check → correct → review closed loop**: auto-verify (run checks after edits, loop back on failure), sub-agent acceptance (system-generated report, not self-reported), review mode (auto-allow safe steps, always confirm high-risk, summarize diff at end), lessons learned (rejected causes written to project memory after your confirmation). See [Chapter 11](docs/11-verification-loop.md)
 - **Built-in Web debug panel**: watch each loop iteration, the full context sent to the model, system prompt, tool definitions, installed MCP servers and skills in real time
 - **Built-in mock model**: run the entire flow without an API key to see how it works
 - **Small but complete RAG**: chunking, Chinese BM25, optional vector retrieval, RRF hybrid, incremental index, plus an eval script comparing grep vs retrieval
-- **Agent task eval**: 13 coding tasks with hidden tests, measuring success rate, steps, and tokens for comparing models and changes
+- **Agent task eval**: 13 coding tasks with hidden tests, measuring success rate, steps, and tokens for comparing models and changes. With only 13 tasks and model randomness, single runs are noisy; use `--repeat 3` or more when comparing
 - **Multi-user deployment platform** ([server/](server/README.md)): control plane + model gateway + per-session sandboxes designed for thousands of users; PostgreSQL / Redis / Docker / K8s used when available, runs on a single machine otherwise
-- **440+ automated tests**: 370+ core, 70+ platform, covering the loop, streaming parsing, retrieval, security regressions, and eval self-check
+- **900+ automated tests** (600+ core, 300+ platform; CI on Python 3.10–3.12 × 3 OSes), covering the loop, streaming parsing, retrieval, security regressions, eval self-check, and a test that keeps docs and code in sync
 
 > nanocode is a from-scratch teaching implementation based on Claude Code's public docs and observable behavior. It does not contain and is not derived from Claude Code source. It aims to *explain the principles clearly*, not to match feature parity.
 

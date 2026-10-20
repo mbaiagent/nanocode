@@ -1,7 +1,17 @@
 # 更新日志
 
-本项目还没有打版本号，按时间记录合并到 `main` 的主要变化。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
+按时间记录合并到 `main` 的主要变化；版本号见 `pyproject.toml`。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 细节以对应 PR / issue 为准；**「进行中 / 计划中」的条目还没合并，不代表已经可用。**
+
+## [0.2.0] 2026-10-20
+
+### 工程 / CI
+
+- **版本号 0.1.0 → 0.2.0**：涵盖下面「未发布」里已合并的全部改动。
+- **CI 加 Python 3.10**：核心和平台测试都跑 3.10（与 `requires-python = ">=3.10"` 一致）；main 上 3 OS × 3 Python，PR 上 ubuntu 跑 3.10/3.11/3.12、macOS / Windows 跑 3.12。
+- **CI 加 ruff lint**：`ruff==0.7.4`，只开 `E9,F`；顺带清掉 9 处未使用的导入 / 变量。
+- **删除 `[tool.pytest.ini_options]`**：CI 用的是 `unittest`，这段配置不生效。
+- **README 数字统一**：测试数只在一处写（900+，核心 600+、平台 300+），核心代码行数更新为约 8600 行，注明平台在 `server/` 且可选；补充评测局限（13 个任务、单次噪声大，比较用 `--repeat 3`+）。
 
 ## [未发布] 2026-10
 

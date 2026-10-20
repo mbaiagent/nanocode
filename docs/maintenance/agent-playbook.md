@@ -98,7 +98,7 @@ WORK=/tmp/nc-$(date +%s); gh repo clone mbaiagent/nanocode "$WORK" -- -q && cd "
 2. **代码质量**：可读性、重复、错误处理、边界条件、测试覆盖、是否符合现有架构（零第三方依赖、注释写「为什么」）。
 3. **安全**：命令 / SQL 注入、路径穿越和符号链接、SSRF、鉴权绕过、密钥泄露（日志、错误信息、子进程环境）、XSS / CSP、CSRF、不安全的默认值、新增依赖。
 4. **文档同步**（缺文档算问题）和**公开仓库隐私**（§1.4）。
-5. **测试**：本地跑全量（§3.3），并等 CI 全部完成。PR 上是 8 个 job：core / server 各 4 个（ubuntu 3.11/3.12、macOS 3.12、Windows 3.12）。
+5. **测试**：本地跑全量（§3.3），并等 CI 全部完成。PR 上是 11 个 job：lint（ruff）1 个，core / server 各 5 个（ubuntu 3.10/3.11/3.12、macOS 3.12、Windows 3.12）。
    ```bash
    gh pr checks <N> --watch
    ```
@@ -154,7 +154,7 @@ git push                                     # 普通 push，绝不 force
 ```
 
 ### 3.5 CI 矩阵与坑
-- PR 上：ubuntu 3.11/3.12 + macOS 3.12 + Windows 3.12，两个套件共 8 个 job；push 到 main 时是 3 个系统 × 2 个 Python 版本的完整矩阵。
+- PR 上：ruff lint（`E9,F`）+ ubuntu 3.10/3.11/3.12 + macOS 3.12 + Windows 3.12，两个测试套件共 10 个 job；push 到 main 时是 3 个系统 × 3 个 Python 版本的完整矩阵。
 - **Windows 环境变量不区分大小写**：`os.environ` 里的 `Path` 和 `PATH` 是同一个键，按大小写区分去清理或比较的测试会在 Windows 上失败（#137、#146）。
 - Windows 没有 `os.killpg` / `SIGKILL`，要加 `os.name != "nt"` 判断。
 - **Python 3.11 的 `http.client`** 和 3.12 行为不同（例如代理 / CONNECT 隧道相关的用例在 3.11 上失败，#137），本地最好两个版本都跑。
