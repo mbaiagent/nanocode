@@ -198,8 +198,11 @@ class Agent:
             if self.cancel.is_set():
                 final = "(已中断)"
                 break
-            self._maybe_compact()
             try:
+                # 自动压缩必须在 try 里面（#140）：它内部也调模型，
+                # 未预料到的异常要走主循环边界（_recover → turn_end → _finish_review），
+                # 不能直接逃出 run()。
+                self._maybe_compact()
                 # ① 调用模型
                 system, tools = self.system_prompt(), self.tools.schemas()
                 self.emit("llm_request", step=step, messages=len(self.messages),
@@ -456,7 +459,15 @@ class Agent:
         # 再压缩也压不下去，只会每一步都白白调用一次模型做总结。等它再增长一截再说。
         if self._compacted_at is not None and used < self._compacted_at + self.context_window * 0.1:
             return
-        self.compact(auto=True)
+        try:
+            self.compact(auto=True)
+        except LLMError as e:
+            # 压缩只是优化手段（#140）：它的模型调用失败（限流、配额用完、网络
+            # 错误）不该让整轮崩掉。本步带着原上下文继续 —— 真超窗的话，紧
+            # 接着的模型调用会自己失败并走正常收尾。记下这次的用量，免得
+            # 接下来每一步都白白重试一次压缩。
+            self._compacted_at = used
+            self.emit("warning", message=f"自动压缩失败，继续使用原上下文：{e}")
 
     def compact(self, focus: str = "", auto: bool = False) -> str:
         if len(self.messages) < 2:

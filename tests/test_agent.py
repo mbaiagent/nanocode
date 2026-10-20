@@ -275,6 +275,30 @@ class ContextTest(unittest.TestCase):
         self.assertLess(compact[0]["after"], compact[0]["before"])
         self.assertIn("第二个问题", str(agent.messages))     # 当前这一轮原样保留
 
+    def test_auto_compact_failure_does_not_escape_loop(self):
+        """#140：自动压缩的模型调用失败时，异常不能直接逃出主循环 ——
+        run() 不抛异常、照常发出 turn_end、终审快照不残留。"""
+        from nanocode.llm.base import LLMError
+
+        def maybe_fail_compact(messages, tools):
+            if not tools:           # 压缩调用 tools 为空，模拟 429
+                raise LLMError("HTTP 429: quota")
+            return [text_block("继续")]
+
+        probe, _, _ = make_agent(self.ws, [])
+        fixed = context_tokens("测试系统提示词", [], probe.tools.schemas())
+        # replies 依次是：第一轮正文、第二轮的压缩调用（抛错）、第二轮正文
+        agent, provider, events = make_agent(
+            self.ws, [[text_block("一")], maybe_fail_compact, [text_block("继续")]],
+            context_window=fixed + 1000, mode="review")
+        agent.run("第一个问题" * 120)
+        final = agent.run("第二个问题")            # main 上这里直接抛 LLMError
+        types = [e["type"] for e in events]
+        self.assertIn("turn_end", types)           # 主循环正常收尾
+        self.assertIsNone(agent._review_before)    # 终审快照不残留
+        self.assertFalse(agent.busy)
+        self.assertIn("继续", final)               # 压缩失败后带着原上下文继续
+
     def test_memory_files(self):
         self.ws.write("NANOCODE.md", "用 4 空格缩进")
         self.ws.write("pkg/NANOCODE.md", "这个包用 pytest")
