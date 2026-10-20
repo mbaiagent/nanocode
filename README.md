@@ -20,7 +20,6 @@
 [截图](#截图) ·
 [架构](#架构) ·
 [怎么学](#怎么学) ·
-[多用户部署](server/README.md) ·
 [文档索引](docs/README.md) ·
 [更新日志](CHANGELOG.md) ·
 [开发历程](docs/journey.md) ·
@@ -32,7 +31,7 @@
 
 ## 亮点
 
-- **纯 Python 标准库**，零依赖，核心（`nanocode/`）代码约 8600 行（含大量中文注释），每个文件开头都有讲解；多用户平台在 `server/`，是可选的独立子项目，只学 Agent 可以不看
+- **纯 Python 标准库**，零依赖，核心（`nanocode/`）代码约 8600 行（含大量中文注释），每个文件开头都有讲解；多用户平台（`nanocode-server`、部署、CD）已拆到独立的私有仓库，按 tag 钉住本仓库的核心，只学 Agent 可以不看
 - **可接入任何一家模型**：Claude、GPT、DeepSeek、通义千问、Kimi、智谱 GLM、硅基流动、OpenRouter、本地 Ollama，或任何 OpenAI / Anthropic 兼容的中转服务
 - **实现了 Claude Code 的核心机制**：Agent 循环、流式输出、文件/命令/搜索/读网页工具、权限模式与规则、Hooks、项目记忆、上下文压缩、待办清单、子 Agent、Skills、自定义斜杠命令、MCP、会话保存
 - **检查 → 纠正 → 终审的闭环**：自动验证（改完先跑检查，不过就回头修）、子 Agent 验收（系统核对，不信自述）、终审模式（无害步骤自动放行、高风险永远确认、结束时汇总 diff）、经验沉淀（被打回的原因经你确认后写入项目记忆），见 [第 11 章](docs/11-verification-loop.md)
@@ -40,7 +39,7 @@
 - **自带 Mock 模型**：不需要 API Key，就能把整套流程跑起来、看清楚
 - **内置小而完整的 RAG**：切块、中文 BM25、可选向量检索、RRF 混合、增量索引，外加一个评测脚本对比 grep 与检索
 - **Agent 任务评测**：13 个编程任务、隐藏测试判定，统计成功率、步数和 token，用来比较模型和改动。任务只有 13 个、模型有随机性，单次结果噪声很大，比较时请用 `--repeat 3` 或更多次
-- **多用户部署平台**（[server/](server/README.md)）：按千人规模设计的控制面 + 模型网关 + 沙箱，PostgreSQL / Redis / Docker / K8s 有就用、没有也能在单机跑
+- **多用户部署平台**（独立的私有仓库）：按千人规模设计的控制面 + 模型网关 + 沙箱，PostgreSQL / Redis / Docker / K8s 有就用、没有也能在单机跑
 - **900+ 个自动化测试**（核心 600+ 个、平台 300+ 个，Python 3.10–3.12 × 三平台 CI），覆盖循环、两种协议的流式解析、检索管线、安全回归和评测框架自检，以及一个让文档和代码保持一致的测试
 
 > nanocode 是依据 Claude Code 的公开文档和可观察行为，从零写的教学实现，不包含也不来自 Claude Code 的源代码。它追求的是"把原理讲清楚"，不是"功能一样多"。
@@ -52,7 +51,7 @@
 - **用 GitHub 登录**：只申请读取公开资料和邮箱的权限，不读你的仓库。
 - **注册需要邀请码**：第一次登录时在登录页填管理员发的邀请码，以后再登录不用。
 - **模型 Key 自带**：在"模型与密钥"里添加自己的 API Key（DeepSeek、OpenAI、Anthropic 等，或任意 OpenAI / Anthropic 兼容地址）。Key 加密保存，只在平台的模型网关里使用，不会进沙箱。不加 Key 也能用内置的**演示模型**走一遍完整流程。
-- 每个会话一个独立沙箱（自己的工作区、没有外网）。平台的设计和局限见 [docs/auth-and-admin.md](docs/auth-and-admin.md) 和 [docs/security-model.md](docs/security-model.md)。
+- 每个会话一个独立沙箱（自己的工作区、没有外网）。平台的设计和局限见 docs/auth-and-admin.md（私有仓库） 和 [docs/security-model.md](docs/security-model.md)。
 
 <table>
 <tr>
@@ -83,10 +82,6 @@
 <tr>
 <td><b>扩展：MCP 服务器、技能、自定义命令</b><br><img src="docs/images/web-extensions.png" alt="扩展面板"></td>
 <td><b>架构学习页：单步看 messages 一条条长出来</b><br><img src="docs/images/learn.png" alt="学习页"></td>
-</tr>
-<tr>
-<td><b>多用户平台：会话、模型切换、审批</b><br><img src="server/docs/session.png" alt="多用户平台会话页"></td>
-<td><b>多用户平台：模型与 API Key 管理</b><br><img src="server/docs/settings.png" alt="多用户平台设置页"></td>
 </tr>
 </table>
 
@@ -142,8 +137,8 @@ flowchart LR
 ```
 
 每个会话一个沙箱，用户的 API Key 加密存在库里、只在网关解密，**沙箱里永远没有真密钥**；Docker / K8s 沙箱没有外网，只能访问网关。
-可选的**工作区快照**（`NCS_OBJECT_STORE=s3`）：沙箱停止 / 空闲回收 / 删除时把工作区存进 S3 兼容对象存储（Backblaze B2、MinIO、R2…），换机器或磁盘丢了自动恢复；密钥只在控制面，沙箱主机只拿单个对象的预签名地址，沙箱里什么都拿不到。默认关闭，单机使用不依赖任何云服务（[部署说明](docs/distributed-deploy.md#十工作区快照s3-兼容对象存储)）。
-设计见 [第 12 章](docs/12-distributed-deployment.md)，代码和运行方式见 [server/README.md](server/README.md)；部署形态（单机 / 平台机 + 沙箱机 + 托管库）见 [docs/deployment-topology.md](docs/deployment-topology.md)，全部 `NCS_*` 变量见 [docs/configuration.md](docs/configuration.md)，登录和邀请码见 [docs/auth-and-admin.md](docs/auth-and-admin.md)，安全边界和已知问题见 [docs/security-model.md](docs/security-model.md)。
+可选的**工作区快照**（`NCS_OBJECT_STORE=s3`）：沙箱停止 / 空闲回收 / 删除时把工作区存进 S3 兼容对象存储（Backblaze B2、MinIO、R2…），换机器或磁盘丢了自动恢复；密钥只在控制面，沙箱主机只拿单个对象的预签名地址，沙箱里什么都拿不到。默认关闭，单机使用不依赖任何云服务（部署说明（私有仓库））。
+设计见 [第 12 章](docs/12-distributed-deployment.md)，平台代码和运行方式在私有仓库；部署形态（单机 / 平台机 + 沙箱机 + 托管库）见 docs/deployment-topology.md（私有仓库），全部 `NCS_*` 变量见 docs/configuration.md（私有仓库），登录和邀请码见 docs/auth-and-admin.md（私有仓库），安全边界和已知问题见 [docs/security-model.md](docs/security-model.md)。
 
 ---
 
@@ -167,7 +162,7 @@ python3 -m nanocode
 
 | | 本地单机模式 | 平台部署（多用户） |
 |---|---|---|
-| 启动 | `nanocode` / `nanocode --web`（或 `python3 -m nanocode --web`） | `nanocode-server`（或 `PYTHONPATH=server:. python3 -m nanocode_server`），见 [server/README.md](server/README.md) |
+| 启动 | `nanocode` / `nanocode --web`（或 `python3 -m nanocode --web`） | `nanocode-server`（或 `python3 -m nanocode_server`），在私有仓库 |
 | 适合 | 在自己电脑上（macOS / Windows / Linux）一个人用 | 给多人提供服务：登录、每会话一个沙箱、模型网关 |
 | 依赖 | 只要 Python ≥ 3.10，纯标准库，`pip install -e .` 不装任何第三方包 | 可选 PostgreSQL / Redis（`pip install "./server[postgres,redis]"`）、Docker / K8s / 远程沙箱、GitHub 登录 |
 | 数据 | `~/.nanocode/` 下的文件（会话、设置、经验） | 数据库 + 沙箱工作区 |
@@ -331,7 +326,7 @@ nanocode --api-key sk-xxx                     # 直接给 API Key（更推荐用
 | `NANOCODE_COOKIE_SECURE` | 登录会话 Cookie 是否带 `Secure` 标记，默认 `1`（仅 HTTPS 发送）。本地明文调试登录页时设为 `0` |
 | `NANOCODE_SEARCH_PROVIDER` `NANOCODE_SEARCH_BASE_URL` `NANOCODE_SEARCH_API_KEY` | `web_search` 的搜索源：`duckduckgo`（默认，零配置）、`searxng`（填地址）、`tavily` / `brave` / `serper` / `deepseek`（填 Key；`deepseek` 默认走官方 `https://api.deepseek.com/v1/tools/search`，`BASE_URL` 写完整路径时原样使用）。旧前缀 `NCS_SEARCH_*` 仍兼容 |
 | `HTTP_PROXY` `HTTPS_PROXY` `NO_PROXY`（大小写都认） | `web_fetch` / `web_search` 走的 HTTP 代理（只支持 `http://` 代理；https 走 CONNECT 隧道，证书仍按域名校验）。本地仍会先解析并拦住内网地址，再经代理连接。**行为变化**：以前 `web_fetch` 不认这些变量、一律直连，现在设了就走代理。**注意**：经你自己配的上游代理（公司代理等）时，代理会自己再解析一次域名，这时防 DNS 重绑定要靠那个代理，本地没法把连接固定到检查过的 IP |
-| `NANOCODE_EGRESS_PROXY` | 设为 `1` 表示代理会自己解析域名并拦内网（平台沙箱的出站代理，由沙箱代理注入，不用手配）：`web_fetch` / `web_search` 不再在本地解析域名，直接交给代理；URL 里直接写 IP 的仍在本地拦一次。见 [distributed-deploy.md 3.5](docs/distributed-deploy.md#35-出站代理沙箱上网默认关) |
+| `NANOCODE_EGRESS_PROXY` | 设为 `1` 表示代理会自己解析域名并拦内网（平台沙箱的出站代理，由沙箱代理注入，不用手配）：`web_fetch` / `web_search` 不再在本地解析域名，直接交给代理；URL 里直接写 IP 的仍在本地拦一次。见 distributed-deploy.md 3.5（私有仓库） |
 | `NANOCODE_SEARCH_ALLOW_HTTP` `NANOCODE_SEARCH_ALLOW_PRIVATE` | 自建 SearXNG 在 http 或内网时打开：前者允许明文，后者放弃公网地址校验。只在完全可信的本地/内网环境使用 |
 
 ## 目录结构
@@ -376,8 +371,6 @@ docs/                  分章节的架构讲解（建议按顺序读）和平台
 examples/              MCP 服务器示例、最小 Agent（minimal_agent.py）、扩展示例（extensions/：4 个 MCP 服务器 + 3 个技能 + 1 个命令）、RAG 评测（rag_eval/）
 evals/agent_tasks/     Agent 任务评测：13 个任务、隐藏测试、参考答案、运行器
 verification/          真实环境验证清单与结果（连真实模型、浏览器实操）
-server/                多用户部署的控制面和模型网关（独立的包，见 server/README.md 和第 12 章）
-deploy/                沙箱和控制面的镜像；compose/（单机平台）、sandbox-host/（远程沙箱主机）、firewall/（宿主机防火墙脚本）、k8s/（gVisor、网络出口白名单）
 tests/                 单元测试
 ```
 
@@ -407,13 +400,12 @@ tests/                 单元测试
 
 找工作用：[把这个项目写进简历](docs/resume.md) —— 按岗位挑重点、能写的数字和出处、标准版 / 精简版 / 英文版写法、面试常被追问的问题、诚实的边界。
 
-延伸阅读：[Agent 平台设计文档集](docs/platform/README.md) —— 把编程 Agent 发展成企业级、通用 Agent 平台，支撑千级、千万级、十亿级用户的愿景、架构、详细设计、路线图和架构决策记录。
+延伸阅读：Agent 平台设计文档集（私有仓库） —— 把编程 Agent 发展成企业级、通用 Agent 平台，支撑千级、千万级、十亿级用户的愿景、架构、详细设计、路线图和架构决策记录。
 
 ## 测试、评测与验证
 
 ```bash
 python3 -m unittest discover -s tests                     # 单元测试
-python3 -m unittest discover -s server/tests              # 多用户部署：控制面和模型网关（见 server/README.md）
 python3 evals/agent_tasks/run.py --reference              # 评测框架自检（参考答案应 13/13）
 python3 evals/agent_tasks/run.py --provider deepseek --model deepseek-chat --repeat 3   # 用真实模型评测
 ```

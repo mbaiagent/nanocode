@@ -10,7 +10,7 @@ nanocode 是一个**零第三方依赖的 Python 教学型 Coding Agent**。目�
 
 - **不是生产工具**：不要加重型依赖（httpx、pydantic、tiktoken、tree-sitter）。要加依赖先开 issue 讨论。
 - **代码即文档**：每个模块顶部有注释解释设计决策，注释要写「为什么」和对应 issue 号，不是「做了什么」。
-- **测试必须全过**：改任何代码后跑 `python -m unittest discover -s tests` 和 `python -m unittest discover -s server/tests`，两条都要过。
+- **测试必须全过**：改任何代码后跑 `python -m unittest discover -s tests`，必须全过。多用户平台（`nanocode-server`、部署、CD）已拆到独立的私有仓库，按 tag 钉住本仓库核心；改了核心的公共接口要发新 tag。
 
 ## 快速开始
 
@@ -20,7 +20,6 @@ PYTHONPATH=. python3 -m nanocode --help
 
 # 跑测试
 PYTHONPATH=. python3 -m unittest discover -s tests
-PYTHONPATH=server:server/tests:. python3 -m unittest discover -s server/tests
 
 # 启动 web 面板
 PYTHONPATH=. python3 -m nanocode --web --port 8765
@@ -39,14 +38,6 @@ nanocode/           核心 Agent 库
 ├── rag.py          本地检索
 └── web/            单用户 web 面板
 
-server/             多用户平台（nanocode_server）
-├── nanocode_server/
-│   ├── web/        HTTP 框架、控制面、模型网关
-│   ├── services/   业务逻辑（catalog、sessions、upstream）
-│   ├── storage/    SQLite / PostgreSQL、限流（内存 / Redis）
-│   ├── runtime/     沙箱启动器（local / docker / k8s）
-│   └── security/   令牌签名、SecretBox 加密
-└── tests/          平台测试
 
 docs/               教学文档（每章对应一个模块）
 ```
@@ -79,8 +70,7 @@ cd /tmp/nc-<your-name>
 
 ### 4. 测试约定
 
-- 核心测试在 `tests/`，平台测试在 `server/tests/`
-- **分开跑**（两个目录有同名 `test_security.py`，一起跑会冲突）
+- 测试在 `tests/`（平台测试在私有仓库）
 - Windows 不支持的功能（如 `os.killpg`、`signal.SIGKILL`）要加 `os.name != "nt"` 判断，不要直接抛
 - 安全相关改动必须加对抗测试（权限绕过、注入、路径遍历）
 

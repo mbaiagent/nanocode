@@ -3,6 +3,12 @@
 按时间记录合并到 `main` 的主要变化；版本号见 `pyproject.toml`。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 细节以对应 PR / issue 为准；**「进行中 / 计划中」的条目还没合并，不代表已经可用。**
 
+## 未发布
+
+### 拆仓库
+
+- **平台移到独立的私有仓库**：删掉 `server/`、`deploy/`、部署 workflow、CI 的 server-tests 和平台文档（拓扑、分布式部署、CD、配置、登录、千人方案、平台设计文档集）；`docs/security-model.md` 只留单机部分。私有仓库按 tag 钉住本仓库核心（`v0.2.0`）。git 历史不重写。README、AGENTS.md、维护手册、`docs/workflow.md` 等同步更新。
+
 ## [0.2.0] 2026-10-20
 
 ### 工程 / CI
@@ -17,14 +23,14 @@
 
 ### 多用户平台（nanocode-server）
 
-- **文档 生产架构图**：[docs/deployment-topology.md](docs/deployment-topology.md#生产架构图分布式形态) 新增 mermaid 架构图（平台机 / 沙箱机 / WireGuard / 出站代理 / 快照 / CD）和安全要点。
+- **文档 生产架构图**：docs/deployment-topology.md（私有仓库） 新增 mermaid 架构图（平台机 / 沙箱机 / WireGuard / 出站代理 / 快照 / CD）和安全要点。
 - **新增 多用户 P0**（[#117](https://github.com/mbaiagent/nanocode/pull/117)）：`NCS_REPLICAS > 1` 时强制 PostgreSQL + Redis，否则拒绝启动；Redis 默认 RESP2，兼容老版本；新增单机 `deploy/compose`（控制面 + 网关 + PostgreSQL 16 + Redis 7 + Docker 沙箱）。
-- **新增 多用户 P1**（[#118](https://github.com/mbaiagent/nanocode/pull/118)）：`NCS_AUTH=github`，用 GitHub OAuth 登录（state + PKCE，按 GitHub 数字 id 绑定）；邀请码注册；服务端登录会话（库里只存哈希，可立即吊销）；`/admin` 管理页（邀请码、账号停用 / 启用）；引导管理员 `NCS_ADMIN_GITHUB_LOGINS`；可选 Caddy 自动 HTTPS。模型 Key 由用户自带（BYO），加密存库、只在网关解密。见 [docs/auth-and-admin.md](docs/auth-and-admin.md)。
+- **新增 多用户 P1**（[#118](https://github.com/mbaiagent/nanocode/pull/118)）：`NCS_AUTH=github`，用 GitHub OAuth 登录（state + PKCE，按 GitHub 数字 id 绑定）；邀请码注册；服务端登录会话（库里只存哈希，可立即吊销）；`/admin` 管理页（邀请码、账号停用 / 启用）；引导管理员 `NCS_ADMIN_GITHUB_LOGINS`；可选 Caddy 自动 HTTPS。模型 Key 由用户自带（BYO），加密存库、只在网关解密。见 docs/auth-and-admin.md（私有仓库）。
 - **安全 沙箱宿主机隔离**（[#124](https://github.com/mbaiagent/nanocode/pull/124)，Fixes [#123](https://github.com/mbaiagent/nanocode/issues/123)）：沙箱网桥名 / 网段固定（`NCS_DOCKER_BRIDGE`、`NCS_DOCKER_SUBNET`），新增 `deploy/firewall/` 的 firewalld / nftables 脚本和 `check-sandbox-isolation.sh`，沙箱只能连宿主机的网关端口。
 - **新增 远程沙箱**（[#126](https://github.com/mbaiagent/nanocode/pull/126)）：`NCS_LAUNCHER=remote`，沙箱跑在另一台机器上，经 WireGuard 等内网隧道连接；新增 `python -m nanocode_server sandbox-agent`（只听内网地址、共享密钥认证、不暴露 Docker API）和网关中继（全局 / 每沙箱连接上限、空闲超时，`NCS_AGENT_RELAY_*`）；新增 `deploy/sandbox-host/`。
-- **新增 沙箱出站代理**（[#137](https://github.com/mbaiagent/nanocode/pull/137)，**默认关**）：`NCS_EGRESS_PROXY=1` 时，沙箱代理里会起一个只放行 HTTP/HTTPS 的正向代理。DNS 由代理解析；拒绝内网、元数据、本机、沙箱网段和 WireGuard 网段；防 DNS 重绑定；有每沙箱连接上限和空闲超时，可选域名白名单 / 黑名单；访问日志只记域名和字节数。防火墙脚本新增 `NCS_EGRESS_PORT`，`check-sandbox-isolation.sh` 会验证代理。前置条件 [#134](https://github.com/mbaiagent/nanocode/issues/134) 已由 #146 修复；生产打开前确认镜像版本。相关 [#135](https://github.com/mbaiagent/nanocode/issues/135)、[#136](https://github.com/mbaiagent/nanocode/issues/136)。见 [docs/distributed-deploy.md](docs/distributed-deploy.md#35-出站代理沙箱上网默认关)。
+- **新增 沙箱出站代理**（[#137](https://github.com/mbaiagent/nanocode/pull/137)，**默认关**）：`NCS_EGRESS_PROXY=1` 时，沙箱代理里会起一个只放行 HTTP/HTTPS 的正向代理。DNS 由代理解析；拒绝内网、元数据、本机、沙箱网段和 WireGuard 网段；防 DNS 重绑定；有每沙箱连接上限和空闲超时，可选域名白名单 / 黑名单；访问日志只记域名和字节数。防火墙脚本新增 `NCS_EGRESS_PORT`，`check-sandbox-isolation.sh` 会验证代理。前置条件 [#134](https://github.com/mbaiagent/nanocode/issues/134) 已由 #146 修复；生产打开前确认镜像版本。相关 [#135](https://github.com/mbaiagent/nanocode/issues/135)、[#136](https://github.com/mbaiagent/nanocode/issues/136)。见 docs/distributed-deploy.md（私有仓库）。
 - **修复 老版本 Docker 网络没有 Gateway 字段**（[#130](https://github.com/mbaiagent/nanocode/pull/130)）：建网络时显式写网关，已有网络按网段第一个地址兜底；Docker 26 上沙箱代理不再反复重启。
-- **新增 工作区快照**（[#144](https://github.com/mbaiagent/nanocode/pull/144)）：`NCS_OBJECT_STORE=s3`（默认 off），沙箱停止 / 空闲回收时把工作区存进 S3 兼容对象存储（B2、MinIO、R2…），每个会话保留最近 `NCS_SNAPSHOT_KEEP` 份，本地没有时自动恢复，删除会话默认清理云端快照；密钥只在控制面，沙箱代理只拿预签名地址；恢复前流式校验（含链式符号链接）；纯标准库实现，不依赖 boto3。顺带修复 Docker 启动器 chown 跟随符号链接。见 [docs/distributed-deploy.md 第十节](docs/distributed-deploy.md#十工作区快照s3-兼容对象存储)。
+- **新增 工作区快照**（[#144](https://github.com/mbaiagent/nanocode/pull/144)）：`NCS_OBJECT_STORE=s3`（默认 off），沙箱停止 / 空闲回收时把工作区存进 S3 兼容对象存储（B2、MinIO、R2…），每个会话保留最近 `NCS_SNAPSHOT_KEEP` 份，本地没有时自动恢复，删除会话默认清理云端快照；密钥只在控制面，沙箱代理只拿预签名地址；恢复前流式校验（含链式符号链接）；纯标准库实现，不依赖 boto3。顺带修复 Docker 启动器 chown 跟随符号链接。见 docs/distributed-deploy.md 第十节（私有仓库）。
 - **安全 中继监听地址拒绝 0.0.0.0**（Fixes [#129](https://github.com/mbaiagent/nanocode/issues/129)）：沙箱代理启动时 `NCS_AGENT_RELAY_BIND` 非空且为 `0.0.0.0` / `::` / `*` 直接拒绝启动，和 `NCS_AGENT_BIND` 同一规则；配错不再静默把网关中继暴露到公网。
 - **性能 面板轮询退避**（[#145](https://github.com/mbaiagent/nanocode/issues/145)）：面板轮询 `/api/me` + `/api/sessions` 从固定 10 秒改成自适应——无变化时间隔 10s→60s 退避，有变化或回到前台立刻重置；隐藏页签本来就不轮询。闲置页签不再每 10 秒唤醒托管 Postgres。
 - **安全 平台页面加 CSP / 防点击劫持**（Fixes #113）：控制面页面默认带 CSP、`frame-ancestors 'none'`、`X-Frame-Options: DENY`；`/s/<id>/` 转发的沙箱面板由平台统一加 CSP（`frame-ancestors 'self'`）和 `X-Frame-Options: SAMEORIGIN`，不再依赖沙箱自己发的头。
@@ -50,16 +56,16 @@
 
 ### CI
 
-- **新增 CD**：`.github/workflows/deploy.yml`，main 上 CI 成功后经 SSH 先部署沙箱机再部署平台机；服务器端 `deploy/cd/`（强制命令 + 受限 sudo + 版本目录 + 健康检查失败自动回滚，保留 3 个版本）。见 [docs/cd.md](docs/cd.md)。
-- **修复 CD 丢 `.env`**：版本目录被手动换成普通目录后，新版本拿不到沙箱机的 `.env`，部署连续失败。现在 `CARRY` 文件会回退到健康历史里去找，找不到就在切换前拒绝部署。见 [docs/cd.md](docs/cd.md#回滚)。
+- **新增 CD**：`.github/workflows/deploy.yml`，main 上 CI 成功后经 SSH 先部署沙箱机再部署平台机；服务器端 `deploy/cd/`（强制命令 + 受限 sudo + 版本目录 + 健康检查失败自动回滚，保留 3 个版本）。见 docs/cd.md（私有仓库）。
+- **修复 CD 丢 `.env`**：版本目录被手动换成普通目录后，新版本拿不到沙箱机的 `.env`，部署连续失败。现在 `CARRY` 文件会回退到健康历史里去找，找不到就在切换前拒绝部署。见 docs/cd.md（私有仓库）。
 - 修掉 Windows / macOS 上长期失败的测试（[#93](https://github.com/mbaiagent/nanocode/pull/93)）；CI 加 concurrency、超时，PR 上缩减矩阵（[#98](https://github.com/mbaiagent/nanocode/pull/98)）。
 
 ### 文档
 
 - **新增 维护交接手册** `docs/maintenance/agent-playbook.md`（附英文摘要）：别的 agent 或人可以直接接手审 PR、处理 issue、巡检和部署；`AGENTS.md` 加了入口。
-- 新增 [docs/distributed-deploy.md](docs/distributed-deploy.md)（[#125](https://github.com/mbaiagent/nanocode/pull/125)）：平台机 + 沙箱机 + 托管 Postgres / Valkey，含 Neon 冷启动 / libpq 版本坑、Valkey 保活与告警。
+- 新增 docs/distributed-deploy.md（私有仓库）（[#125](https://github.com/mbaiagent/nanocode/pull/125)）：平台机 + 沙箱机 + 托管 Postgres / Valkey，含 Neon 冷启动 / libpq 版本坑、Valkey 保活与告警。
 - 新增 [docs/cloud-agent-architecture.md](docs/cloud-agent-architecture.md)（[#127](https://github.com/mbaiagent/nanocode/pull/127)）：主流云端编程 Agent 架构调研。
-- 新增 [文档索引](docs/README.md)、[配置参考](docs/configuration.md)、[部署拓扑](docs/deployment-topology.md)、[登录与管理](docs/auth-and-admin.md)、[安全模型](docs/security-model.md) 和本文件。
+- 新增 [文档索引](docs/README.md)、配置参考（私有仓库）、部署拓扑（私有仓库）、登录与管理（私有仓库）、[安全模型](docs/security-model.md) 和本文件。
 - README 新增「在线使用」（托管实例链接、GitHub 登录 + 邀请码 + 自带 Key）和平台截图（`docs/images/platform/`）。
 
 ### 进行中（未合并）

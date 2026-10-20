@@ -16,7 +16,6 @@ Pure Python stdlib · Zero dependencies · Every file has explanatory comments �
 [Screenshots](#screenshots) ·
 [Architecture](#architecture) ·
 [How to learn](#how-to-learn) ·
-[Multi-user deployment](server/README.md) ·
 [Docs index (Chinese)](docs/README.md) ·
 [Changelog (Chinese)](CHANGELOG.md) ·
 [Development journey](docs/journey.md) ·
@@ -30,7 +29,7 @@ Pure Python stdlib · Zero dependencies · Every file has explanatory comments �
 
 ## Highlights
 
-- **Pure Python stdlib**, zero dependencies, ~8,600 lines of core code in `nanocode/` (with extensive Chinese comments); every file starts with an explanation. The multi-user platform lives in `server/` as an optional sub-project you can skip
+- **Pure Python stdlib**, zero dependencies, ~8,600 lines of core code in `nanocode/` (with extensive Chinese comments); every file starts with an explanation. The multi-user platform (`nanocode-server`, deployment, CD) now lives in a separate private repo that pins this core by tag; you can skip it
 - **Works with any model**: Claude, GPT, DeepSeek, Qwen, Kimi, Zhipu GLM, SiliconFlow, OpenRouter, local Ollama, or any OpenAI / Anthropic-compatible proxy
 - **Implements Claude Code's core mechanics**: Agent loop, streaming output, file/shell/search/web tools, permission modes and rules, hooks, project memory, context compaction, todos, sub-agents, Skills, custom slash commands, MCP, session persistence
 - **Check → correct → review closed loop**: auto-verify (run checks after edits, loop back on failure), sub-agent acceptance (system-generated report, not self-reported), review mode (auto-allow safe steps, always confirm high-risk, summarize diff at end), lessons learned (rejected causes written to project memory after your confirmation). See [Chapter 11](docs/11-verification-loop.md)
@@ -38,7 +37,7 @@ Pure Python stdlib · Zero dependencies · Every file has explanatory comments �
 - **Built-in mock model**: run the entire flow without an API key to see how it works
 - **Small but complete RAG**: chunking, Chinese BM25, optional vector retrieval, RRF hybrid, incremental index, plus an eval script comparing grep vs retrieval
 - **Agent task eval**: 13 coding tasks with hidden tests, measuring success rate, steps, and tokens for comparing models and changes. With only 13 tasks and model randomness, single runs are noisy; use `--repeat 3` or more when comparing
-- **Multi-user deployment platform** ([server/](server/README.md)): control plane + model gateway + per-session sandboxes designed for thousands of users; PostgreSQL / Redis / Docker / K8s used when available, runs on a single machine otherwise
+- **Multi-user deployment platform** (separate private repo): control plane + model gateway + per-session sandboxes designed for thousands of users; PostgreSQL / Redis / Docker / K8s used when available, runs on a single machine otherwise
 - **900+ automated tests** (600+ core, 300+ platform; CI on Python 3.10–3.12 × 3 OSes), covering the loop, streaming parsing, retrieval, security regressions, eval self-check, and a test that keeps docs and code in sync
 
 > nanocode is a from-scratch teaching implementation based on Claude Code's public docs and observable behavior. It does not contain and is not derived from Claude Code source. It aims to *explain the principles clearly*, not to match feature parity.
@@ -57,10 +56,6 @@ A hosted multi-user instance is available at **<https://nanocode.aipulse.lol>**:
 <tr>
 <td><b>Extensions: MCP servers, skills, custom commands</b><br><img src="docs/images/web-extensions.png" alt="Extensions panel"></td>
 <td><b>Architecture learning page: watch messages grow step by step</b><br><img src="docs/images/learn.png" alt="Learn page"></td>
-</tr>
-<tr>
-<td><b>Multi-user platform: sessions, model switching, approvals</b><br><img src="server/docs/session.png" alt="Multi-user session"></td>
-<td><b>Multi-user platform: model and API key management</b><br><img src="server/docs/settings.png" alt="Multi-user settings"></td>
 </tr>
 </table>
 
@@ -114,7 +109,7 @@ flowchart LR
     GW -->|decrypted key| M[(Model vendor)]
 ```
 
-One sandbox per session. User API keys are encrypted at rest and decrypted only in the gateway; **sandboxes never see real keys**. Docker / K8s sandboxes have no outbound internet and can only reach the gateway. Optional **workspace snapshots** (`NCS_OBJECT_STORE=s3`): when a sandbox stops, is idle-reaped or deleted, its workspace is archived to S3-compatible storage (Backblaze B2, MinIO, R2, ...) and restored automatically if the local copy is gone; credentials stay on the control plane, the sandbox host only gets single-object presigned URLs, and the sandbox gets nothing. Off by default, so single-machine use needs no cloud services ([deploy guide, in Chinese](docs/distributed-deploy.md)). Design in [Chapter 12](docs/12-distributed-deployment.md); code and runbook in [server/README.md](server/README.md). Deployment topologies, the full `NCS_*` reference, login / invites / admin and the security model are in [docs/](docs/README.md) (Chinese).
+One sandbox per session. User API keys are encrypted at rest and decrypted only in the gateway; **sandboxes never see real keys**. Docker / K8s sandboxes have no outbound internet and can only reach the gateway. Optional **workspace snapshots** (`NCS_OBJECT_STORE=s3`): when a sandbox stops, is idle-reaped or deleted, its workspace is archived to S3-compatible storage (Backblaze B2, MinIO, R2, ...) and restored automatically if the local copy is gone; credentials stay on the control plane, the sandbox host only gets single-object presigned URLs, and the sandbox gets nothing. Off by default, so single-machine use needs no cloud services (deploy guide, in Chinese (private repo)). Design in [Chapter 12](docs/12-distributed-deployment.md); code and runbook in server/README.md (private repo). Deployment topologies, the full `NCS_*` reference, login / invites / admin and the security model are in [docs/](docs/README.md) (Chinese).
 
 ---
 
@@ -156,7 +151,7 @@ Read it alongside [Chapter 01](docs/01-agent-loop.md): understand this file firs
 These are two separate entry points that do not depend on each other:
 
 - **Local standalone** — `nanocode` / `nanocode --web`: for one person on their own computer (macOS / Windows / Linux). Pure standard library, Python ≥ 3.10 only; no database, Redis, Docker, remote sandbox or login. Data lives under `~/.nanocode/`. It ignores all `NCS_*` platform settings, and `tests/test_local_mode.py` checks in CI that it starts without importing platform code, connecting to a database or calling docker.
-- **Platform (multi-user)** — `nanocode-server` (see [server/README.md](server/README.md)): login, one sandbox per session, model gateway; optional PostgreSQL / Redis (`pip install "./server[postgres,redis]"`), Docker / K8s / remote sandboxes, GitHub OAuth.
+- **Platform (multi-user)** — `nanocode-server` (private repo): login, one sandbox per session, model gateway; optional PostgreSQL / Redis (`pip install "./server[postgres,redis]"`), Docker / K8s / remote sandboxes, GitHub OAuth.
 
 ## Connect a real model
 
@@ -325,8 +320,6 @@ docs/                  chaptered architecture walkthrough (read in order) plus p
 examples/              MCP server examples, minimal Agent (minimal_agent.py), extension examples (extensions/: 4 MCP servers + 3 skills + 1 command), RAG eval (rag_eval/)
 evals/agent_tasks/     Agent task eval: 13 tasks, hidden tests, reference answers, runner
 verification/          real-environment verification checklist and results (real model, browser)
-server/                multi-user control plane and model gateway (separate package, see server/README.md and Chapter 12)
-deploy/                sandbox and control plane images; compose/ (single-host platform), sandbox-host/ (remote sandbox host), firewall/ (host firewall scripts), k8s/ (gVisor, egress allowlist)
 tests/                 unit tests
 ```
 
@@ -356,13 +349,12 @@ Development journey: [how it was built, what pitfalls were hit](docs/journey.md)
 
 For job hunting: [putting this project on your resume](docs/resume.md) — what to highlight per role, numbers and sources, standard / short / English variants, common interview questions, honest boundaries.
 
-Further reading: [Agent platform design docs](docs/platform/README.md) — vision, architecture, detailed design, roadmap, and ADRs for evolving this coding Agent into an enterprise-grade general Agent platform supporting thousand-, million-, billion-user scale.
+Further reading: Agent platform design docs (private repo) — vision, architecture, detailed design, roadmap, and ADRs for evolving this coding Agent into an enterprise-grade general Agent platform supporting thousand-, million-, billion-user scale.
 
 ## Tests, eval, and verification
 
 ```bash
 python3 -m unittest discover -s tests                     # unit tests
-python3 -m unittest discover -s server/tests              # multi-user: control plane and model gateway (see server/README.md)
 python3 evals/agent_tasks/run.py --reference              # eval framework self-check (reference answers should be 13/13)
 python3 evals/agent_tasks/run.py --provider deepseek --model deepseek-chat --repeat 3   # eval with a real model
 ```

@@ -1,8 +1,0 @@
-# gVisor 运行时：沙箱里的系统调用由用户态内核处理，不直接打到宿主机内核。
-# 前提：节点上已经安装 runsc 并在 containerd 里注册了名为 runsc 的 handler（托管集群一般有现成的选项，
-# 例如 GKE Sandbox）。换成 Kata Containers 时改 handler 和 NCS_K8S_RUNTIME_CLASS。
-apiVersion: node.k8s.io/v1
-kind: RuntimeClass
-metadata:
-  name: gvisor
-handler: runsc
