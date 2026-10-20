@@ -262,3 +262,4 @@ gh pr list --state open; gh issue list --state open --limit 50
 - **跨平台测试**：Windows 环境变量不区分大小写，Python 3.11 的 `http.client` 和 3.12 行为不同（#137）。
 - **防火墙重载**：`firewall-cmd --reload` 会清掉 fail2ban 加的封禁规则，重载后要重启 fail2ban。
 - **公开仓库**：示例配置里的管理员名单默认值要留空，否则有人照抄示例，同名用户第一次登录就成了管理员（#143）。
+- **别在线上目录手动 clone**（CD 连续失败，2026-10-19）：有人在沙箱机的 `/opt/nanocode` 上直接 `git clone`，把版本软链接换成了没有 `.env` 的普通目录。部署脚本把它当成当前版本，新版本于是拿不到 `.env`，回滚目标也没有。现在脚本会从健康历史里补 `CARRY` 文件，补不到就拒绝部署。排查部署失败时，先看 `readlink /opt/nanocode` 和 `nanocode-deploy status`。
