@@ -13,7 +13,7 @@ nanocode 现在是一个**单用户、单进程、单工作目录**的学习项�
 
 > 本章里的容量数字、工期都是**估算**，用来定量级和排优先级，上线前要用压测和真实用量替换。
 
-> 本章只讨论"把现在的编程 Agent 部署给 1000 人用"。企业级平台、通用 Agent，以及千万、十亿用户规模的设计，见 [Agent 平台设计文档集](platform/README.md)。
+> 本章只讨论"把现在的编程 Agent 部署给 1000 人用"。企业级平台、通用 Agent，以及千万、十亿用户规模的设计，见 Agent 平台设计文档集（私有仓库）。
 
 ---
 
@@ -281,7 +281,7 @@ nanocode 核心坚持只用标准库，这是学习项目的特点，应该保�
 
 ## 九、实现状态
 
-方案 A 已经实现成可以运行的平台：nanocode 本体的改动在 `nanocode/` 里，控制面和模型网关是独立的包 [`server/`](../server/README.md)，镜像和 Kubernetes 清单在 [`deploy/`](../deploy/)。一台电脑上就能跑：
+方案 A 已经实现成可以运行的平台：nanocode 本体的改动在 `nanocode/` 里，控制面和模型网关是独立的包 `server/`（私有仓库），镜像和 Kubernetes 清单在 [`deploy/`](../deploy/)。一台电脑上就能跑：
 
 ```bash
 NCS_AUTH=dev PYTHONPATH=server:. python3 -m nanocode_server    # 打开 http://127.0.0.1:8700，登录页输入任意用户名
@@ -310,7 +310,7 @@ PYTHONPATH=server:. python3 -m nanocode_server demo --users 10   # 模拟 10 个
 | 检查项 | 状态 |
 |---|---|
 | 每个会话运行在强隔离沙箱里，有资源限制 | ✅ Docker（实测）、K8s Pod 清单（gVisor，需在集群验证） |
-| 沙箱默认禁止出站，只放行白名单 | ✅ Docker 内部网络（实测出不了外网和元数据地址，只能访问网关）；K8s NetworkPolicy（需在集群验证）。远程沙箱可选出站代理（`NCS_EGRESS_PROXY`，默认关；只放 HTTP/HTTPS、拦内网、可选域名白名单；生产打开前确认已包含 #134 的修复），见 [distributed-deploy.md 3.5](distributed-deploy.md#35-出站代理沙箱上网默认关) |
+| 沙箱默认禁止出站，只放行白名单 | ✅ Docker 内部网络（实测出不了外网和元数据地址，只能访问网关）；K8s NetworkPolicy（需在集群验证）。远程沙箱可选出站代理（`NCS_EGRESS_PROXY`，默认关；只放 HTTP/HTTPS、拦内网、可选域名白名单；生产打开前确认已包含 #134 的修复），见 distributed-deploy.md 3.5（私有仓库） |
 | 沙箱里没有真实的模型 Key | ✅ 只有网关令牌 |
 | 登录、会话授权、跨租户访问测试 | ✅ 端到端测试 + 多用户模拟 |
 | `provider`、`base_url`、`headers` 只能由平台设置 | ✅ 平台策略 + 网关按会话强制模型 |
@@ -323,4 +323,4 @@ PYTHONPATH=server:. python3 -m nanocode_server demo --users 10   # 模拟 10 个
 | 数据保留、导出、删除 | ⏳ 能删除会话、工作区和 Key；保留期和导出没做 |
 | 分批放量和回滚 | ❌ |
 
-详见 [server/README.md](../server/README.md) 的"局限"一节。
+详见 server/README.md（私有仓库） 的"局限"一节。

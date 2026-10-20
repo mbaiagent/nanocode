@@ -29,7 +29,7 @@
     {"ok": false, "error": "...", "code": "rate_limited|queue_full|daily_budget", "retry_after": 秒}
 
 令牌默认每次启动随机生成；多用户部署时由控制面通过环境变量 NANOCODE_WEB_TOKEN 注入，
-控制面在转发请求时带上它（见 docs/12 和 server/）。
+控制面在转发请求时带上它（见 docs/12；平台代码在私有仓库）。
 
 安全：所有请求校验 Host / Origin，/api/* 需要令牌（页面加载时注入，只认请求头），
 POST 只接受 JSON 且请求体不超过 1MB。

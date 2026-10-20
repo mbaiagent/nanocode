@@ -51,11 +51,10 @@ git push -u origin feat/extensions-view      # 第一次推送，建立跟踪
 
 ### 4. 跑测试（见第三节的详细说明）
 
-最常用的是两条命令：
+最常用的命令（平台测试已随平台移到私有仓库）：
 
 ```bash
 python3 -m unittest discover -s tests          # 核心：约 370 个测试
-python3 -m unittest discover -s server/tests   # 平台：约 70 个测试
 ```
 
 两条都要通过才提交。
@@ -83,7 +82,7 @@ EOF
 git push -u origin <分支>      # 推送分支（网络失败最多重试 4 次，间隔 2/4/8/16 秒）
 git checkout main
 git merge --no-ff <分支>        # 保留分支的合并记录
-python3 -m unittest discover -s tests && python3 -m unittest discover -s server/tests   # 合并后再跑一次
+python3 -m unittest discover -s tests   # 合并后再跑一次
 git push origin main
 ```
 
@@ -98,7 +97,7 @@ git push origin main
 | 层级 | 做什么 | 命令 | 什么时候跑 |
 |---|---|---|---|
 | 1. 单元测试 | 逻辑分支、边界、安全回归 | `python3 -m unittest discover -s tests` | 每次提交前 |
-| 2. 平台测试 | 控制面、网关、沙箱、存储的端到端（进程内启动真实服务） | `python3 -m unittest discover -s server/tests` | 每次提交前 |
+| 2. 平台测试 | 控制面、网关、沙箱、存储的端到端（进程内启动真实服务） | 在私有仓库 | 平台改动时 |
 | 3. 文档一致性 | 代码里的参数、配置项、环境变量、命令、模块，文档里都有；文档里的数字和代码一致 | 包含在第 1 层里（`tests/test_docs_consistency.py`） | 每次提交前 |
 | 4. 评测 | 真实模型完成 13 个编程任务，隐藏测试判定 | `python3 evals/agent_tasks/run.py …` | 改了循环、提示词、工具之后 |
 | 5. 真实环境验证 | 真实模型、真实浏览器、真实 Docker、真实数据库 | 按 `verification/TASKS.md` 逐项做，结果写进 `verification/results/` | 大功能合并前、发布前 |
@@ -114,7 +113,7 @@ python3 -m unittest discover -s tests -v                   # 逐个显示
 - **测什么**：Agent 循环的每个分支（用脚本化的假模型精确控制每一轮）、两种协议的流式解析、工具的参数校验、权限规则（路径绕过、复合命令、软链接）、会话保存与恢复、斜杠命令、MCP 客户端（用真实的子进程服务器）。
 - **结果**：核心 371 个测试全部通过（开发历程里的 22 个问题，大多数都有对应的回归测试）。
 
-### 3.2 平台测试
+### 3.2 平台测试（已移到私有仓库，以下为拆分前的记录）
 
 ```bash
 python3 -m unittest discover -s server/tests
@@ -195,7 +194,7 @@ python3 evals/agent_tasks/run.py --tasks T10 --repeat 5 --keep # 只跑一题，
 | `npm view <包> versions` / `pip index versions` | 选择要固定的 MCP 服务器版本 | 避免示例配置使用刚发布的版本 |
 | `npx` / `uvx` | 启动官方 MCP 服务器（filesystem、memory、fetch） | 实测 `/mcp` 能列出它们的工具；发现首次启动需要下载，所以给了 `timeout` 配置 |
 
-### 3.7 压测：`nanocode_server loadtest`
+### 3.7 压测：`nanocode_server loadtest`（私有仓库）
 
 ```bash
 python3 -m nanocode_server loadtest --users 10 25 50 100
@@ -207,7 +206,7 @@ python3 -m nanocode_server loadtest --users 10 25 50 100
 - **过程中修的问题**：监听队列默认只有 5，50 个并发时 17 个连接被重置。修复后有回归测试。
 - **没做到的**：Kubernetes、gVisor、真实模型的并发限流、长时间运行。详见 `verification/results/perf-loadtest.md`。
 
-### 3.8 演示命令：`nanocode_server demo`
+### 3.8 演示命令：`nanocode_server demo`（私有仓库）
 
 ```bash
 python3 -m nanocode_server demo --users 10
@@ -229,7 +228,7 @@ python3 -m nanocode_server demo --users 10
 | 指标 | 结果 | 怎么核实 |
 |---|---|---|
 | 核心单元测试 | 371 个通过 | `python3 -m unittest discover -s tests` |
-| 平台测试 | 72 个通过，9 个按条件跳过 | `python3 -m unittest discover -s server/tests` |
+| 平台测试 | 72 个通过，9 个按条件跳过（拆分前） | 私有仓库 |
 | 评测框架自检 | 13/13 | `run.py --reference` |
 | 真实模型评测 | 37/39（95%） | `verification/results/V12.md` |
 | 真实环境验证 | V01–V13 中 9 项 PASS，其余 PARTIAL 并写明原因 | `verification/results/SUMMARY.md` |
@@ -245,11 +244,10 @@ python3 -m nanocode_server demo --users 10
 - **压测只覆盖本机 Docker**：Kubernetes 和 gVisor 下的启动时间没有测。
 - **部分验证因为缺少 Key 而 PARTIAL**：比如 RAG 的向量检索只做了 BM25 基线。
 
-如果你想复现整个流程，最少只需要两条命令：
+如果你想复现核心的流程，最少只需要一条命令：
 
 ```bash
 python3 -m unittest discover -s tests
-python3 -m unittest discover -s server/tests
 ```
 
-两条都通过，就说明代码和文档在当前状态下是一致的。
+通过，就说明代码和文档在当前状态下是一致的。

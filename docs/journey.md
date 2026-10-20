@@ -24,8 +24,8 @@
 | 4. 评测与验证 | 13 个编程任务的评测框架；V01–V12 真实环境验证清单 | 真实模型 37/39 |
 | 5. 质量闭环 | 自动验证、子 Agent 验收、终审模式、经验沉淀 | [第 11 章](11-verification-loop.md) |
 | 6. 真实模型兼容 | Gemini、OpenRouter 等接入时暴露的协议问题 | issue #16–#21 |
-| 7. 设计文档 | 千人部署计划、千万到十亿级平台设计、多端、模型视角 | [第 12 章](12-distributed-deployment.md)、[docs/platform/](platform/README.md)、[第 13 章](13-model-perspective.md) |
-| 8. 多用户平台 | 控制面、模型网关、三种沙箱启动器、可替换的存储和限流、新界面 | [server/](../server/README.md) |
+| 7. 设计文档 | 千人部署计划、千万到十亿级平台设计、多端、模型视角 | [第 12 章](12-distributed-deployment.md)、docs/platform/（私有仓库）、[第 13 章](13-model-perspective.md) |
+| 8. 多用户平台 | 控制面、模型网关、三种沙箱启动器、可替换的存储和限流、新界面 | server/（私有仓库） |
 | 9. 扩展可见性 | `/mcp`、`/skills`、「扩展」面板、官方 MCP 服务器实测 | [examples/extensions/](../examples/extensions/README.md) |
 
 ## 遇到的问题和解决办法

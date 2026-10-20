@@ -37,7 +37,7 @@
 - 提交前自查：`git diff --cached | grep -nE '([0-9]{1,3}\.){3}[0-9]{1,3}|@[a-z0-9-]+\.(com|net|cn)'`，把命中的逐条看一遍（文档占位网段 `203.0.113.x`、`198.51.100.x`、`10.77.0.x` 可以留）。
 
 ### 1.5 文档同步（owner 的规定）
-改了行为、配置、环境变量或部署方式，**必须在同一个 PR 里**更新文档：`docs/configuration.md`（`NCS_*`）、根 README（`NANOCODE_*`，`tests/test_docs_consistency.py` 会检查）、相关的部署文档和 `CHANGELOG.md`。缺文档按问题处理，不合并。
+改了行为、配置、环境变量或部署方式，**必须在同一个 PR 里**更新文档：根 README（`NANOCODE_*`，`tests/test_docs_consistency.py` 会检查）、相关的部署文档和 `CHANGELOG.md`。缺文档按问题处理，不合并。
 
 ---
 
@@ -57,9 +57,8 @@ WORK=/tmp/nc-$(date +%s); gh repo clone mbaiagent/nanocode "$WORK" -- -q && cd "
    2. `nanocode/tools/`
    3. `nanocode/web/`
    4. 会话 + CLI（`nanocode/session*`、`nanocode/cli*`、`__main__`）
-   5. `server/` 控制面（`web/`、`services/`、`storage/`、`security/`）
-   6. `server/` 沙箱运行时（`runtime/`、沙箱代理、中继）
-   7. CI 与测试（`.github/workflows/`、`tests/`、`server/tests/`）
+   5. CI 与测试（`.github/workflows/`、`tests/`）
+   （平台的控制面、沙箱运行时在私有仓库审）
 4. 工具只用来找线索，结论必须读代码确认，并给出 `文件:行号`：
    ```bash
    pipx run ruff check <module>
@@ -98,7 +97,7 @@ WORK=/tmp/nc-$(date +%s); gh repo clone mbaiagent/nanocode "$WORK" -- -q && cd "
 2. **代码质量**：可读性、重复、错误处理、边界条件、测试覆盖、是否符合现有架构（零第三方依赖、注释写「为什么」）。
 3. **安全**：命令 / SQL 注入、路径穿越和符号链接、SSRF、鉴权绕过、密钥泄露（日志、错误信息、子进程环境）、XSS / CSP、CSRF、不安全的默认值、新增依赖。
 4. **文档同步**（缺文档算问题）和**公开仓库隐私**（§1.4）。
-5. **测试**：本地跑全量（§3.3），并等 CI 全部完成。PR 上是 11 个 job：lint（ruff）1 个，core / server 各 5 个（ubuntu 3.10/3.11/3.12、macOS 3.12、Windows 3.12）。
+5. **测试**：本地跑全量（§3.3），并等 CI 全部完成。PR 上是 6 个 job：lint（ruff）1 个，core 5 个（ubuntu 3.10/3.11/3.12、macOS 3.12、Windows 3.12）。
    ```bash
    gh pr checks <N> --watch
    ```
@@ -140,10 +139,8 @@ ssh <platform-host> 'systemctl list-timers "*keepalive*"; journalctl -u "ncs-red
 - 正文写清楚改了什么行为、为什么、测试结果。合并时 squash。
 
 ### 3.3 跑测试（与 CI 一致）
-两个套件**分开跑**，因为两个目录里都有 `test_security.py`：
 ```bash
 PYTHONPATH=. python3 -m unittest discover -s tests -v
-PYTHONPATH=server:server/tests:. python3 -m unittest discover -s server/tests -v
 ```
 Windows 上 `PYTHONPATH` 的分隔符是 `;`。
 
@@ -154,7 +151,7 @@ git push                                     # 普通 push，绝不 force
 ```
 
 ### 3.5 CI 矩阵与坑
-- PR 上：ruff lint（`E9,F`）+ ubuntu 3.10/3.11/3.12 + macOS 3.12 + Windows 3.12，两个测试套件共 10 个 job；push 到 main 时是 3 个系统 × 3 个 Python 版本的完整矩阵。
+- PR 上：ruff lint（`E9,F`）+ ubuntu 3.10/3.11/3.12 + macOS 3.12 + Windows 3.12，测试共 5 个 job；push 到 main 时是 3 个系统 × 3 个 Python 版本的完整矩阵。
 - **Windows 环境变量不区分大小写**：`os.environ` 里的 `Path` 和 `PATH` 是同一个键，按大小写区分去清理或比较的测试会在 Windows 上失败（#137、#146）。
 - Windows 没有 `os.killpg` / `SIGKILL`，要加 `os.name != "nt"` 判断。
 - **Python 3.11 的 `http.client`** 和 3.12 行为不同（例如代理 / CONNECT 隧道相关的用例在 3.11 上失败，#137），本地最好两个版本都跑。
@@ -173,29 +170,11 @@ Copilot review 也可以在网页上请求；API 请求失败不影响流程，�
 
 ## 4. 部署与 CD
 
-### 4.1 拓扑（占位）
-```
-用户 ──HTTPS──▶ <platform-host>（控制面 + 模型网关 + 中继，nginx/Caddy）
-                  │  WireGuard 10.77.0.1 ⇄ 10.77.0.2
-                  ▼
-               <sandbox-host>（sandbox-agent 只听 wg 地址；Docker 沙箱只能连中继）
-<platform-host> ──TLS──▶ 托管 Postgres（<db-host>，可缩到零）
-                ──TLS──▶ 托管 Redis/Valkey（周保活）
-```
-单机 `deploy/compose` 保留，用作开发和备用方案。详见 [distributed-deploy.md](../distributed-deploy.md)、[deployment-topology.md](../deployment-topology.md)。
-
-### 4.2 CD（进行中：[PR #148](https://github.com/mbaiagent/nanocode/pull/148)）
-- 设计：main 上 CI 全绿后，GitHub Actions 经 SSH 部署，只在 `production` environment 里运行，只允许 main 触发。
-- 服务器上用专门的非 root 部署用户，`authorized_keys` 用 forced command，只能执行部署、查看状态、回滚这三个命令。服务器指纹写死在配置里。两台机器各用一把密钥，泄露了就删掉对应那一行。
-- 服务器端会再确认提交确实在 main 上，代码只从 GitHub 拉。
-- 合并前先在两台机器上手动完整部署一遍。
-
-### 4.3 部署顺序、健康检查、回滚
-1. **先沙箱机，后平台机**（新平台可能依赖新的沙箱代理接口）。
-2. 每台部署完都跑健康检查：平台 `/healthz`，沙箱代理健康接口，再跑 `deploy/firewall/check-sandbox-isolation.sh`。
-3. 检查不过自动回滚到上一个版本目录，保留最近 3 个版本。
-4. 改配置前先备份 `.env` 和 nginx 配置（`cp x x.bak.$(date +%F)`）。数据库在托管服务上，依赖服务商的备份。
-5. 在 #148 合并前，部署都是手动的：按服务器上运维笔记里的步骤执行。
+### 4.1 平台和部署已拆到私有仓库（2026-10-20）
+- `server/`、`deploy/`、CD workflow 和平台文档（拓扑、分布式部署、CD、配置、登录）都在私有仓库，那边按 tag 钉住本仓库核心（当前 `v0.2.0`）。
+- 生产只由私有仓库部署：main 上 CI 通过后 GitHub Actions 经 SSH 部署，先沙箱机、后平台机，健康检查不过自动回滚。本仓库已没有部署 workflow。
+- 本仓库改了核心、要上线：合并后打新 tag，再去私有仓库开 PR 升级钉住的版本。
+- 拆分前的平台代码仍留在本仓库 git 历史里；要清理得重写历史，需要 owner 另外拍板。
 
 ### 4.4 凭据
 主机地址、SSH 密钥、数据库连接串、OAuth 密钥只放在服务器上 root-only 的 `.env` 和运维笔记里。搬运密钥不经过聊天、日志和命令行参数。
