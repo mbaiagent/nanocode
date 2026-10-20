@@ -8,11 +8,15 @@
    - old_string 必须在文件中唯一出现，否则拒绝 —— 防止改错地方。
 3. "先读后改"：没读过（或读过之后被外部改动过）的文件不允许编辑/覆盖，
    逼模型基于文件的真实内容做修改，而不是凭记忆瞎改。
+4. 原子写入（#142）：写文件先写同目录临时文件、落盘，再 os.replace 换上去。
+   直接 "w" 打开目标文件会先把文件截断为 0，写到一半失败原内容就丢了。
 """
 
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
 
 from .base import Tool, ToolContext, ToolError, open_nofollow
 
@@ -41,15 +45,51 @@ def _decode(raw: bytes, path: str) -> str:
 
 
 def _mark_read(ctx: ToolContext, path: str) -> None:
-    ctx.state.setdefault("read_files", {})[path] = os.path.getmtime(path)
+    st = os.stat(path)
+    # 存 (mtime_ns, size) 而不是 float mtime：粗粒度文件系统上同一秒内的修改，
+    # float mtime 看不出差别，会漏检（#142）。
+    ctx.state.setdefault("read_files", {})[path] = (st.st_mtime_ns, st.st_size)
 
 
 def _check_fresh(ctx: ToolContext, path: str) -> None:
     seen = ctx.state.setdefault("read_files", {}).get(path)
     if seen is None:
         raise ToolError(f"修改 {path} 之前必须先用 read_file 读取它。")
-    if os.path.getmtime(path) > seen + 1e-6:
+    st = os.stat(path)
+    if (st.st_mtime_ns, st.st_size) != seen:
         raise ToolError(f"{path} 在你读取之后被修改过了，请重新 read_file 再修改。")
+
+
+def _atomic_write(path: str, text: str) -> None:
+    """原子写入：先写同目录临时文件、落盘，再 os.replace 换上去。
+
+    直接 "w" 打开目标文件会先把文件截断为 0：写到一半进程被杀、磁盘满、
+    编码异常，原内容就丢了（#142）。临时文件 + os.replace 保证失败时原文件
+    原封不动，临时文件随手删掉。path 是 resolve_checked 给出的真实路径，
+    os.replace 不会穿过软链接。
+    """
+    d = os.path.dirname(path) or "."
+    existed = os.path.exists(path)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".nanocode-", suffix=".tmp")
+    try:
+        # newline=""：跟 write_file/edit_file 一样原样写，不翻译换行符（#45）。
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        if existed:
+            shutil.copymode(path, tmp)   # 权限位随原文件
+        else:
+            umask = os.umask(0)
+            os.umask(umask)
+            os.chmod(tmp, 0o666 & ~umask)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 class ReadFile(Tool):
@@ -117,10 +157,9 @@ class WriteFile(Tool):
         if existed:
             _check_fresh(ctx, path)
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        # newline=""：按原样写。默认的文本模式会把 \n 翻译成系统换行符，Windows 上
-        # 内容里本来就有的 \r\n 会被写成 \r\r\n（#45）。
-        with open_nofollow(path, "w", encoding="utf-8", newline="") as f:
-            f.write(input["content"])
+        if existed:
+            _check_fresh(ctx, path)   # 紧挨着写入前再校验一次（#142）
+        _atomic_write(path, input["content"])
         _mark_read(ctx, path)
         n = input["content"].count("\n") + 1
         return f"{'已覆盖' if existed else '已创建'} {path}（{n} 行）"
@@ -176,8 +215,8 @@ class EditFile(Tool):
         if count > 1 and not input.get("replace_all"):
             raise ToolError(f"old_string 在文件中出现了 {count} 次。请带上更多上下文让它唯一，或设置 replace_all=true。")
         text = text.replace(old, new) if input.get("replace_all") else text.replace(old, new, 1)
-        with open_nofollow(path, "w", encoding="utf-8", newline="") as f:
-            f.write(text)
+        _check_fresh(ctx, path)   # 紧挨着写入前再校验一次（#142）
+        _atomic_write(path, text)
         _mark_read(ctx, path)
         line = text[: text.find(new)].count("\n") + 1 if new else 0
         return f"已修改 {path}（替换 {count if input.get('replace_all') else 1} 处，约第 {line} 行）"

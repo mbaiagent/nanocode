@@ -199,5 +199,84 @@ class PermissionTest(unittest.TestCase):
         self.assertEqual(pm.resolve(Bash(), {"command": "ls"}).behavior, "deny")
 
 
+class AtomicWriteTest(unittest.TestCase):
+    """#142：write_file / edit_file 必须原子写入；过期检查不能只看 float mtime。"""
+
+    def setUp(self):
+        self.ws = Workspace()
+        self.ctx = ToolContext(cwd=self.ws.dir)
+
+    def tearDown(self):
+        self.ws.cleanup()
+
+    def _prepare(self, content="原内容\n" * 1000):
+        self.ws.write("a.txt", content)
+        r = ReadFile().execute({"path": "a.txt"}, self.ctx)
+        self.assertFalse(r.is_error, r.content)
+        return os.path.join(self.ws.dir, "a.txt")
+
+    def _no_leftovers(self):
+        leftovers = [f for f in os.listdir(self.ws.dir) if f.startswith(".nanocode-")]
+        self.assertEqual(leftovers, [])
+
+    def test_write_mid_write_failure_keeps_original(self):
+        """写入中途失败时原文件完好，临时文件被清理。"""
+        self._prepare()
+        before = self.ws.read("a.txt")
+        with mock.patch("nanocode.tools.files.os.replace", side_effect=OSError("ENOSPC")):
+            r = WriteFile().execute({"path": "a.txt", "content": "新内容"}, self.ctx)
+        self.assertTrue(r.is_error, r.content)
+        self.assertEqual(self.ws.read("a.txt"), before)
+        self._no_leftovers()
+
+    def test_edit_mid_write_failure_keeps_original(self):
+        self._prepare()
+        before = self.ws.read("a.txt")
+        with mock.patch("nanocode.tools.files.os.replace", side_effect=OSError("ENOSPC")):
+            r = EditFile().execute({"path": "a.txt", "old_string": "原内容",
+                                    "new_string": "改", "replace_all": True}, self.ctx)
+        self.assertTrue(r.is_error, r.content)
+        self.assertEqual(self.ws.read("a.txt"), before)
+        self._no_leftovers()
+
+    def test_write_external_change_same_mtime_rejected(self):
+        """外部改了文件但把 mtime 还原到原值：只看 mtime 会漏检，(mtime_ns, size) 必须拦住。"""
+        full = self._prepare()
+        st = os.stat(full)
+        with open(full, "w", encoding="utf-8") as f:
+            f.write("被人改了")
+        os.utime(full, ns=(st.st_atime_ns, st.st_mtime_ns))   # mtime 还原，模拟粗粒度文件系统
+        r = WriteFile().execute({"path": "a.txt", "content": "新内容"}, self.ctx)
+        self.assertTrue(r.is_error, r.content)
+        self.assertIn("被修改过", r.content)
+
+    def test_edit_unread_still_rejected(self):
+        """没读过就改，照样拒绝（旧行为别丢）。"""
+        self.ws.write("b.txt", "x")
+        r = EditFile().execute({"path": "b.txt", "old_string": "x", "new_string": "y"}, self.ctx)
+        self.assertTrue(r.is_error)
+        self.assertIn("先用 read_file", r.content)
+
+    @unittest.skipIf(os.name == "nt", "Windows 无 Unix 权限位语义")
+    def test_write_new_file_permissions(self):
+        """新文件权限保持 0o666 & ~umask（不能变成 mkstemp 的 0600）。"""
+        r = WriteFile().execute({"path": "n.txt", "content": "hi"}, self.ctx)
+        self.assertFalse(r.is_error, r.content)
+        umask = os.umask(0)
+        os.umask(umask)
+        mode = os.stat(os.path.join(self.ws.dir, "n.txt")).st_mode & 0o777
+        self.assertEqual(mode, 0o666 & ~umask)
+        self._no_leftovers()
+
+    @unittest.skipIf(os.name == "nt", "Windows 无 Unix 权限位语义")
+    def test_write_keeps_existing_permissions(self):
+        """覆盖已有文件时权限位跟原文件走。"""
+        full = self._prepare()
+        os.chmod(full, 0o600)
+        r = WriteFile().execute({"path": "a.txt", "content": "新"}, self.ctx)
+        self.assertFalse(r.is_error, r.content)
+        self.assertEqual(os.stat(full).st_mode & 0o777, 0o600)
+
+
 if __name__ == "__main__":
     unittest.main()
