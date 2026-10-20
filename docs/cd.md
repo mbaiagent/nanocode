@@ -69,6 +69,8 @@ shred -u deploy_platform deploy_sandbox
 - **手动（从有 deploy key 的地方）**：`ssh deploy@<host> rollback`，切到上一个健康版本并重建。
 - **手动（root）**：`nanocode-deploy status` 看保留的版本；`nanocode-deploy rollback`；或者直接 `nanocode-deploy deploy <更早的 main sha>`。
 - 两台都要回时，先回平台机，再回沙箱机。
+- **`CARRY` 文件（`.env` 等）**：从当前版本复制到新版本；当前版本没有时，按健康历史从新到旧找；都没有就**拒绝部署、不切换**，线上不受影响。
+- **不要手动改 `LIVE`**：别在 `LIVE` 路径上 `git clone` / 解包，也别把软链接换成普通目录。脚本会把它当成「迁移」接管，旧版本脚本因此丢过 `.env`，连续部署失败。手动升级用 `nanocode-deploy deploy <sha>`。
 
 健康检查：平台机 `HEALTH_URL` 必须返回 `ok`、`launcher: remote`、`isolated: true`（配了 `AGENT_HEALTH_URL` 还会探测沙箱代理）；沙箱机代理 `/healthz` 为 ok 且 `deploy/firewall/check-sandbox-isolation.sh` 通过。
 
