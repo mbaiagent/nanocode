@@ -22,6 +22,7 @@
 
 ### 单机 nanocode / Web 面板
 
+- **修复 自动压缩失败时异常逃出主循环**（Fixes [#140](https://github.com/mbaiagent/nanocode/issues/140)）：压缩用的模型调用抛 `LLMError`（限流、配额、网络错误）时直接逃出 `run()`——不发 `turn_end`、终审快照还残留。现在 `_maybe_compact()` 挪进主循环 try，压缩失败发 warning 并带着原上下文继续（真超窗的话紧接着的模型调用会走正常收尾）。
 - **修复 最终回答里的代码块显示成 `&quot;`**（Fixes [#138](https://github.com/mbaiagent/nanocode/issues/138)）：Markdown 只转义一次。不再先 `esc()` 再交给 marked，改为让 marked 把原始 HTML 当文本转义输出（`markdown-safe.js` 的 `markdownToHtml`），之后仍经 `sanitizeHtml` 过滤链接协议，XSS 防护不变。
 - **安全 根目录 `.gitignore` 忽略密钥文件**（Fixes [#122](https://github.com/mbaiagent/nanocode/issues/122)）：`.env`、`.env.*`、`*.env`、`*.pem`、`*.key`、`*.p12`、`*.pfx`、`id_rsa*` / `id_ed25519*` / `id_ecdsa*` 在任何子目录都不会被 `git add -A` 带进提交；`*.env.example` 和 `*.pub` 照常提交。`tests/test_gitignore.py` 用 `git check-ignore` 验证。
 - **变化 `web_fetch` / `web_search` 遵守 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`**（[#137](https://github.com/mbaiagent/nanocode/pull/137)）：以前一律直连，现在设了代理就走代理（https 走 CONNECT，证书仍按域名校验）。本地仍会先解析并拦住内网地址；不过经你自己配的上游代理时，代理会再解析一次域名，防 DNS 重绑定就取决于那个代理。设了 `NANOCODE_EGRESS_PROXY=1`（平台沙箱）时，域名直接交给代理解析。
