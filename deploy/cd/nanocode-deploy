@@ -45,6 +45,7 @@ migrate() {
     local tag; tag="$(tr -dc '0-9a-f' < "$LIVE/DEPLOYED_COMMIT" 2>/dev/null | head -c 40 || true)"
     local dst="$RELEASES/${tag:-unknown}-migrated-$(date +%Y%m%d%H%M%S)"
     log "迁移现有目录 $LIVE → $dst"
+    [ ! -s "$HEALTHY" ] || log "警告：$LIVE 被换成了普通目录（有人手动 git clone / 解包？）。CARRY 文件会从健康历史里补；手动升级请用 nanocode-deploy deploy"
     mv "$LIVE" "$dst"; ln -s "$dst" "$LIVE"
   fi
   # 历史文件不存在时，把当前（正在跑、视为健康的）版本记进去
@@ -60,6 +61,15 @@ mark_healthy() {   # 追加到历史末尾（去掉旧的同名行），只保�
 discard() {   # 删掉失败 / 半截的版本目录
   [ -n "$1" ] && [ -d "$1" ] && [ "$1" != "$(current_dir)" ] && { log "删除失败版本 $1"; rm -rf --one-file-system -- "$1"; }
   return 0
+}
+
+carry_source() {   # $1 = 当前版本，$2 = CARRY 文件；先找当前版本，再按健康历史从新到旧找，打印找到的目录
+  local prev="$1" f="$2" d
+  if [ -n "$prev" ] && [ -e "$prev/$f" ]; then echo "$prev"; return 0; fi
+  while read -r d; do
+    [ -n "$d" ] && [ -e "$d/$f" ] && { echo "$d"; return 0; }
+  done < <(tac "$HEALTHY" 2>/dev/null || true)
+  return 1
 }
 
 switch_to() {   # 原子换软链接
@@ -135,9 +145,11 @@ do_deploy() {
   tar -xzf "$tmp/src.tar.gz" -C "$new" --strip-components=1 --no-same-owner --no-same-permissions \
     || { discard "$new"; die "解包失败"; }
   echo "$sha" > "$new/DEPLOYED_COMMIT"
-  local f
+  local f src
   for f in $CARRY; do
-    if [ -n "$prev" ] && [ -e "$prev/$f" ]; then cp -a "$prev/$f" "$new/$f"; else log "警告：上一版本没有 $f"; fi
+    src="$(carry_source "$prev" "$f")" || { discard "$new"; die "当前版本和健康历史里都找不到 $f，拒绝部署（不切换，线上不受影响）"; }
+    [ "$src" = "$prev" ] || log "警告：当前版本 $prev 没有 $f，改从健康版本 $src 复制"
+    cp -a "$src/$f" "$new/$f"
   done
 
   switch_to "$new"
