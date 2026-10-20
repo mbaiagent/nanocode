@@ -15,6 +15,7 @@
 - **新增 沙箱出站代理**（[#137](https://github.com/mbaiagent/nanocode/pull/137)，**默认关**）：`NCS_EGRESS_PROXY=1` 时，沙箱代理里会起一个只放行 HTTP/HTTPS 的正向代理。DNS 由代理解析；拒绝内网、元数据、本机、沙箱网段和 WireGuard 网段；防 DNS 重绑定；有每沙箱连接上限和空闲超时，可选域名白名单 / 黑名单；访问日志只记域名和字节数。防火墙脚本新增 `NCS_EGRESS_PORT`，`check-sandbox-isolation.sh` 会验证代理。前置条件 [#134](https://github.com/mbaiagent/nanocode/issues/134) 已由 #146 修复；生产打开前确认镜像版本。相关 [#135](https://github.com/mbaiagent/nanocode/issues/135)、[#136](https://github.com/mbaiagent/nanocode/issues/136)。见 [docs/distributed-deploy.md](docs/distributed-deploy.md#35-出站代理沙箱上网默认关)。
 - **修复 老版本 Docker 网络没有 Gateway 字段**（[#130](https://github.com/mbaiagent/nanocode/pull/130)）：建网络时显式写网关，已有网络按网段第一个地址兜底；Docker 26 上沙箱代理不再反复重启。
 - **新增 工作区快照**（[#144](https://github.com/mbaiagent/nanocode/pull/144)）：`NCS_OBJECT_STORE=s3`（默认 off），沙箱停止 / 空闲回收时把工作区存进 S3 兼容对象存储（B2、MinIO、R2…），每个会话保留最近 `NCS_SNAPSHOT_KEEP` 份，本地没有时自动恢复，删除会话默认清理云端快照；密钥只在控制面，沙箱代理只拿预签名地址；恢复前流式校验（含链式符号链接）；纯标准库实现，不依赖 boto3。顺带修复 Docker 启动器 chown 跟随符号链接。见 [docs/distributed-deploy.md 第十节](docs/distributed-deploy.md#十工作区快照s3-兼容对象存储)。
+- **安全 中继监听地址拒绝 0.0.0.0**（Fixes [#129](https://github.com/mbaiagent/nanocode/issues/129)）：沙箱代理启动时 `NCS_AGENT_RELAY_BIND` 非空且为 `0.0.0.0` / `::` / `*` 直接拒绝启动，和 `NCS_AGENT_BIND` 同一规则；配错不再静默把网关中继暴露到公网。
 - **安全 平台页面加 CSP / 防点击劫持**（Fixes #113）：控制面页面默认带 CSP、`frame-ancestors 'none'`、`X-Frame-Options: DENY`；`/s/<id>/` 转发的沙箱面板由平台统一加 CSP（`frame-ancestors 'self'`）和 `X-Frame-Options: SAMEORIGIN`，不再依赖沙箱自己发的头。
 - **调参 小机器资源**（#119）：`NCS_SANDBOX_TMPFS`、`NCS_SANDBOX_PIDS`、PG / Redis / 容器内存上限；大小同时认 `384Mi` 和 `384m` 写法。
 
