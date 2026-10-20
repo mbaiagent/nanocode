@@ -72,9 +72,13 @@ git checkout -b fix/<自己>-<topic> origin/main
 | 斜杠命令显示两次 | Muse | `fix/muse-dup-cmd` | **已合并到 main（af7d363）** | 已完成 | POST 的 r.output 和 SSE command 事件各渲染一次；改为只由 SSE 统一渲染 |
 
 | .gitignore 补全 | Muse | `fix/muse-gitignore` | **已合并到 main** | 已完成 | 忽略根目录 /.nanocode/ 和 /NANOCODE.md（examples/ 示例不受影响） |
-| #145 轮询缩容 | Muse | `fix/muse-poll-idle-145` | 进行中 | 2026-10-19 17:30 PT | 隐藏页签暂停轮询+退避拉长 |
-| #129 中继 bind 校验 | Muse | `fix/muse-relay-bind-129` | PR #155 待合并 | 已完成 | NCS_AGENT_RELAY_BIND 拒绝 0.0.0.0/::，Copilot review 已请求 |
-| #115 审计日志设计 | Muse | — | 评估中 | 2026-10-19 17:30 PT | 先评论分析+设计方案，不直接实现 |
+| #145 轮询缩容 | Muse | `fix/muse-poll-idle-145` | **审查通过，待 owner 合并** | 已完成 | 自适应退避 10s→60s；CI 8/8 绿；本地 server 全过，core 仅 4 个 main 上已有的 web_fetch TLS 回环环境失败；JS 语法已过 node 检查；按规则不合并自家体系 PR；PAT 无 issue 写权限，审查结论未贴评论 |
+| #129 中继 bind 校验 | Muse | `fix/muse-relay-bind-129` | **审查通过，待 owner 合并** | 已完成 | NCS_AGENT_RELAY_BIND 拒绝 0.0.0.0/::；CI 8/8 绿；本地 server 327 全过，core 仅 4 个 main 上已有的 web_fetch TLS 回环环境失败；按规则不合并自家体系 PR；PAT 无 issue 写权限，审查结论未贴评论 |
+| #115 审计日志设计 | Muse | — | 已评论分析 | 已完成 | 设计方案+待决策问题已贴，issue 保持打开等 owner |
+| #139 流式中断未转 LLMError | Muse | `fix/muse-stream-llmerror-139` | 认领 | 今天 | 评估确认后修复+PR |
+| #140 自动压缩异常逃出主循环 | Muse | `fix/140-compact-error` | 进行中（接手旧认领，旧分支未推送） | 今天 | 评估确认后修复+PR |
+| #141 429 忽略 Retry-After | Muse | `fix/141-retry-after` | 进行中（接手旧认领，旧分支未推送） | 今天 | 评估确认后修复+PR |
+| #142 写文件非原子 | Muse | `fix/142-atomic-write` | 进行中 | 今天 | 评估确认后修复+PR |
 
 
 **空 issue 认领流程**：
@@ -177,4 +181,8 @@ gh pr list --search "review-requested:@me" --state open
 
 - 2026-10-18：Doubao 完成 #52（PR #81）、#62（PR #82），评论 #56 #65
 - 2026-10-18：WorkBuddy 提 PR #80（#36 #58 #59 #60 #64 #70）
-- 2026-10-19：Muse 认领 #145、#129，评估 #115
+- 2026-10-19：Muse 认领 #145、#129，评估 #115；#129→PR #155，#145→PR #156，#115 评论设计方案后保持打开
+- 2026-10-19：Muse 认领 #139、#140、#141（新 issue 处理），评估确认后逐个修复+PR
+- 2026-10-20：Muse 审查 PR #155（#129）、#156（#145）：代码/安全/文档/隐私通过，CI 8/8 绿，本地测试达标；按规则不合并自家体系 PR，留 owner 合并；muse-nanocode PAT 无 issue 写权限，审查结论评论未能发出
+- 2026-10-20（10:38 SGT）：PR 审查轮：#155/#156 head sha 无变化（仍为 5f3448b / 599d3e0），CI 仍 8/8 绿；均系自家体系修复 PR，按规则不合并、留 owner 决定；PAT 无 issue 写权限，审查结论评论仍未贴
+- 2026-10-20（10:50 SGT）：Muse 接手处理 #140/#141（旧认领无分支，依超时规则接手）+ 新认领 #142；分支分别为 fix/140-compact-error、fix/141-retry-after、fix/142-atomic-write

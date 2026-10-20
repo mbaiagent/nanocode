@@ -81,7 +81,7 @@
 | `NCS_REMOTE_GATEWAY_URL` | 空 = 启动时向代理查询 | 平台 | 沙箱访问网关的地址（沙箱主机网桥上的中继），例如 `http://172.30.250.1:8701`。写上则代理暂时不在也能启动 |
 | `NCS_AGENT_BIND` | 空（**必填**） | 代理 | 代理监听的内网地址:端口，例如 `10.77.0.2:8790`。拒绝 `0.0.0.0` / `::` |
 | `NCS_AGENT_UPSTREAM_GATEWAY` | 空（**必填**） | 代理 | 平台的模型网关，例如 `10.77.0.1:8701` |
-| `NCS_AGENT_RELAY_BIND` | 空 = 沙箱网桥地址 | 代理 | 网关中继的监听地址。⚠️ 目前**没有**拒绝 `0.0.0.0` 的校验，见 [#129](https://github.com/mbaiagent/nanocode/issues/129)；请保持为空 |
+| `NCS_AGENT_RELAY_BIND` | 空 = 沙箱网桥地址 | 代理 | 网关中继的监听地址。启动时拒绝 `0.0.0.0` / `::` / `*`（[#129](https://github.com/mbaiagent/nanocode/issues/129)）；留空就是沙箱网桥地址 |
 | `NCS_AGENT_RELAY_MAX_CONNECTIONS` | `128` | 代理 | 中继全局连接上限 |
 | `NCS_AGENT_RELAY_PER_SANDBOX` | `16` | 代理 | 每个沙箱（按来源 IP）的中继连接上限，要求 1 ≤ 它 ≤ 全局上限 |
 | `NCS_AGENT_RELAY_IDLE_TIMEOUT` | `300` | 代理 | 中继连接两个方向都没数据超过这么多秒就断开，至少 10 |
