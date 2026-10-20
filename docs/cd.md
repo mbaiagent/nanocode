@@ -2,6 +2,8 @@
 
 适用：分布式形态（平台机 + 沙箱机，见 [distributed-deploy.md](distributed-deploy.md)）。单机 compose / 本地模式不需要这个。
 
+> **已停用自动部署**：平台和 CD 正在迁到独立的私有仓库，本仓库的 `deploy.yml` 已去掉 `workflow_run` 触发器，只剩手动触发（仅作切换期间的回退）。下面描述的是切换前的流程。
+
 ## 流程
 
 1. PR 合并到 `main` → `CI` 在 main 上跑完且**成功**；

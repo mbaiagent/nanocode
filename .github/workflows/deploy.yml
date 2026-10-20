@@ -3,11 +3,13 @@ name: Deploy
 # 生产部署（CD）。安全模型和配置步骤见 docs/cd.md。
 # 默认：CI 在 main 上的 push 跑成功后自动部署那个提交；也可以手动触发。
 # 想改成「打 tag 才部署」：删掉 workflow_run 段，打开下面的 push.tags 段（sha 取 github.sha）。
+# 拆仓库：平台和部署已迁到私有仓库，这里关掉自动部署，避免两个仓库同时往服务器部署。
+# 回滚到切换前：恢复下面的 workflow_run 触发器。
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main]
+  # workflow_run:
+  #   workflows: [CI]
+  #   types: [completed]
+  #   branches: [main]
   # push:
   #   tags: ["v*"]
   workflow_dispatch:
