@@ -225,3 +225,55 @@ class WebSearchTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PluginDiscoveryTest(unittest.TestCase):
+    """#105：外部 .nanocode/search_providers 自动注册；OPT_* 进 options。"""
+
+    def test_loads_provider_from_plugin_dir(self):
+        from nanocode.tools import web_search as ws
+        tmp = tempfile.mkdtemp()
+        plugin = os.path.join(tmp, "fake_google.py")
+        with open(plugin, "w", encoding="utf-8") as f:
+            f.write(
+                "from nanocode.tools.web_search import Provider, Request, SearchResult\n"
+                "class GoogleCSE(Provider):\n"
+                "    name = 'google'\n"
+                "    needs_key = True\n"
+                "    def build(self, query, count):\n"
+                "        cx = self.options.get('cx', '')\n"
+                "        url = f'https://www.googleapis.com/customsearch/v1?q={query}&key={self.api_key}&cx={cx}&num={count}'\n"
+                "        return Request('GET', url, {'user-agent': 't'})\n"
+                "    def parse(self, text):\n"
+                "        return [SearchResult('t', 'https://example.com', 's')]\n"
+            )
+        tool = WebSearch(provider="google", api_key="k", plugin_dirs=[tmp],
+                         options={"cx": "my-cx"})
+        self.assertTrue(tool.enabled)
+        self.assertEqual(tool.provider.options.get("cx"), "my-cx")
+        req = tool.provider.build("hello", 3)
+        self.assertIn("cx=my-cx", req.url)
+        self.assertIn("google", ws.PROVIDERS)
+
+    def test_bad_plugin_does_not_break_builtins(self):
+        tmp = tempfile.mkdtemp()
+        with open(os.path.join(tmp, "broken.py"), "w", encoding="utf-8") as f:
+            f.write("raise RuntimeError('boom')\n")
+        tool = WebSearch(provider="duckduckgo", plugin_dirs=[tmp],
+                         allow_http=True, allow_ips={"127.0.0.1"}, base_url="http://127.0.0.1:9/html")
+        self.assertIsNotNone(tool.provider)
+        self.assertTrue(any("broken.py" in e for e in tool.plugin_errors))
+
+    def test_options_from_env(self):
+        from nanocode.tools.web_search import _search_options, _load_plugins
+        with mock.patch.dict(os.environ, {"NANOCODE_SEARCH_OPT_CX": "env-cx",
+                                          "NCS_SEARCH_OPT_MKT": "zh-CN"}, clear=False):
+            opts = _search_options()
+        self.assertEqual(opts.get("cx"), "env-cx")
+        self.assertEqual(opts.get("mkt"), "zh-CN")
+
+    def test_unknown_lists_plugins_hint(self):
+        tool = WebSearch(provider="nope", plugin_dirs=[])
+        with self.assertRaises(ToolError) as cm:
+            tool.run({"query": "x"}, ToolContext(cwd=tempfile.mkdtemp()))
+        self.assertIn("search_providers", str(cm.exception))

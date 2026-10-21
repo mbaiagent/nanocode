@@ -19,8 +19,12 @@ HTTP 由 WebSearch 统一发：强制 https（除非显式允许 http）、解�
   PROVIDER        默认 duckduckgo
   BASE_URL        searxng 必填；也可覆盖其它 provider 的默认端点
   API_KEY         tavily / brave / serper / deepseek
+  OPT_<NAME>      传给 provider 的额外参数（如 Google CSE 的 OPT_CX），见 options
   ALLOW_HTTP=1    允许 http（自建 SearXNG 常见）
   ALLOW_PRIVATE=1 允许内网地址（同上；等同于放弃公网校验，慎用）
+
+外部插件：把 Provider 子类放到 `.nanocode/search_providers/*.py`（或
+NANOCODE_SEARCH_PLUGIN_DIR），导出一个或多个 Provider 子类即可注册，同名覆盖内置（#105）。
 
 安全边界：搜索 API 地址解析出的 IP 必须是公网（除上述显式开关），连接固定到
 校验过的 IP；结果里的 URL 只当数据，Agent 要再用 web_fetch 抓正文。
@@ -93,10 +97,12 @@ class Provider:
     uses_base_url = False
     needs_key = False
 
-    def __init__(self, base_url: str = "", api_key: str = "", timeout: float = TIMEOUT):
+    def __init__(self, base_url: str = "", api_key: str = "", timeout: float = TIMEOUT,
+                 options: dict[str, str] | None = None):
         self.base_url = (base_url or self.default_base_url).rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
+        self.options = dict(options or {})
 
     @property
     def available(self) -> bool:
@@ -302,9 +308,85 @@ class DeepSeekCompat(Provider):
         ][:MAX_RESULTS]
 
 
-PROVIDERS: dict[str, type[Provider]] = {
+_BUILTIN_PROVIDERS: dict[str, type[Provider]] = {
     cls.name: cls for cls in (DuckDuckGo, SearXNG, Tavily, Brave, Serper, DeepSeekCompat)
 }
+# 对外仍叫 PROVIDERS：首次解析时合并外部插件（#105）。测试可直接改这个 dict。
+PROVIDERS: dict[str, type[Provider]] = dict(_BUILTIN_PROVIDERS)
+_PLUGINS_LOADED = False
+_PLUGIN_ERRORS: list[str] = []
+
+
+def _plugin_dirs() -> list[str]:
+    """外部 provider 扫描目录：显式 NANOCODE_SEARCH_PLUGIN_DIR，否则 <cwd>/.nanocode/search_providers。"""
+    out: list[str] = []
+    env = (os.environ.get("NANOCODE_SEARCH_PLUGIN_DIR") or "").strip()
+    if env:
+        out.append(env)
+    out.append(os.path.join(os.getcwd(), ".nanocode", "search_providers"))
+    # 去重且保序
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for d in out:
+        ap = os.path.abspath(d)
+        if ap not in seen:
+            seen.add(ap)
+            uniq.append(ap)
+    return uniq
+
+
+def _load_plugins(dirs: list[str] | None = None, *, force: bool = False) -> list[str]:
+    """扫描目录，把 Provider 子类注册进 PROVIDERS。返回加载错误（不抛）。可 force 重载（测试用）。"""
+    global _PLUGINS_LOADED, _PLUGIN_ERRORS
+    if _PLUGINS_LOADED and not force:
+        return list(_PLUGIN_ERRORS)
+    import importlib.util
+    import sys
+
+    if force:
+        # 恢复内置，清掉上次插件
+        PROVIDERS.clear()
+        PROVIDERS.update(_BUILTIN_PROVIDERS)
+        _PLUGIN_ERRORS = []
+    errors: list[str] = []
+    for directory in (dirs if dirs is not None else _plugin_dirs()):
+        if not os.path.isdir(directory):
+            continue
+        for name in sorted(os.listdir(directory)):
+            if not name.endswith(".py") or name.startswith("_"):
+                continue
+            path = os.path.join(directory, name)
+            mod_name = f"nanocode_search_provider_{os.path.splitext(name)[0]}"
+            try:
+                spec = importlib.util.spec_from_file_location(mod_name, path)
+                if spec is None or spec.loader is None:
+                    raise ImportError(f"无法加载 {path}")
+                mod = importlib.util.module_from_spec(spec)
+                sys.modules[mod_name] = mod
+                spec.loader.exec_module(mod)
+                found = 0
+                for attr in vars(mod).values():
+                    if (isinstance(attr, type) and issubclass(attr, Provider)
+                            and attr is not Provider and getattr(attr, "name", "")):
+                        PROVIDERS[attr.name.lower()] = attr
+                        found += 1
+                if found == 0:
+                    errors.append(f"{path}: 没有找到带 name 的 Provider 子类")
+            except Exception as e:  # noqa: BLE001 —— 插件坏了不能拖垮搜索工具
+                errors.append(f"{path}: {type(e).__name__}: {e}")
+    _PLUGIN_ERRORS = errors
+    _PLUGINS_LOADED = True
+    return list(errors)
+
+
+def _search_options() -> dict[str, str]:
+    """NANOCODE_SEARCH_OPT_<NAME>=value → {name.lower(): value}；兼容 NCS_SEARCH_OPT_*。"""
+    out: dict[str, str] = {}
+    for prefix in ("NANOCODE_SEARCH_OPT_", "NCS_SEARCH_OPT_"):
+        for key, value in os.environ.items():
+            if key.startswith(prefix) and value.strip():
+                out[key[len(prefix):].lower()] = value.strip()
+    return out
 
 
 def _json(text: str) -> dict:
@@ -337,8 +419,17 @@ class WebSearch(Tool):
     def __init__(self, provider: str | None = None, base_url: str | None = None,
                  api_key: str | None = None, timeout: float = TIMEOUT,
                  allow_http: bool = False, allow_private: bool = False,
-                 allow_ips: set[str] | None = None, resolver=None):
-        """provider / base_url / api_key 参数优先于环境变量（测试也走这里）。"""
+                 allow_ips: set[str] | None = None, resolver=None,
+                 options: dict[str, str] | None = None, plugin_dirs: list[str] | None = None):
+        """provider / base_url / api_key / options 参数优先于环境变量（测试也走这里）。
+
+        plugin_dirs 非 None 时只扫这些目录（并 force 重载），方便测试；默认扫
+        NANOCODE_SEARCH_PLUGIN_DIR 与 <cwd>/.nanocode/search_providers（#105）。
+        """
+        if plugin_dirs is not None:
+            _load_plugins(plugin_dirs, force=True)
+        else:
+            _load_plugins()
         self.provider_name = (provider or _env("PROVIDER") or "duckduckgo").lower()
         self.base_url = base_url if base_url is not None else _env("BASE_URL")
         self.api_key = api_key if api_key is not None else _env("API_KEY")
@@ -347,9 +438,12 @@ class WebSearch(Tool):
         self.allow_private = allow_private or _flag("ALLOW_PRIVATE")
         self.allow_ips = set(allow_ips or ())
         self.resolver = resolver or _resolve
+        self.options = dict(options) if options is not None else _search_options()
         cls = PROVIDERS.get(self.provider_name)
-        self.provider = cls(self.base_url, self.api_key, timeout) if cls else None
+        self.provider = (cls(self.base_url, self.api_key, timeout, options=self.options)
+                         if cls else None)
         self.enabled = bool(self.provider and self.provider.available)
+        self.plugin_errors = list(_PLUGIN_ERRORS)
 
     @property
     def available(self) -> bool:
@@ -361,7 +455,7 @@ class WebSearch(Tool):
     def run(self, input: dict, ctx: ToolContext) -> str:
         if not self.enabled:
             if self.provider is None:
-                raise ToolError(f"未知的搜索 provider：{self.provider_name}（可选：{', '.join(PROVIDERS)}）")
+                raise ToolError(f"未知的搜索 provider：{self.provider_name}（可选：{', '.join(sorted(PROVIDERS))}；也可把 Provider 子类放到 .nanocode/search_providers/）")
             raise ToolError(f"搜索未配置：{self.provider_name} {self.provider.hint()}")
         query = str(input.get("query", "")).strip()
         if not query:
@@ -426,4 +520,4 @@ class WebSearch(Tool):
 
 
 __all__ = ["WebSearch", "SearchResult", "Provider", "PROVIDERS", "DuckDuckGo", "SearXNG", "Tavily", "Brave",
-           "Serper", "DeepSeekCompat"]
+           "Serper", "DeepSeekCompat", "_load_plugins", "_search_options"]
