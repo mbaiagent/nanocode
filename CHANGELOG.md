@@ -5,6 +5,10 @@
 
 ## 未发布
 
+### 修复
+
+- **流式响应中途出错转成 `LLMError`**（#139）：读超时、连接重置、半截响应现在报「模型调用失败：流式响应中断…」，可重试、评测记为基础设施错误；OpenAI 兼容端点跳过非 JSON 的 `data:` 行（与 Anthropic 一致）。
+
 ### 拆仓库
 
 - **平台移到独立的私有仓库**：删掉 `server/`、`deploy/`、部署 workflow、CI 的 server-tests 和平台文档（拓扑、分布式部署、CD、配置、登录、千人方案、平台设计文档集）；`docs/security-model.md` 只留单机部分。私有仓库按 tag 钉住本仓库核心（`v0.2.0`）。git 历史不重写。README、AGENTS.md、维护手册、`docs/workflow.md` 等同步更新。

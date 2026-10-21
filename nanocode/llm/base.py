@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import datetime
+import http.client
 import json
 import time
 import urllib.error
@@ -171,7 +172,12 @@ class Provider(ABC):
                     continue
                 raise LLMError(f"网络错误：{e}") from None
             with resp:
-                yield from iter_sse(resp)
+                try:
+                    yield from iter_sse(resp)
+                except (OSError, http.client.HTTPException) as e:
+                    # 流已开始：读超时 / 连接重置 / 半截响应。不重试（会重复输出），
+                    # 但要转成 LLMError，主循环才会按「模型调用失败」处理、可重试（#139）
+                    raise LLMError(f"流式响应中断：{type(e).__name__}: {e}") from None
             return
 
 
