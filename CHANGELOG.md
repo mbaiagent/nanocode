@@ -3,7 +3,7 @@
 按时间记录合并到 `main` 的主要变化；版本号见 `pyproject.toml`。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 细节以对应 PR / issue 为准；**「进行中 / 计划中」的条目还没合并，不代表已经可用。**
 
-## 未发布
+## [0.2.1] 2026-10-22
 
 ### 修复
 
