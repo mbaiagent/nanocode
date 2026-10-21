@@ -25,6 +25,7 @@ from .base import LLMError, Provider, TextCallback, finalize_text_blocks, parse_
 
 class AnthropicProvider(Provider):
     name = "anthropic"
+    supports_images = True
 
     def __init__(self, *args, prompt_cache: bool = True, **kwargs):
         super().__init__(*args, **kwargs)
@@ -42,6 +43,13 @@ class AnthropicProvider(Provider):
                 elif b["type"] == "text":
                     if b["text"]:
                         blocks.append({"type": "text", "text": b["text"]})
+                elif b["type"] == "image":
+                    src = b.get("source") or {}
+                    blocks.append({"type": "image", "source": {
+                        "type": src.get("type") or "base64",
+                        "media_type": src.get("media_type") or "image/png",
+                        "data": src.get("data") or "",
+                    }})
                 elif b["type"] == "tool_use":
                     # 只发 Anthropic 认识的字段：历史里可能有别的协议的附加数据（如 Gemini 的 extra_content）
                     blocks.append({"type": "tool_use", "id": b["id"], "name": b["name"], "input": b["input"]})
@@ -53,6 +61,9 @@ class AnthropicProvider(Provider):
         return out
 
     def complete(self, system, messages, tools, max_tokens=4096, on_text: TextCallback = None) -> LLMResponse:
+        has_image = any(b.get("type") == "image" for m in messages for b in m.get("content", []))
+        if has_image and not self.supports_images:
+            raise LLMError(f"当前模型不支持图片输入（provider={self.name}, model={self.model})）")
         body: dict = {
             "model": self.model,
             "max_tokens": max_tokens,

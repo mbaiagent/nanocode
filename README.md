@@ -324,6 +324,7 @@ nanocode --api-key sk-xxx                     # 直接给 API Key（更推荐用
 | `NANOCODE_TRUST_PROXY` | 设为 `1` 时按 `X-Forwarded-For` 最左侧地址区分客户端。只在确实挂了反向代理时开（否则可被伪造）；挂了反代却不开，所有人会共用代理 IP 的一个限流桶 |
 | `NANOCODE_HTPASSWD` | 自带登录页的凭据文件（htpasswd apr1 格式）。设为可读文件即启用 `GET /login` 登录页，会话 Cookie 30 天；不设则无登录页（本地开发默认）。对外暴露时务必启用，或在反代前挂 basic auth / oauth2-proxy |
 | `NANOCODE_COOKIE_SECURE` | 登录会话 Cookie 是否带 `Secure` 标记，默认 `1`（仅 HTTPS 发送）。本地明文调试登录页时设为 `0` |
+| （多模态 #110）输入里写 `@/path/to.png` | 随消息附带图片；需模型支持视觉（OpenAI 兼容 / Anthropic 默认开；mock 不开） |
 | `NANOCODE_SEARCH_PROVIDER` `NANOCODE_SEARCH_BASE_URL` `NANOCODE_SEARCH_API_KEY` `NANOCODE_SEARCH_OPT_*` | `web_search` 的搜索源：内置 `duckduckgo`（默认）、`searxng`、`tavily` / `brave` / `serper` / `deepseek`。`OPT_<NAME>` 传给 provider 的额外参数（如 Google CSE 的 `OPT_CX`）。也可把 Provider 子类放到 `.nanocode/search_providers/*.py` 自动注册（#105），`NANOCODE_SEARCH_PLUGIN_DIR` 可改扫描目录。旧前缀 `NCS_SEARCH_*` 仍兼容 |
 | `HTTP_PROXY` `HTTPS_PROXY` `NO_PROXY`（大小写都认） | `web_fetch` / `web_search` 走的 HTTP 代理（只支持 `http://` 代理；https 走 CONNECT 隧道，证书仍按域名校验）。本地仍会先解析并拦住内网地址，再经代理连接。**行为变化**：以前 `web_fetch` 不认这些变量、一律直连，现在设了就走代理。**注意**：经你自己配的上游代理（公司代理等）时，代理会自己再解析一次域名，这时防 DNS 重绑定要靠那个代理，本地没法把连接固定到检查过的 IP |
 | `NANOCODE_EGRESS_PROXY` | 设为 `1` 表示代理会自己解析域名并拦内网（平台沙箱的出站代理，由沙箱代理注入，不用手配）：`web_fetch` / `web_search` 不再在本地解析域名，直接交给代理；URL 里直接写 IP 的仍在本地拦一次。见 distributed-deploy.md 3.5（私有仓库） |
@@ -334,6 +335,7 @@ nanocode --api-key sk-xxx                     # 直接给 API Key（更推荐用
 ```
 nanocode/
 ├── messages.py        统一消息格式 —— Agent 的"内存"长什么样
+├── images.py          多模态图片：读盘、@path 提取（#110）
 ├── llm/               模型适配层
 │   ├── base.py          Provider 接口、HTTP 重试、SSE 解析
 │   ├── openai_compat.py OpenAI 兼容协议（覆盖国内外绝大多数厂商）

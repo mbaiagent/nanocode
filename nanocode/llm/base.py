@@ -112,6 +112,9 @@ def take_daily_llm_call() -> None:
 
 
 class Provider(ABC):
+    # 是否接受 image 内容块（#110）。子类可覆盖；默认 False，避免纯文本模型吃到图就 400。
+    supports_images = False
+
     name = "base"
 
     def __init__(self, model: str, api_key: str = "", base_url: str = "", timeout: float = 300.0,

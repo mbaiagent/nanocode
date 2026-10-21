@@ -15,6 +15,7 @@ Agent 的全部"记忆"就是一个 messages 列表。nanocode 内部统一使�
   1. user / assistant 交替出现；
   2. 每个 tool_use 后面，下一条 user 消息里必须有对应 id 的 tool_result；
   3. 工具结果是以 "user" 角色发回去的 —— 对模型而言，工具输出就是"环境的反馈"。
+  4. 图片用 type=image 的内容块（#110）；不支持视觉的模型在适配层提前报错。
 
 各家 provider（llm/ 目录）负责把这个格式翻译成自己 API 的格式。
 """
@@ -32,6 +33,21 @@ Message = dict[str, Any]
 
 def text_block(text: str) -> Block:
     return {"type": "text", "text": text}
+
+
+def image_block(media_type: str, data: str, *, path: str = "") -> Block:
+    """图片内容块（#110）。与 Anthropic 对齐：source.type=base64。
+
+    data 是 base64（不含 data: 前缀）。path 可选，仅供本地引用/压缩策略，不发给模型。
+    """
+    block: Block = {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}}
+    if path:
+        block["path"] = path
+    return block
+
+
+def images_of(message: Message) -> list[Block]:
+    return [b for b in message.get("content", []) if b.get("type") == "image"]
 
 
 def tool_use_block(id: str, name: str, input: dict, extra_content: dict | None = None) -> Block:
@@ -128,7 +144,15 @@ def estimate_tokens(obj: Any) -> int:
 
     真实 token 数要用各家的 tokenizer；这里用一个够用的近似：
     英文约 4 字符 / token，中文约 1~1.5 字 / token。
+    图片块按约 1000 token 估算（#110），避免把整段 base64 算进去。
     """
+    if isinstance(obj, dict) and obj.get("type") == "image":
+        return 1000
+    if isinstance(obj, list):
+        return sum(estimate_tokens(x) for x in obj)
+    if isinstance(obj, dict) and "content" in obj and isinstance(obj["content"], list):
+        # 消息：逐块估算，图片不展开 base64
+        return sum(estimate_tokens(b) for b in obj["content"]) + 4
     s = obj if isinstance(obj, str) else json.dumps(obj, ensure_ascii=False)
     ascii_chars = sum(1 for c in s if ord(c) < 128)
     other = len(s) - ascii_chars

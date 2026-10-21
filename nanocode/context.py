@@ -267,6 +267,10 @@ def transcript_text(messages: list[Message], limit_per_block: int = 2000) -> str
                 out.append(f"[assistant 调用工具 {b['name']}] {str(b['input'])[:limit_per_block]}")
             elif b["type"] == "tool_result":
                 out.append(f"[工具结果{'(错误)' if b.get('is_error') else ''}] {b['content'][:limit_per_block]}")
+            elif b["type"] == "image":
+                # 摘要只记占位，不把 base64 喂给压缩模型（#110）
+                label = b.get("path") or (b.get("source") or {}).get("media_type") or "image"
+                out.append(f"[{m['role']} 图片] {label}")
     return "\n".join(out)
 
 

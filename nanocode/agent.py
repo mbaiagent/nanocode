@@ -35,6 +35,7 @@ from .context import BASE_PROMPT, compact_messages, context_tokens, find_compact
 from .events import EventBus
 from .hooks import HookRunner
 from .llm.base import LLMError, Provider
+from .images import ImageError, extract_image_refs, load_image_block
 from .messages import (Usage, assistant_message, text_block, text_of, tool_result_block, tool_uses)
 from .permissions import EDIT_TOOLS, PermissionManager
 from . import lessons, review, subcheck
@@ -167,7 +168,17 @@ class Agent:
 
     def _run(self, prompt: str) -> str:
         self.emit("user", text=prompt)
-        blocks = [text_block(prompt)]
+        text, image_paths = extract_image_refs(prompt)
+        blocks = [text_block(text)] if text else []
+        for path in image_paths:
+            try:
+                blocks.append(load_image_block(path, cwd=self.cwd))
+            except ImageError as e:
+                self.emit("error", message=str(e))
+                self.emit("turn_end", final="", blocked=True, usage=self.usage.to_dict())
+                return f"图片无法加载：{e}"
+        if not blocks:
+            blocks = [text_block("(空)")]
         self._dirty, self._verify_failures, self._verify_last = False, 0, None
         self.verify_failed = False
         if self.depth == 0:   # 子 Agent 共用主 Agent 的终审记录，不能在这里清掉
