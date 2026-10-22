@@ -26,6 +26,8 @@ from .base import LLMError, Provider, TextCallback, finalize_text_blocks, parse_
 
 
 class OpenAICompatProvider(Provider):
+    supports_images = True   # 具体模型若不支持，complete 前仍会按块检查并给出可读错误（#110）
+
     name = "openai"
 
     def __init__(self, *args, stream_usage: bool = True, **kwargs):
@@ -78,6 +80,7 @@ class OpenAICompatProvider(Provider):
             else:
                 # user 消息：工具结果要拆成独立的 tool 消息，并且必须排在普通文本前面
                 texts = []
+                images = []
                 for b in msg["content"]:
                     if b["type"] == "tool_result":
                         content = b["content"]
@@ -86,8 +89,22 @@ class OpenAICompatProvider(Provider):
                         out.append({"role": "tool", "tool_call_id": b["tool_use_id"], "content": content})
                     elif b["type"] == "text":
                         texts.append(b["text"])
-                if texts:
-                    out.append({"role": "user", "content": "\n\n".join(texts)})
+                    elif b["type"] == "image":
+                        src = b.get("source") or {}
+                        media = src.get("media_type") or "image/png"
+                        data = src.get("data") or ""
+                        images.append({"type": "image_url",
+                                       "image_url": {"url": f"data:{media};base64,{data}"}})
+                if texts or images:
+                    if images:
+                        # 多模态：content 必须是数组（#110）
+                        parts: list[dict] = [{"type": "text", "text": t} for t in texts if t]
+                        if not parts:
+                            parts.append({"type": "text", "text": "(见附图)"})
+                        parts.extend(images)
+                        out.append({"role": "user", "content": parts})
+                    else:
+                        out.append({"role": "user", "content": "\n\n".join(texts)})
         return out
 
     @staticmethod
@@ -99,6 +116,7 @@ class OpenAICompatProvider(Provider):
     # ------------------------------------------------------------ 调用 + 翻译：响应
 
     def complete(self, system, messages, tools, max_tokens=4096, on_text: TextCallback = None) -> LLMResponse:
+        _reject_images_if_unsupported(self, messages)
         body: dict = {
             "model": self.model,
             "messages": self.to_openai_messages(system, messages, self.source),
@@ -166,3 +184,10 @@ class OpenAICompatProvider(Provider):
         if usage is None:  # 有些厂商流式不返回 usage，用估算值
             usage = Usage(estimate_tokens(system) + estimate_tokens(messages), estimate_tokens(blocks), estimated=True)
         return LLMResponse(content=blocks, stop_reason=stop, usage=usage)
+
+def _reject_images_if_unsupported(provider, messages) -> None:
+    """不支持视觉的模型提前报错，避免等 API 返回 400（#110）。"""
+    has_image = any(b.get("type") == "image" for m in messages for b in m.get("content", []))
+    if has_image and not getattr(provider, "supports_images", False):
+        raise LLMError(f"当前模型不支持图片输入（provider={provider.name}, model={provider.model}）")
+

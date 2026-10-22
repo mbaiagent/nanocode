@@ -124,3 +124,14 @@ Anthropic 在 `message_start` 和 `message_delta` 里返回用量；OpenAI 协�
 
 1. 如果它兼容 OpenAI 协议（绝大多数都是）：在 `llm/__init__.py` 的 `PRESETS` 里加一行，或者直接用 `--provider custom --protocol openai --base-url ...`。
 2. 如果是全新的协议：仿照 `openai_compat.py` 写一个 `Provider` 子类，实现 `complete()`，在 `make_provider` 里注册。需要写的只有两个翻译：请求翻译和流式响应解析。
+
+## 图片输入（#110）
+
+消息内容块支持 `type: image`（`source.type=base64`，与 Anthropic 对齐）。
+
+- **CLI**：在输入里写 `@/path/to.png`（或相对路径），会随文本一起发给模型。
+- **OpenAI 兼容**：转成 `image_url`（data URI）；**Anthropic**：转成 `source.base64`。
+- 不支持视觉的模型（`Provider.supports_images = False`，如 mock）会提前报错「当前模型不支持图片输入」，不会等到 API 400。
+- 压缩摘要时旧图变成占位文字；最近保留的回合里的图片仍在。
+- 单张上限 4 MiB；会话 JSON 里仍含 base64（大图会胀）。更彻底的「只存附件路径」可后续做。
+
